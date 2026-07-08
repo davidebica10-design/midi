@@ -159,8 +159,8 @@
   footer .wrap{padding:28px 22px; display:flex; flex-wrap:wrap; gap:8px 30px; justify-content:space-between; font-size:12px; color:var(--ink-2)}
   footer a{color:var(--ink-2)}
 
-  .reveal{opacity:0; transform:translateY(14px); transition:opacity .6s ease, transform .6s cubic-bezier(.25,.6,.2,1)}
-  .reveal.on{opacity:1; transform:none}
+  body.anim .reveal{opacity:0; transform:translateY(14px); transition:opacity .6s ease, transform .6s cubic-bezier(.25,.6,.2,1)}
+  body.anim .reveal.on{opacity:1; transform:none}
 </style>
 </head>
 <body>
@@ -300,9 +300,9 @@
     var els = document.querySelectorAll('.reveal');
     if (!('IntersectionObserver' in window) ||
         window.matchMedia('(prefers-reduced-motion: reduce)').matches){
-      els.forEach(function(e){ e.classList.add('on'); });
-      return;
+      return; // niente classe .anim: tutto resta visibile
     }
+    document.body.classList.add('anim');
     var io = new IntersectionObserver(function(entries){
       entries.forEach(function(en){
         if (en.isIntersecting){ en.target.classList.add('on'); io.unobserve(en.target); }
