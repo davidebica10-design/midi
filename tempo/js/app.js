@@ -10,7 +10,6 @@ const durLabel = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ' ' + (m %
 const state = load();
 let plan = {};
 let view = 'home';
-let stackIdx = 0;
 let selDay = dateKey(new Date());
 let busy = false;
 let pending = null; // proposta in attesa di conferma: { draft, msgId }
@@ -240,6 +239,17 @@ function doUndo(id) {
 const undoExists = hasUndo;
 
 // ---------------------------------------------------------------- render: chat
+const seenMsgs = new Set();
+/** Riproduce l'animazione d'ingresso di un contenitore (solo quando ci si entra, non a ogni aggiornamento). */
+function animateIn(el) {
+  if (!el) return;
+  el.classList.remove('enter');
+  void el.offsetWidth;
+  el.classList.add('enter');
+  clearTimeout(el._enterT);
+  el._enterT = setTimeout(() => el.classList.remove('enter'), 900);
+}
+
 function renderChat() {
   const el = $('#chat');
   $('#chips').hidden = !state.chat.length;
@@ -257,9 +267,10 @@ function renderChat() {
     </div>`;
     return;
   }
+  const fresh = (m) => { const isNew = !seenMsgs.has(m.id); seenMsgs.add(m.id); return isNew ? ' anim' : ''; };
   el.innerHTML = state.chat.map((m) => {
-    if (m.pending && m.progress != null && m.progress < 1) return `<div class="msg assistant">Preparo il modello sul telefono… ${Math.round(m.progress * 100)}%<div class="applied-note">Solo la prima volta: il modello viene scaricato e salvato sul telefono. Meglio con il Wi-Fi.</div></div>`;
-    if (m.pending) return `<div class="msg assistant typing" aria-label="Sto pensando"><i></i><i></i><i></i></div>`;
+    if (m.pending && m.progress != null && m.progress < 1) return `<div class="msg assistant${fresh(m)}">Preparo il modello sul telefono… ${Math.round(m.progress * 100)}%<div class="applied-note">Solo la prima volta: il modello viene scaricato e salvato sul telefono. Meglio con il Wi-Fi.</div></div>`;
+    if (m.pending) return `<div class="msg assistant typing${fresh(m)}" aria-label="Sto pensando"><i></i><i></i><i></i></div>`;
     let extra = '';
     if (m.changes?.length) {
       extra += `<ul class="changes">${m.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`;
@@ -273,7 +284,7 @@ function renderChat() {
         extra += `<div class="actions"><button class="btn" data-act="undo" data-id="${m.undoId}">Annulla</button></div>`;
       }
     }
-    return `<div class="msg ${m.role}${m.error ? ' error' : ''}">${esc(m.text)}${extra}</div>`;
+    return `<div class="msg ${m.role}${m.error ? ' error' : ''}${fresh(m)}">${esc(m.text)}${extra}</div>`;
   }).join('');
   requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 }
@@ -375,167 +386,88 @@ function renderGauge(pct, n) {
 function renderHome() {
   const d = new Date();
   $('#today-label').textContent = d.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
-  $('#undo-btn').disabled = !canUndo();
   const p = plan[today()];
   if (!p) return;
   const n = nowMin();
 
-  // avanzamento: minuti di attività completate sul totale di oggi
+  // avanzamento = attività fatte / attività di oggi: percentuale, segmenti e conteggio coincidono
   const taskBlocks = p.blocks.filter((b) => b.item.kind === 'task');
-  const doneMin = taskBlocks.filter((b) => b.type === 'done').reduce((s, b) => s + (b.end - b.start), 0);
-  const totMin = taskBlocks.reduce((s, b) => s + (b.end - b.start), 0) + p.unscheduled.reduce((s, u) => s + (u.item.duration || 0), 0);
-  const pct = totMin ? doneMin / totMin : 0;
-  const nTasks = taskBlocks.length + p.unscheduled.length;
-  renderGauge(pct, Math.max(3, Math.min(8, nTasks || 3)));
-  $('#gauge-label').textContent = nTasks ? 'della giornata completata' : 'nessuna attività oggi';
-  $('#gauge-free').textContent = `libero ${durLabel(p.free)}`;
   const doneN = taskBlocks.filter((b) => b.type === 'done').length;
-  $('#gauge-done').textContent = nTasks ? `${doneN} di ${nTasks} fatte` : '';
+  const total = taskBlocks.length + p.unscheduled.length;
+  const pct = total ? doneN / total : 0;
+  renderGauge(pct, total ? Math.min(8, total) : 4);
+  $('#gauge-label').textContent = !total ? 'nessuna attività oggi' : doneN === total ? 'tutto fatto, bravo' : `${doneN} di ${total} attività fatte`;
+  $('#gauge-sub').textContent = total && p.free > 0 ? `Ti restano ${durLabel(p.free)} liberi oggi` : '';
 
-  // carta "Adesso"
   const cur = currentBlock(), nxt = nextBlock();
   const missed = (p.missed || [])[0];
+  const isTask = (b) => b.item.kind === 'task' && !String(b.id).startsWith('rec:');
+  // "Poi": la prossima cosa dopo quella mostrata
+  const after = (b) => p.blocks.find((x) => x.type !== 'done' && x.start >= (b ? b.end : n) && x !== b);
+  const poi = (b) => {
+    const x = after(b);
+    return x ? `<button class="now-next" data-item="${esc(x.id)}"><span>Poi</span><b>${esc(x.item.title)}</b><span>${fmtMin(x.start)}</span></button>` : '';
+  };
   let html;
   if (cur) {
     const it = cur.item;
-    const isTask = it.kind === 'task' && !String(cur.id).startsWith('rec:');
     const prog = Math.max(0, Math.min(1, (n - cur.start) / Math.max(1, cur.end - cur.start)));
     const doing = it.status === 'doing';
-    html = `<div class="now${isTask ? '' : ' event'}" data-item="${esc(cur.id)}">
-      ${isTask ? `<button class="play${doing ? '' : ' pulse'}" data-now="${doing ? 'complete' : 'start'}" data-id="${esc(it.id)}" aria-label="${doing ? 'Segna come fatta' : 'Inizia'}">${doing ? ICONS.check : ICONS.play}</button>`
-        : `<div class="play" aria-hidden="true">${ICONS.ev.replace('currentColor', '#fff')}</div>`}
-      <div class="now-body">
-        <div class="now-title">${esc(it.title)}</div>
-        <div class="now-meta"><span>fino alle ${fmtMin(cur.end)}</span><i></i><span>${durLabel(Math.max(1, cur.end - n))} rimasti</span>${it.priority === 3 ? '<i></i><span>alta priorità</span>' : ''}</div>
-        <div class="now-bar"><i style="width:${Math.round(prog * 100)}%"></i></div>
+    const lead = isTask(cur)
+      ? `<button class="play${doing ? '' : ' pulse'}" data-now="${doing ? 'complete' : 'start'}" data-id="${esc(it.id)}" aria-label="${doing ? 'Segna come fatta' : 'Inizia'}">${doing ? ICONS.check : ICONS.play}</button>`
+      : `<span class="now-ico" aria-hidden="true">${ICONS.ev}</span>`;
+    html = `<div class="now${isTask(cur) ? '' : ' event'}">
+      <span class="now-tag">${isTask(cur) ? (doing ? 'In corso' : 'Adesso') : 'Impegno fisso'}</span>
+      <div class="now-main" data-item="${esc(cur.id)}">
+        ${lead}
+        <div class="now-body">
+          <div class="now-title">${esc(it.title)}</div>
+          <div class="now-meta"><span>fino alle ${fmtMin(cur.end)}</span><i></i><span>${durLabel(Math.max(1, cur.end - n))} rimasti</span></div>
+          <div class="now-bar"><i style="width:${Math.round(prog * 100)}%"></i></div>
+        </div>
       </div>
+      ${isTask(cur) ? `<div class="now-hint">${doing ? 'Tocca ✓ quando hai finito' : 'Tocca ▶ quando inizi'}</div>` : ''}
+      ${poi(cur)}
     </div>`;
   } else if (missed) {
     html = `<div class="now calm">
+      <span class="now-tag">Da confermare</span>
       <div class="now-body">
-        <div class="eyebrow" style="text-transform:none">Era previsto alle ${fmtMin(missed.start)}</div>
-        <div class="now-title">Com'è andata con «${esc(missed.item.title)}»?</div>
-        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary" data-now="complete" data-id="${esc(missed.item.id)}">Fatto</button><button class="btn" data-now="notyet" data-id="${esc(missed.item.id)}">Non ancora</button></div>
+        <div class="now-title">Hai fatto «${esc(missed.item.title)}»?</div>
+        <div class="now-meta"><span>era previsto alle ${fmtMin(missed.start)}</span></div>
+        <div class="now-actions"><button class="btn primary" data-now="complete" data-id="${esc(missed.item.id)}">Sì, fatto</button><button class="btn" data-now="notyet" data-id="${esc(missed.item.id)}">Non ancora</button></div>
       </div>
     </div>`;
   } else if (nxt) {
     const it = nxt.item;
-    const isTask = it.kind === 'task' && !String(nxt.id).startsWith('rec:');
-    html = `<div class="now calm" data-item="${esc(nxt.id)}">
-      <div class="now-body">
-        <div class="eyebrow" style="text-transform:none">Tra ${durLabel(nxt.start - n)} · alle ${fmtMin(nxt.start)}</div>
-        <div class="now-title">${esc(it.title)}</div>
-        ${isTask ? `<button class="now-cta" data-now="start" data-id="${esc(it.id)}">${ICONS.play} Inizia ora</button>` : ''}
+    html = `<div class="now calm">
+      <span class="now-tag">Tra ${durLabel(nxt.start - n)}</span>
+      <div class="now-main" data-item="${esc(nxt.id)}">
+        <span class="now-ico" aria-hidden="true">${ICONS[kindOf(it)]}</span>
+        <div class="now-body">
+          <div class="now-title">${esc(it.title)}</div>
+          <div class="now-meta"><span>alle ${fmtMin(nxt.start)}</span><i></i><span>${durLabel(nxt.end - nxt.start)}</span></div>
+        </div>
       </div>
+      ${isTask(nxt) ? `<div class="now-actions"><button class="btn primary" data-now="start" data-id="${esc(it.id)}">Inizia adesso</button></div>` : ''}
+      ${poi(nxt)}
     </div>`;
   } else {
-    html = `<button class="now calm" data-goto="chat" data-focus="1">
-      <div class="now-body">
-        <div class="now-title">${state.items.length ? 'Niente altro in programma' : 'Giornata da organizzare'}</div>
-        <div class="now-meta" style="color:var(--ink-2)">${p.unscheduled.length ? `${p.unscheduled.length} attività non entrano: chiedimi cosa rimandare` : 'Dimmi cosa vuoi fare e la organizzo io'}</div>
-      </div>
+    html = `<button class="now calm empty-now" data-goto="chat" data-focus="1">
+      <span class="now-tag">${state.items.length ? 'Per oggi hai finito' : 'Giornata vuota'}</span>
+      <div class="now-title">${state.items.length ? 'Niente altro in programma' : 'Cosa vuoi fare oggi?'}</div>
+      <div class="now-meta"><span>Scrivimelo in Parla e la organizzo io →</span></div>
     </button>`;
   }
-  const key = html.match(/data-(?:item|id)="([^"]+)"/)?.[1] + (cur?.item.status || '');
+  const key = (cur?.id || missed?.item.id || nxt?.id || 'none') + (cur?.item.status || '');
   if (key === lastNowKey) html = html.replace(/class="now/, 'class="still now');
   lastNowKey = key;
   $('#now-card').innerHTML = html;
-  renderStack();
-}
 
-// ---- carte delle prossime attività
-function upcomingCards() {
-  const t = today(), tm = addDays(t, 1), n = nowMin();
-  const cur = currentBlock();
-  // se non c'è niente in corso, la prossima attività è già nella carta "Adesso"
-  const shown = cur || (plan[t]?.missed?.length ? null : nextBlock());
-  const list = [];
-  for (const b of plan[t]?.blocks || []) if (b.type !== 'done' && b.start > n && b !== shown) list.push({ b, day: t });
-  if (list.length < 5) for (const b of plan[tm]?.blocks || []) if (b.type !== 'done' && list.length < 6) list.push({ b, day: tm });
-  return list.slice(0, 6);
-}
-
-function renderStack() {
-  const el = $('#stack');
-  const cards = upcomingCards();
-  if (!cards.length) {
-    el.style.height = 'auto';
-    el.innerHTML = `<div class="stack-empty glass"><b>Tutto libero</b>Niente in programma per oggi e domani.</div>`;
-    return;
-  }
-  el.style.height = '';
-  const N = cards.length;
-  stackIdx = ((stackIdx % N) + N) % N;
-  const t = today();
-  el.innerHTML = cards.map(({ b, day }, i) => {
-    const it = b.item;
-    const k = kindOf(it);
-    const when = `${day === t ? '' : 'domani '}${fmtMin(b.start)}`;
-    return `<button class="scard ${k}" data-i="${i}" data-item="${esc(b.id)}">
-      <div class="sc-top"><span class="sc-ico">${ICONS[k]}</span><span class="sc-when">${when}</span></div>
-      <div class="sc-title">${esc(it.title)}</div>
-      <div class="sc-meta"><span>${durLabel(b.end - b.start)}${it.durationEstimated ? ' · stima' : ''}</span>${it.priority === 3 ? '<i></i><span>alta priorità</span>' : ''}${it.kind === 'event' ? '<i></i><span>impegno fisso</span>' : ''}</div>
-    </button>`;
-  }).join('') + (N > 1 ? `<div class="stack-dots" style="position:absolute;left:0;right:0;bottom:0">${cards.map((_, i) => `<i class="${i === stackIdx ? 'on' : ''}"></i>`).join('')}</div>` : '');
-  layoutStack();
-}
-
-function layoutStack() {
-  const cards = [...document.querySelectorAll('#stack .scard')];
-  const N = cards.length;
-  cards.forEach((c) => {
-    const d = (((+c.dataset.i - stackIdx) % N) + N) % N;
-    const tf = [
-      'translate(0,0) rotate(0deg) scale(1)',
-      'translate(-12px,-24px) rotate(-6deg) scale(.93)',
-      'translate(14px,-42px) rotate(5deg) scale(.86)',
-    ][Math.min(d, 2)];
-    c.style.transform = tf;
-    c.style.zIndex = String(N - d);
-    c.style.opacity = d > 2 ? '0' : '1';
-    c.style.filter = d === 0 ? '' : `brightness(${1 - d * 0.18})`;
-    c.style.pointerEvents = d === 0 ? '' : 'none';
-    c.dataset.front = d === 0 ? '1' : '';
-  });
-  document.querySelectorAll('#stack .stack-dots i').forEach((dot, i) => dot.classList.toggle('on', i === stackIdx));
-}
-
-function bindStack() {
-  const el = $('#stack');
-  let drag = null;
-  el.addEventListener('pointerdown', (e) => {
-    const c = e.target.closest('.scard');
-    if (!c || !c.dataset.front) return;
-    drag = { c, x: e.clientX, y: e.clientY, t: Date.now(), dx: 0, moved: false };
-    c.classList.add('dragging');
-    c.setPointerCapture?.(e.pointerId);
-  });
-  el.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    drag.dx = e.clientX - drag.x;
-    if (Math.abs(drag.dx) > 6) drag.moved = true;
-    drag.c.style.transform = `translate(${drag.dx}px, ${Math.abs(drag.dx) * -0.08}px) rotate(${drag.dx / 16}deg)`;
-  });
-  const end = () => {
-    if (!drag) return;
-    const { c, dx, moved } = drag;
-    drag = null;
-    c.classList.remove('dragging');
-    const N = document.querySelectorAll('#stack .scard').length;
-    if (Math.abs(dx) > 70 && N > 1) {
-      // la carta vola via e torna in fondo al mazzo
-      c.style.transform = `translate(${dx > 0 ? 130 : -130}%, -20px) rotate(${dx > 0 ? 24 : -24}deg)`;
-      c.style.opacity = '0';
-      setTimeout(() => { stackIdx = (stackIdx + 1) % N; layoutStack(); }, 220);
-    } else if (!moved) {
-      openSheet(c.dataset.item);
-      layoutStack();
-    } else layoutStack();
-  };
-  el.addEventListener('pointerup', end);
-  el.addEventListener('pointercancel', end);
-  // il click lo gestisce già pointerup
-  el.addEventListener('click', (e) => { if (e.target.closest('.scard')) e.preventDefault(); });
+  // un solo avviso, solo se richiede un'azione
+  const issues = p.conflicts.length ? `${p.conflicts.length === 1 ? 'Un conflitto' : p.conflicts.length + ' conflitti'} tra impegni`
+    : p.unscheduled.length ? `${p.unscheduled.length === 1 ? '1 attività non entra' : p.unscheduled.length + ' attività non entrano'} oggi` : '';
+  $('#home-alert').innerHTML = issues ? `<button class="home-alert" data-goto="day"><i></i><span>${issues}</span><b>Risolvi →</b></button>` : '';
 }
 
 function moveTabIndicator() {
@@ -685,7 +617,12 @@ function openSheet(id, preset = {}) {
   if (isNew) setTimeout(() => $('#sheet-form .title-input').focus(), 250);
 }
 function showSheet() { $('#sheet').hidden = false; $('#sheet-backdrop').hidden = false; }
-function closeSheet() { $('#sheet').hidden = true; $('#sheet-backdrop').hidden = true; }
+function closeSheet() {
+  const sh = $('#sheet'), bd = $('#sheet-backdrop');
+  if (sh.hidden) return;
+  sh.classList.add('closing'); bd.classList.add('closing');
+  setTimeout(() => { sh.hidden = true; bd.hidden = true; sh.classList.remove('closing'); bd.classList.remove('closing'); }, 260);
+}
 
 function readSheet() {
   const f = $('#sheet-form');
@@ -903,7 +840,8 @@ function toast(text, action) {
   el.hidden = false;
   if (action) el.querySelector('button').onclick = () => { el.hidden = true; action.fn(); };
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, action ? 5000 : 2200);
+  el.classList.remove('out');
+  toastTimer = setTimeout(() => { el.classList.add('out'); setTimeout(() => { el.hidden = true; el.classList.remove('out'); }, 220); }, action ? 5000 : 2200);
 }
 const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
 
@@ -914,13 +852,14 @@ function setView(v) {
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
   moveTabIndicator();
   if (v === 'home') renderHome();
-  if (v === 'day') { renderDay(); requestAnimationFrame(scrollToNow); }
-  if (v === 'settings') { renderSettings(); ensureFreeModels(); }
+  if (v === 'day') { renderDay(); animateIn($('#timeline-wrap')); requestAnimationFrame(scrollToNow); }
+  if (v === 'settings') { renderSettings(); animateIn($('#settings')); ensureFreeModels(); }
   if (v === 'chat') renderChat();
 }
 
 function renderAll() {
-  if (view === 'home') renderHome(); else $('#undo-btn').disabled = !canUndo();
+  if (view === 'home') renderHome();
+  $('#undo-btn').disabled = !canUndo();
   renderComposer();
   const mode = aiMode();
   $('#chat-mode').textContent = { claude: 'Claude', online: (ONLINE_PRESETS[presetOf(state.settings)]?.label || 'Online') + ' · gratis', local: 'Sul telefono · gratis', base: 'Modalità base' }[mode];
@@ -933,7 +872,8 @@ function renderAll() {
 function bind() {
   $('#tabbar').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setView(b.dataset.view); });
   $('#undo-btn').addEventListener('click', () => doUndo());
-  $('#fab').addEventListener('click', () => openSheet(null));
+  // dalla Giornata aggiunge al giorno che stai guardando, altrove a oggi
+  $('#fab').addEventListener('click', () => { if (view !== 'day') selDay = today(); openSheet(null); });
   window.addEventListener('resize', moveTabIndicator);
   // collegamenti tra le viste (avatar, "Vedi giornata", "Parla con Tempo"…)
   document.addEventListener('click', (e) => {
@@ -956,8 +896,8 @@ function bind() {
     const c = e.target.closest('[data-item]');
     if (c) openSheet(c.dataset.item);
   });
-  bindStack();
-  $('#add-btn').addEventListener('click', () => openSheet(null));
+  $('#home-alert').addEventListener('click', () => { selDay = today(); });
+
 
   const input = $('#input');
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(132, input.scrollHeight) + 'px'; };
@@ -983,7 +923,7 @@ function bind() {
     if (b.dataset.act === 'undo') doUndo(b.dataset.id);
   });
 
-  $('#days').addEventListener('click', (e) => { const b = e.target.closest('[data-day]'); if (b) { selDay = b.dataset.day; renderDay(); $('#timeline-wrap').scrollTop = 0; if (selDay === today()) requestAnimationFrame(scrollToNow); } });
+  $('#days').addEventListener('click', (e) => { const b = e.target.closest('[data-day]'); if (b) { selDay = b.dataset.day; renderDay(); animateIn($('#timeline-wrap')); $('#timeline-wrap').scrollTop = 0; if (selDay === today()) requestAnimationFrame(scrollToNow); } });
   $('#timeline').addEventListener('click', (e) => { const b = e.target.closest('[data-item]'); if (b) openSheet(b.dataset.item); });
   $('#notices').addEventListener('click', (e) => {
     const b = e.target.closest('button');
@@ -1059,7 +999,8 @@ function bind() {
   const vv = window.visualViewport;
   const fit = () => {
     if (!vv) return;
-    document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+    if (vv.height < window.innerHeight - 80) document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+    else document.documentElement.style.removeProperty('--vvh');
     window.scrollTo(0, 0);
   };
   vv?.addEventListener('resize', fit);
