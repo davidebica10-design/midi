@@ -1,7 +1,7 @@
 import { planDays, updateAnchors, diffPlans, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel } from './store.js';
 import { runTurn, localParse, MODELS } from './ai.js';
-import { runOpenTurn, preloadLocal, listFreeModels, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
+import { runOpenTurn, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -39,7 +39,7 @@ function aiMode() {
   const S = state.settings;
   const p = S.provider || (S.apiKey ? 'claude' : 'base');
   if (p === 'claude') return S.apiKey ? 'claude' : 'base';
-  if (p === 'online') return S.openBaseUrl && (S.openModel || S.openBaseUrl.includes('openrouter.ai')) ? 'online' : 'base';
+  if (p === 'online') return S.openBaseUrl && (S.openModel || presetOf(S) !== 'custom') ? 'online' : 'base';
   if (p === 'local') return 'local';
   return 'base';
 }
@@ -164,8 +164,9 @@ function errorText(e) {
   if (e?.code === 'webgpu') return 'Questo iPhone non può far girare modelli in locale: serve Safari con WebGPU (iOS 26 o successivo). Aggiorna iOS oppure scegli «Modello open online» in Memoria → Assistente AI.';
   if (aiMode() === 'local' && /memory|out of memory|device lost|allocation/i.test(e?.message || '')) return 'Il modello è troppo pesante per la memoria del telefono. Scegli un modello più piccolo in Memoria → Assistente AI.';
   if (aiMode() === 'local' && /fetch|network|load/i.test(e?.message || '')) return 'Non riesco a scaricare il modello: controlla la connessione (meglio il Wi-Fi) e riprova. Dopo il primo download funziona anche offline.';
-  if (aiMode() === 'online' && !state.settings.openKey && (st === 401 || st === 403)) return 'Manca la chiave del servizio online: creala gratis su openrouter.ai (Settings → Keys) e incollala in Memoria → Assistente AI.';
-  if (aiMode() === 'online' && st === 401) return 'La chiave del servizio online non è valida. Controllala in Memoria → Assistente AI.';
+  const svc = ONLINE_PRESETS[presetOf(state.settings)]?.label || 'servizio online';
+  if (e?.code === 'nokey') return `Manca la chiave di ${svc}. Creala gratis e incollala in Memoria → Assistente AI (lì trovi i passaggi).`;
+  if (e?.code === 'badkey' || (aiMode() === 'online' && st === 401)) return `${svc} non accetta la chiave (${e.message}). Ricopiala per intero in Memoria → Assistente AI e tocca «Prova».`;
   if (e?.code === 'nofree') return e.message + ' Riprova tra qualche minuto: i modelli gratuiti a volte sono sovraccarichi.';
   if (aiMode() === 'online' && (st === 404 || st === 400)) return 'Il servizio non riconosce il modello indicato (' + (e.message || '') + '). Controlla il nome del modello in Memoria → Assistente AI.';
   if (st === 401) return 'La chiave API non è valida. Controllala in Memoria → Assistente AI.';
@@ -526,6 +527,8 @@ function renderSettings() {
   const P = state.prefs, S = state.settings;
   const st = computeStats(state);
   const prov = S.provider || (S.apiKey ? 'claude' : 'base');
+  const preset = presetOf(S);
+  const listed = S.freeModelsPreset === preset || (!S.freeModelsPreset && preset === 'openrouter') ? (S.freeModels || []) : [];
   const wd = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
   $('#settings').innerHTML = `
     <div class="group"><h2>Come stai andando</h2>
@@ -573,21 +576,27 @@ function renderSettings() {
         <div class="row"><label for="local-model">Modello</label><select id="local-model">${LOCAL_MODELS.map((m) => `<option value="${m.id}" ${(S.localModel || LOCAL_MODELS[0].id) === m.id ? 'selected' : ''}>${m.label}</option>`).join('')}</select></div>
         <div class="row"><span class="lbl" id="local-status">${!webgpuAvailable() ? '✗ Questo Safari non supporta WebGPU: serve iOS 26 o successivo' : localModelLoaded(S.localModel || LOCAL_MODELS[0].id) ? '✓ Modello pronto' : 'Il modello si scarica la prima volta che lo usi'}</span><button class="btn" id="local-preload" ${webgpuAvailable() ? '' : 'disabled'}>Prepara ora</button></div>` : ''}
         ${prov === 'online' ? `
-        <div class="row"><label for="open-preset">Servizio</label><select id="open-preset">${Object.entries(ONLINE_PRESETS).map(([k, p]) => `<option value="${k}" ${(S.openPreset || 'openrouter') === k ? 'selected' : ''}>${p.label}</option>`).join('')}</select></div>
-        <div class="row"><input type="password" id="open-key" placeholder="Chiave gratuita del servizio" value="${esc(S.openKey || '')}" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-        ${(S.openPreset || 'openrouter') === 'openrouter' ? `
-        <div class="row"><label for="open-model-sel">Modello<small>${S.lastWorkingModel ? 'in uso: ' + esc(S.lastWorkingModel) : S.freeModels?.length ? S.freeModels.length + ' modelli gratuiti disponibili' : 'carico l\'elenco…'}</small></label><select id="open-model-sel">
+        <div class="row"><label for="open-preset">Servizio</label><select id="open-preset">${Object.entries(ONLINE_PRESETS).map(([k, p]) => `<option value="${k}" ${preset === k ? 'selected' : ''}>${p.label}</option>`).join('')}</select></div>
+        <div class="row"><input type="password" id="open-key" placeholder="${preset === 'gemini' ? 'Chiave Gemini (AIza…)' : preset === 'openrouter' ? 'Chiave OpenRouter (sk-or-v1-…)' : 'Chiave del servizio'}" value="${esc(S.openKey || '')}" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        ${preset !== 'custom' ? `
+        <div class="row"><label for="open-model-sel">Modello<small>${S.lastWorkingModel && S.lastWorkingPreset === preset ? 'funziona: ' + esc(S.lastWorkingModel) : listed.length ? listed.length + ' modelli disponibili' : S.openKey || preset === 'openrouter' ? 'carico l\'elenco…' : 'inserisci la chiave'}</small></label><select id="open-model-sel">
           <option value="" ${!S.openModel ? 'selected' : ''}>Automatico (consigliato)</option>
-          ${(S.freeModels || []).map((m) => `<option value="${esc(m.id)}" ${S.openModel === m.id ? 'selected' : ''}>${esc(m.name.replace(/\s*\(free\)\s*$/i, ''))}</option>`).join('')}
-          ${S.openModel && !(S.freeModels || []).some((m) => m.id === S.openModel) ? `<option value="${esc(S.openModel)}" selected>${esc(S.openModel)}</option>` : ''}
+          ${listed.map((m) => `<option value="${esc(m.id)}" ${S.openModel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
+          ${S.openModel && !listed.some((m) => m.id === S.openModel) ? `<option value="${esc(S.openModel)}" selected>${esc(S.openModel)}</option>` : ''}
         </select></div>` : `
-        <div class="row"><input type="text" class="wide" id="open-model" placeholder="Nome del modello" value="${esc(S.openModel || '')}" autocapitalize="off" spellcheck="false"></div>`}
-        <div class="row"><input type="text" class="wide" id="open-url" placeholder="Indirizzo API (https://…/v1)" value="${esc(S.openBaseUrl || '')}" autocapitalize="off" spellcheck="false" inputmode="url"></div>` : ''}
+        <div class="row"><input type="text" class="wide" id="open-model" placeholder="Nome del modello" value="${esc(S.openModel || '')}" autocapitalize="off" spellcheck="false"></div>
+        <div class="row"><input type="text" class="wide" id="open-url" placeholder="Indirizzo API (https://…/v1)" value="${esc(S.openBaseUrl || '')}" autocapitalize="off" spellcheck="false" inputmode="url"></div>`}
+        <div class="row"><span class="lbl" id="open-status">${S.lastWorkingModel && S.lastWorkingPreset === preset ? '✓ Ultima prova riuscita' : 'Controlla che chiave e modello funzionino'}</span><button class="btn" id="open-test">Prova</button></div>` : ''}
       </div>
       <p class="note">${{
         base: 'Senza AI la chat capisce solo frasi semplici. Pianificazione, timeline e annullamento funzionano comunque.',
         local: 'Il modello gira interamente sul tuo iPhone: gratis, privato e anche offline. Il primo avvio scarica il modello (circa 1 GB, meglio con il Wi-Fi). È meno intelligente di un modello grande: per le frasi più complesse può sbagliare, ma ogni modifica si può annullare.',
-        online: `Modelli open gratuiti su un servizio esterno: più capaci di quelli sul telefono, serve la connessione. ${(() => { const pr = ONLINE_PRESETS[S.openPreset || 'openrouter']; return pr.keyUrl ? `Crea una chiave gratuita su <a href="${pr.keyUrl}" target="_blank" rel="noopener">${pr.label}</a>.` : ''; })()} ${(S.openPreset || 'openrouter') === 'openrouter' ? 'Con «Automatico» l\'app usa il miglior modello gratuito disponibile e, se uno non risponde, passa da sola al successivo.' : ''} I servizi gratuiti hanno limiti giornalieri e possono usare i messaggi per migliorare i loro modelli.`,
+        online: ({
+          gemini: 'Gratis, senza carta di credito. Per la chiave: apri <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>, accedi con il tuo account Google, tocca <b>Create API key</b> (o «Crea chiave API»), copiala e incollala qui sopra, poi tocca <b>Prova</b>. Con «Automatico» l\'app sceglie il modello Gemini migliore e, se uno non risponde, passa al successivo. Nel piano gratuito Google può usare i messaggi per migliorare i suoi modelli.',
+          openrouter: 'Crea una chiave su <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai</a> senza limite di credito. I modelli gratuiti di OpenRouter cambiano spesso e hanno limiti giornalieri bassi: con «Automatico» l\'app passa da sola al successivo se uno non risponde.',
+          groq: 'Crea una chiave gratuita su <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com</a>, incollala qui sopra e tocca <b>Prova</b>.',
+          custom: 'Qualsiasi servizio compatibile con l\'API OpenAI: indica indirizzo, modello e chiave.',
+        })[preset],
         claude: 'La chiave resta solo su questo iPhone e viene inviata soltanto ad api.anthropic.com. La crei su <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a>. L\'uso dell\'API si paga a parte, non è incluso negli abbonamenti Claude.',
       }[prov]}</p>
     </div>
@@ -604,14 +613,16 @@ function renderSettings() {
 }
 
 let fetchingModels = false;
-function ensureFreeModels() {
+function ensureFreeModels(force) {
   const S = state.settings;
   const prov = S.provider || (S.apiKey ? 'claude' : 'base');
-  if (prov !== 'online' || (S.openPreset || 'openrouter') !== 'openrouter' || fetchingModels) return;
-  if (S.freeModels?.length && Date.now() - (S.freeModelsAt || 0) < 864e5) return;
+  const preset = presetOf(S);
+  if (prov !== 'online' || preset === 'custom' || fetchingModels) return;
+  if (preset !== 'openrouter' && !S.openKey) return;
+  if (!force && S.freeModelsPreset === preset && S.freeModels?.length && Date.now() - (S.freeModelsAt || 0) < 6 * 36e5) return;
   fetchingModels = true;
-  listFreeModels(S.openBaseUrl || undefined)
-    .then((list) => { S.freeModels = list.slice(0, 30); S.freeModelsAt = Date.now(); save(state); if (view === 'settings') renderSettings(); })
+  listModels(preset, S.openBaseUrl, S.openKey)
+    .then((list) => { S.freeModels = list.slice(0, 40); S.freeModelsAt = Date.now(); S.freeModelsPreset = preset; save(state); if (view === 'settings') renderSettings(); })
     .catch(() => {})
     .finally(() => { fetchingModels = false; });
 }
@@ -636,19 +647,23 @@ function onSettingsChange(e) {
     const S = state.settings;
     S.provider = t.value;
     if (t.value === 'online' && !S.openBaseUrl) {
-      const pr = ONLINE_PRESETS[S.openPreset || 'openrouter'];
-      Object.assign(S, { openPreset: S.openPreset || 'openrouter', openBaseUrl: pr.baseUrl, openModel: pr.model });
+      const k = S.openPreset || DEFAULT_PRESET;
+      Object.assign(S, { openPreset: k, openBaseUrl: ONLINE_PRESETS[k].baseUrl, openModel: '' });
     }
     save(state); renderSettings(); renderComposer(); ensureFreeModels();
   } else if (t.id === 'open-preset') {
     const pr = ONLINE_PRESETS[t.value];
-    Object.assign(state.settings, { openPreset: t.value, openBaseUrl: pr.baseUrl, openModel: pr.model });
-    save(state); renderSettings();
+    // cambiando servizio la chiave precedente non vale più
+    Object.assign(state.settings, { openPreset: t.value, openBaseUrl: pr.baseUrl, openModel: '', openKey: '', lastWorkingModel: null, freeModels: [], freeModelsPreset: null, badModels: {} });
+    save(state); renderSettings(); renderComposer(); ensureFreeModels();
   } else if (t.id === 'open-key' || t.id === 'open-model' || t.id === 'open-url') {
     const k = { 'open-key': 'openKey', 'open-model': 'openModel', 'open-url': 'openBaseUrl' }[t.id];
-    state.settings[k] = t.value.trim();
+    // le chiavi copiate a volte si portano dietro spazi o a capo
+    state.settings[k] = t.id === 'open-key' ? t.value.replace(/\s+/g, '') : t.value.trim();
+    if (t.id === 'open-key') Object.assign(state.settings, { lastWorkingModel: null, badModels: {} });
     save(state); renderComposer();
     toast('Salvato');
+    if (t.id === 'open-key') ensureFreeModels(true);
   } else if (t.id === 'open-model-sel') {
     state.settings.openModel = t.value; state.settings.lastWorkingModel = null; save(state); renderSettings();
   } else if (t.id === 'local-model') {
@@ -778,6 +793,14 @@ function bind() {
     if (t.dataset.forget) commit('Memoria', () => { state.memory = state.memory.filter((m) => m.id !== t.dataset.forget); });
     if (t.dataset.delrec && confirm('Eliminare l\'impegno ricorrente?')) commit('Elimina ricorrenza', () => { state.recurring = state.recurring.filter((x) => x.id !== t.dataset.delrec); });
     if (t.id === 'mem-add') addMemory();
+    if (t.id === 'open-test') {
+      const status = $('#open-status');
+      t.disabled = true;
+      if (status) status.textContent = 'Provo…';
+      testOnline(state.settings)
+        .then(({ model }) => { save(state); renderSettings(); toast('Funziona: ' + model); })
+        .catch((err) => { save(state); renderSettings(); const st2 = $('#open-status'); if (st2) st2.textContent = '✗ ' + errorText(err); });
+    }
     if (t.id === 'local-preload') {
       t.disabled = true;
       const status = $('#local-status');

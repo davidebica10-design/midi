@@ -1,5 +1,5 @@
-// Modelli open e gratuiti: in locale sull'iPhone (WebLLM + WebGPU) oppure tramite un
-// servizio compatibile con l'API OpenAI (OpenRouter, Groq, …).
+// Modelli gratuiti: in locale sull'iPhone (WebLLM + WebGPU) oppure tramite un servizio
+// compatibile con l'API OpenAI (Google Gemini, OpenRouter, Groq, …).
 // I modelli piccoli non usano strumenti: rispondono con un JSON che il codice valida.
 import { fmtMin, dateKey, addDays } from './scheduler.js';
 import { localParse } from './ai.js';
@@ -11,25 +11,65 @@ export const LOCAL_MODELS = [
 ];
 
 export const ONLINE_PRESETS = {
+  gemini: { label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: '', keyUrl: 'https://aistudio.google.com/apikey' },
   openrouter: { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: '', keyUrl: 'https://openrouter.ai/settings/keys' },
-  groq: { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', keyUrl: 'https://console.groq.com/keys' },
+  groq: { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: '', keyUrl: 'https://console.groq.com/keys' },
   custom: { label: 'Altro (compatibile OpenAI)', baseUrl: '', model: '', keyUrl: '' },
 };
+export const DEFAULT_PRESET = 'gemini';
 
-// Preferenze tra i modelli gratuiti: prima quelli grandi e bravi a seguire istruzioni
-const FREE_PREF = [/llama-3\.3-70b/, /deepseek-(chat|v3)/, /qwen.*(235b|72b|32b)/, /gpt-oss-120b/, /llama-4-maverick/, /gemma-3-27b/, /mistral-small/, /llama-4/, /qwen/, /gemma/];
+export const presetOf = (S) => S.openPreset || (S.openBaseUrl?.includes('openrouter.ai') ? 'openrouter' : S.openBaseUrl ? 'custom' : DEFAULT_PRESET);
 
-/** Elenco aggiornato dei modelli gratuiti di OpenRouter, dal migliore. */
-export async function listFreeModels(base = ONLINE_PRESETS.openrouter.baseUrl) {
-  const r = await fetch(`${base.replace(/\/+$/, '')}/models`);
-  if (!r.ok) throw new Error(`elenco modelli non disponibile (${r.status})`);
-  const j = await r.json();
-  const isFree = (m) => m.id.endsWith(':free') || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0);
-  const textOut = (m) => !m.architecture?.output_modalities || m.architecture.output_modalities.includes('text');
-  const free = (j.data || []).filter((m) => m.id && !m.id.startsWith('openrouter/') && isFree(m) && textOut(m) && (m.context_length || 0) >= 8000);
-  const rank = (m) => { const i = FREE_PREF.findIndex((re) => re.test(m.id)); return i < 0 ? 99 : i; };
-  return free.sort((a, b) => rank(a) - rank(b) || (b.context_length || 0) - (a.context_length || 0)).map((m) => ({ id: m.id, name: m.name || m.id }));
+// Modelli di riserva se l'elenco non è raggiungibile
+const FALLBACK_MODELS = {
+  gemini: ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'],
+  openrouter: [],
+  groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
+  custom: [],
+};
+
+// Preferenze tra i modelli gratuiti di OpenRouter: prima quelli grandi e bravi a seguire istruzioni
+const FREE_PREF = [/deepseek-(chat|v3)/, /qwen.*(235b|72b|32b)/, /gpt-oss-120b/, /llama-3\.3-70b/, /llama-4-maverick/, /gemma-3-27b/, /mistral-small/, /llama-4/, /qwen/, /gemma/];
+
+function rankGemini(id) {
+  // flash prima (veloce e con limiti gratuiti ampi), poi flash-lite, poi pro; versioni più recenti prima
+  const tier = /flash-lite/.test(id) ? 1 : /flash/.test(id) ? 0 : /pro/.test(id) ? 2 : 3;
+  const v = +(id.match(/gemini-(\d+(?:\.\d+)?)/)?.[1] || (/latest/.test(id) ? 99 : 0));
+  const unstable = /preview|exp/.test(id) ? 1 : 0;
+  return [tier, unstable, -v];
 }
+const cmp = (x, y) => { for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
+
+/** Elenco dei modelli utilizzabili del servizio, dal migliore. */
+export async function listModels(preset, base, key) {
+  base = (base || ONLINE_PRESETS[preset]?.baseUrl || '').replace(/\/+$/, '');
+  if (!base || preset === 'custom') return [];
+  const r = await fetch(`${base}/models`, key && preset !== 'openrouter' ? { headers: { Authorization: `Bearer ${key}` } } : undefined);
+  const j = await r.json().catch(() => ({}));
+  const err = Array.isArray(j) ? j[0]?.error : j?.error;
+  if (!r.ok || err) throw Object.assign(new Error(err?.message || `elenco modelli non disponibile (${r.status})`), { status: r.status });
+  const data = (j.data || []).map((m) => ({ ...m, id: String(m.id || '').replace(/^models\//, '') })).filter((m) => m.id);
+  if (preset === 'openrouter') {
+    const isFree = (m) => m.id.endsWith(':free') || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0);
+    const textOut = (m) => !m.architecture?.output_modalities || m.architecture.output_modalities.includes('text');
+    const free = data.filter((m) => !m.id.startsWith('openrouter/') && isFree(m) && textOut(m) && (m.context_length || 0) >= 8000);
+    const rank = (m) => { const i = FREE_PREF.findIndex((re) => re.test(m.id)); return i < 0 ? 99 : i; };
+    return free.sort((a, b) => rank(a) - rank(b) || (b.context_length || 0) - (a.context_length || 0)).map((m) => ({ id: m.id, name: (m.name || m.id).replace(/\s*\(free\)\s*$/i, '') }));
+  }
+  if (preset === 'gemini') {
+    const ok = data.filter((m) => /^gemini/.test(m.id) && !/embedding|image|tts|audio|live|vision|computer|robotics|native|thinking|learnlm|aqa/.test(m.id));
+    return ok.sort((a, b) => cmp(rankGemini(a.id), rankGemini(b.id))).map((m) => ({ id: m.id, name: m.display_name || m.id }));
+  }
+  if (preset === 'groq') {
+    const ok = data.filter((m) => m.active !== false && !/whisper|tts|guard|playai|orpheus|prompt/.test(m.id));
+    const pref = [/llama-3\.3-70b/, /gpt-oss-120b/, /llama-4/, /qwen/, /kimi/, /gpt-oss/, /llama/];
+    const rank = (m) => { const i = pref.findIndex((re) => re.test(m.id)); return i < 0 ? 99 : i; };
+    return ok.sort((a, b) => rank(a) - rank(b)).map((m) => ({ id: m.id, name: m.id }));
+  }
+  return [];
+}
+/** Compatibilità con la versione precedente. */
+export const listFreeModels = (base) => listModels('openrouter', base);
 
 const WD = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
 
@@ -197,70 +237,7 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
     }
     content = res.choices?.[0]?.message?.content;
   } else {
-    const base = (S.openBaseUrl || '').replace(/\/+$/, '');
-    if (!base) throw new Error('Manca l\'indirizzo del servizio');
-    const call = async (model, json) => {
-      const r = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        signal,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(S.openKey ? { Authorization: `Bearer ${S.openKey}` } : {}),
-          ...(base.includes('openrouter.ai') ? { 'X-Title': 'Tempo' } : {}),
-        },
-        body: JSON.stringify({
-          model, messages, temperature: 0.2, max_tokens: 1200,
-          ...(json ? { response_format: { type: 'json_object' } } : {}),
-        }),
-      });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok || body?.error) throw Object.assign(new Error(body?.error?.message || `errore ${r.status}`), { status: r.ok ? body?.error?.code || 500 : r.status });
-      const c = body.choices?.[0]?.message?.content;
-      if (!c) throw Object.assign(new Error('risposta vuota'), { status: 502 });
-      return c;
-    };
-    // modelli da provare: quello scelto, poi (su OpenRouter) gli altri gratuiti
-    const isOR = base.includes('openrouter.ai');
-    const bad = S.badModels || {};
-    const isBad = (id) => bad[id] && Date.now() - bad[id] < 864e5;
-    const candidates = [];
-    if (S.openModel && !(isOR && isBad(S.openModel))) candidates.push(S.openModel);
-    let listErr = null;
-    if (isOR) {
-      if (!S.freeModels?.length || Date.now() - (S.freeModelsAt || 0) > 6 * 36e5) {
-        try { S.freeModels = (await listFreeModels(base)).slice(0, 40); S.freeModelsAt = Date.now(); }
-        catch (e) { listErr = e; }
-      }
-      for (const m of S.freeModels || []) if (!candidates.includes(m.id) && !isBad(m.id)) candidates.push(m.id);
-      if (!candidates.length) candidates.push(...(S.freeModels || []).map((m) => m.id)); // tutti scartati: riprova comunque
-    }
-    if (!candidates.length) throw new Error(listErr ? 'Non riesco a scaricare l\'elenco dei modelli gratuiti: ' + listErr.message : 'Manca il nome del modello');
-    const tried = [];
-    let lastErr;
-    for (const model of candidates.slice(0, 8)) {
-      tried.push(model);
-      try {
-        try { content = await call(model, true); }
-        catch (e) {
-          // alcuni modelli non accettano response_format: riprova senza
-          if (e.status === 400 && !/free|unavailable|not found|no endpoints/i.test(e.message)) content = await call(model, false);
-          else throw e;
-        }
-        if (S.openModel && S.openModel !== model) S.openModel = ''; // il modello scelto non risponde: torna su Automatico
-        S.lastWorkingModel = model;
-        lastErr = null;
-        break;
-      } catch (e) {
-        lastErr = e;
-        if (e.status === 401 || e.name === 'AbortError') throw e; // chiave sbagliata: inutile provare altri modelli
-        bad[model] = Date.now();
-        S.badModels = bad;
-      }
-    }
-    if (lastErr) {
-      if (!isOR) throw lastErr;
-      throw Object.assign(new Error(`Nessun modello gratuito ha risposto. Provati: ${tried.map((m) => m.replace(/:free$/, '')).join(', ')}. Ultimo errore: ${lastErr.message}`), { code: 'nofree', status: lastErr.status });
-    }
+    content = (await onlineComplete(S, messages, signal)).content;
   }
 
   let out;
@@ -270,4 +247,95 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
     return { text: String(content || '').trim() || 'Non ho capito, puoi riformulare?', ops: [], confirm: false };
   }
   return { text: out.reply || (out.ops.length ? 'Fatto.' : 'Non ho capito, puoi riformulare?'), ops: out.ops, confirm: out.requires_confirmation };
+}
+
+// ---------------------------------------------------------------- servizio online
+const authError = (e) => e.status === 401 || e.status === 403 || /api key|apikey|unauthori[sz]ed|invalid.*key|key.*invalid/i.test(e.message || '');
+
+/**
+ * Manda i messaggi al servizio online provando, se serve, più modelli.
+ * Restituisce { content, model }.
+ */
+export async function onlineComplete(S, messages, signal) {
+  const preset = presetOf(S);
+  const base = (S.openBaseUrl || ONLINE_PRESETS[preset]?.baseUrl || '').replace(/\/+$/, '');
+  if (!base) throw new Error('Manca l\'indirizzo del servizio');
+  if (preset !== 'custom' && !S.openKey) throw Object.assign(new Error('manca la chiave'), { code: 'nokey' });
+
+  const call = async (model, json) => {
+    const r = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(S.openKey ? { Authorization: `Bearer ${S.openKey}` } : {}),
+        ...(preset === 'openrouter' ? { 'X-Title': 'Tempo' } : {}),
+      },
+      body: JSON.stringify({
+        model, messages, temperature: 0.2,
+        // i modelli Gemini "pensano" prima di rispondere: serve spazio anche per quello
+        max_tokens: preset === 'gemini' ? 8192 : 1200,
+        ...(json ? { response_format: { type: 'json_object' } } : {}),
+      }),
+    });
+    let body = await r.json().catch(() => ({}));
+    if (Array.isArray(body)) body = body[0] || {};
+    if (!r.ok || body?.error) throw Object.assign(new Error(body?.error?.message || `errore ${r.status}`), { status: r.ok ? +body?.error?.code || 500 : r.status });
+    const c = body.choices?.[0]?.message?.content;
+    if (!c) throw Object.assign(new Error('risposta vuota'), { status: 502 });
+    return c;
+  };
+
+  // modelli da provare: quello scelto, poi gli altri del servizio dal migliore
+  const bad = S.badModels || {};
+  const isBad = (id) => bad[id] && Date.now() - bad[id] < 864e5;
+  const candidates = [];
+  if (S.openModel && !isBad(S.openModel)) candidates.push(S.openModel);
+  if (S.lastWorkingModel && S.lastWorkingPreset === preset && !candidates.includes(S.lastWorkingModel)) candidates.push(S.lastWorkingModel);
+  let listErr = null;
+  if (preset !== 'custom') {
+    if (S.freeModelsPreset !== preset || !S.freeModels?.length || Date.now() - (S.freeModelsAt || 0) > 6 * 36e5) {
+      try { S.freeModels = (await listModels(preset, base, S.openKey)).slice(0, 40); S.freeModelsAt = Date.now(); S.freeModelsPreset = preset; }
+      catch (e) { listErr = e; if (authError(e)) throw Object.assign(e, { code: 'badkey' }); }
+    }
+    const listed = S.freeModelsPreset === preset ? (S.freeModels || []).map((m) => m.id) : [];
+    for (const id of [...listed, ...FALLBACK_MODELS[preset]]) if (!candidates.includes(id) && !isBad(id)) candidates.push(id);
+    if (!candidates.length) candidates.push(...listed, ...FALLBACK_MODELS[preset]); // tutti scartati di recente: riprova comunque
+  }
+  if (!candidates.length) throw new Error(listErr ? 'Non riesco a scaricare l\'elenco dei modelli: ' + listErr.message : 'Manca il nome del modello');
+
+  const tried = [];
+  let lastErr;
+  for (const model of candidates.slice(0, 8)) {
+    tried.push(model);
+    try {
+      let content;
+      try { content = await call(model, true); }
+      catch (e) {
+        // alcuni modelli non accettano response_format: riprova senza
+        if (e.status === 400 && !authError(e) && !/free|unavailable|not found|no endpoints|does not exist|decommission/i.test(e.message)) content = await call(model, false);
+        else throw e;
+      }
+      if (S.openModel && S.openModel !== model) S.openModel = ''; // il modello scelto non risponde: torna su Automatico
+      S.lastWorkingModel = model;
+      S.lastWorkingPreset = preset;
+      return { content, model };
+    } catch (e) {
+      lastErr = e;
+      if (authError(e)) throw Object.assign(e, { code: 'badkey' }); // chiave sbagliata: inutile provare altri modelli
+      if (e.name === 'AbortError') throw e;
+      bad[model] = Date.now();
+      S.badModels = bad;
+    }
+  }
+  throw Object.assign(new Error(`Nessun modello ha risposto. Provati: ${tried.map((m) => m.replace(/:free$/, '')).join(', ')}. Ultimo errore: ${lastErr.message}`), { code: 'nofree', status: lastErr.status });
+}
+
+/** Prova veloce di chiave e modello, per le impostazioni. */
+export async function testOnline(S) {
+  const { content, model } = await onlineComplete(S, [
+    { role: 'system', content: 'Rispondi solo con questo JSON: {"reply":"ok","ops":[],"requires_confirmation":false}' },
+    { role: 'user', content: 'Prova di connessione' },
+  ]);
+  return { model, ok: /ok/i.test(content || '') };
 }
