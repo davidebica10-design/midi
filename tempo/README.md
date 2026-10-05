@@ -14,7 +14,14 @@ lui pianifica la giornata e la ripianifica quando qualcosa cambia.
    - **Claude · a pagamento**: chiave API da platform.claude.com (non inclusa negli abbonamenti Claude).
    - **Base**: nessuna AI, capisce solo frasi semplici.
 
-I dati restano sul telefono, dentro l'app installata. Da **Memoria → Dati** puoi esportare un backup.
+## Come si usa
+
+- **La giornata** è un collage di carte: riepilogo, attività in corso, impegni e attività in ordine di orario. Tocca il cerchio per segnare una cosa come fatta, tocca la carta per modificarla.
+- **La barra in basso** serve a parlare con l'assistente (anche a voce) e, con **+**, ad aggiungere attività, anche con una foto.
+- **Pizzica verso l'interno** (o tocca l'icona in alto a sinistra) per vedere tutti i giorni uno sotto l'altro; tocca un giorno o allarga le dita per aprirlo.
+- **⋯** in alto a destra apre memoria e impostazioni.
+
+I dati restano sul telefono, dentro l'app installata (le foto in un archivio a parte). Dalle impostazioni puoi esportare un backup delle attività.
 
 ## Com'è fatta
 
@@ -24,7 +31,8 @@ I dati restano sul telefono, dentro l'app installata. Da **Memoria → Dati** pu
 | `js/store.js` | Stato, salvataggio locale, annullamento, validazione delle modifiche proposte dall'AI. |
 | `js/ai.js` | Conversazione con Claude tramite uno strumento con output strutturato (`update_plan`); modalità base senza AI. |
 | `js/ai-open.js` | Modelli gratuiti: in locale con WebLLM oppure su servizi compatibili OpenAI (Gemini, OpenRouter, Groq), con scelta automatica del modello; rispondono in JSON validato dal codice. |
-| `js/app.js` | Interfaccia: chat, riepilogo, timeline, scheda di modifica, memoria e impostazioni. |
+| `js/app.js` | Interfaccia: collage di carte del giorno, panoramica dei giorni con gesto di pizzico, conversazione, scheda di modifica, memoria e impostazioni. |
+| `js/images.js` | Foto delle carte: compresse e salvate in IndexedDB. |
 | `sw.js`, `manifest.webmanifest` | Installazione e funzionamento offline. |
 | `vendor/anthropic-sdk.mjs` | SDK ufficiale `@anthropic-ai/sdk` (0.131.0) impacchettato per il browser. |
 | `vendor/web-llm.mjs` | `@mlc-ai/web-llm` (0.2.85) impacchettato, caricato solo se scegli il modello sul telefono. |

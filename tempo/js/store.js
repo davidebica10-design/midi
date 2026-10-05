@@ -128,7 +128,7 @@ export function applyOps(state, ops, now = Date.now()) {
           };
           state.items.push(item);
           created[item.title.toLowerCase()] = item.id;
-          const when = item.start != null ? ` ${item.date === today ? 'oggi' : item.date} ${fmtMin(item.start)}` : item.date ? ` (${item.date === today ? 'oggi' : item.date})` : '';
+          const when = item.start != null ? ` ${niceDay(item.date, today)} ${fmtMin(item.start)}` : item.date ? ` (${niceDay(item.date, today)})` : '';
           log.push(`+ ${item.title}${when} · ${item.duration} min${item.durationEstimated ? ' (stima)' : ''}${item.priority === 3 ? ' · alta priorità' : ''}`);
           break;
         }
@@ -137,7 +137,7 @@ export function applyOps(state, ops, now = Date.now()) {
           if (it.kind === 'event') touchedFixed = true;
           const ch = [];
           if (op.title) { it.title = String(op.title).slice(0, 80); ch.push('titolo'); }
-          if (date) { it.date = date; ch.push(`data ${date === today ? 'oggi' : date === addDays(today, 1) ? 'domani' : date}`); }
+          if (date) { it.date = date; ch.push(niceDay(date, today)); }
           if (start != null) { it.start = start; ch.push(`ore ${fmtMin(start)}`); }
           if (op.unpin && it.kind === 'task') { it.start = null; ch.push('orario libero'); }
           if (op.duration_min != null) { it.duration = clampInt(op.duration_min, 5, 960); it.durationEstimated = !!op.duration_is_estimate; ch.push(`${it.duration} min`); }
@@ -231,6 +231,13 @@ export function applyOps(state, ops, now = Date.now()) {
     }
   }
   return { log, errors, touchedFixed };
+}
+
+function niceDay(date, today) {
+  if (date === today) return 'oggi';
+  if (date === addDays(today, 1)) return 'domani';
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'short' });
 }
 
 function atToday(now, min) {

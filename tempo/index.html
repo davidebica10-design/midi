@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>Tempo</title>
 <meta name="description" content="Assistente personale per la gestione del tempo: parla con il tuo tempo.">
-<meta name="theme-color" content="#0D0920">
-<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#F3E4EE" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1B1320" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Tempo">
 <meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="manifest.webmanifest">
@@ -17,106 +18,91 @@
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="aurora" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
+<div class="bg" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="b3"></i></div>
 
 <div id="app">
-  <!-- OGGI -->
-  <section id="view-home" class="view active" aria-label="Oggi">
-    <header class="top">
-      <div class="top-row">
-        <div>
-          <div class="eyebrow" id="today-label"></div>
-          <h1 class="title serif">Oggi</h1>
-        </div>
-        <button class="avatar" data-goto="settings" aria-label="Memoria e impostazioni"><span>T</span></button>
-      </div>
-    </header>
-    <main class="scroll home" id="home">
-      <div class="gauge" id="gauge">
-        <svg viewBox="0 0 340 196" id="gauge-svg" aria-hidden="true"></svg>
-        <div class="gauge-center">
-          <b class="serif" id="gauge-pct">0%</b>
-          <span id="gauge-label"></span>
-        </div>
-      </div>
-      <p class="gauge-sub" id="gauge-sub"></p>
-      <div id="now-card"></div>
-      <div id="home-alert"></div>
-    </main>
-  </section>
-
-  <!-- PARLA -->
-  <section id="view-chat" class="view" aria-label="Chat">
-    <header class="top">
-      <div class="top-row">
-        <div>
-          <div class="eyebrow" id="chat-mode"></div>
-          <h1 class="title serif">Parla</h1>
-        </div>
-        <button class="avatar" data-goto="settings" aria-label="Memoria e impostazioni"><span class="avatar-letter">T</span></button>
-      </div>
-    </header>
-    <main class="chat" id="chat" aria-live="polite"></main>
-    <form class="composer" id="composer" autocomplete="off">
-      <div class="chips" id="chips"></div>
-      <div class="composer-row glass">
-        <textarea id="input" rows="1" placeholder="Dimmi cosa devi fare…" enterkeyhint="send" aria-label="Messaggio"></textarea>
-        <button type="submit" class="send" id="send" aria-label="Invia">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+  <!-- GIORNO: saluto + carte -->
+  <section id="day" class="layer" aria-label="Giornata">
+    <div class="topbar">
+      <button class="round" id="to-overview" aria-label="Tutti i giorni">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="4" y="4" width="16" height="6.5" rx="2.2"/><rect x="4" y="13.5" width="16" height="6.5" rx="2.2"/></svg>
+      </button>
+      <div class="topbar-right">
+        <button class="round" id="undo-btn" aria-label="Annulla ultima modifica" hidden>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
+        </button>
+        <button class="round" id="open-settings" aria-label="Impostazioni e memoria">
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor"><circle cx="5.5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18.5" cy="12" r="1.8"/></svg>
         </button>
       </div>
-    </form>
-  </section>
-
-  <!-- GIORNATA -->
-  <section id="view-day" class="view" aria-label="Giornata">
-    <header class="top">
-      <div class="top-row">
-        <div>
-          <div class="eyebrow" id="day-eyebrow"></div>
-          <h1 class="title serif" id="day-title">Oggi</h1>
-        </div>
-        <button class="icon-btn glass" id="undo-btn" aria-label="Annulla ultima modifica" disabled>
-          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
-        </button>
-      </div>
-      <div class="days" id="days" role="tablist"></div>
-    </header>
-    <main class="timeline-wrap scroll" id="timeline-wrap">
-      <div class="notices" id="notices"></div>
-      <div class="timeline" id="timeline"></div>
-    </main>
-  </section>
-
-  <!-- MEMORIA -->
-  <section id="view-settings" class="view" aria-label="Memoria">
-    <header class="top">
-      <div class="top-row">
-        <div><div class="eyebrow">Tempo</div><h1 class="title serif">Memoria</h1></div>
-        <button class="icon-btn glass" data-goto="home" aria-label="Chiudi">
-          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
-        </button>
-      </div>
-    </header>
-    <main class="settings scroll" id="settings"></main>
-  </section>
-
-  <nav class="dock" id="dock">
-    <div class="tabbar glass" id="tabbar">
-      <span class="tab-ind" id="tab-ind"></span>
-      <button data-view="home" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/></svg><span>Oggi</span></button>
-      <button data-view="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/></svg><span>Parla</span></button>
-      <button data-view="day"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4" y="4" width="16" height="17" rx="3"/><path d="M8 2v4M16 2v4M4 10h16M8 14h2M12 14h2M16 14h0M8 17h2M12 17h2"/></svg><span>Giornata</span></button>
     </div>
-    <button class="fab glass" id="fab" aria-label="Nuova attività">
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-    </button>
-  </nav>
+    <main class="day-scroll" id="day-scroll">
+      <header class="hero" id="hero">
+        <div class="hero-time" id="hero-time"></div>
+        <h1 class="hero-title" id="hero-title"></h1>
+      </header>
+      <div class="collage" id="collage"></div>
+    </main>
+  </section>
+
+  <!-- TUTTI I GIORNI -->
+  <section id="overview" class="layer" aria-label="Tutti i giorni" hidden>
+    <div class="ov-head">
+      <h2 class="serif">I tuoi giorni</h2>
+      <button class="pill-btn" id="ov-today">Oggi</button>
+    </div>
+    <main class="ov-scroll" id="ov-scroll"></main>
+  </section>
+
+  <!-- CONVERSAZIONE -->
+  <section id="convo" aria-label="Conversazione" hidden>
+    <div class="convo-head">
+      <button class="convo-close" id="convo-close" aria-label="Torna alla giornata">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <span id="chat-mode"></span>
+    </div>
+    <main class="chat" id="chat" aria-live="polite"></main>
+  </section>
+
+  <!-- BARRA PER PARLARE CON L'AI -->
+  <form class="bar" id="composer" autocomplete="off">
+    <div class="chips" id="chips"></div>
+    <div class="plus-menu" id="plus-menu" hidden>
+      <button type="button" data-plus="task"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M8 3v4M16 3v4M12 10v6M9 13h6"/></svg>Nuova attività</button>
+      <button type="button" data-plus="photo"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="3"/><circle cx="12" cy="12.5" r="3.5"/><path d="M8 5l1.5-2h5L16 5"/></svg>Attività con foto</button>
+    </div>
+    <div class="bar-row">
+      <button type="button" class="bar-btn" id="plus" aria-label="Aggiungi">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <textarea id="input" rows="1" placeholder="Scrivi a Tempo…" enterkeyhint="send" aria-label="Messaggio"></textarea>
+      <button type="button" class="bar-btn" id="mic" aria-label="Detta" hidden>
+        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <button type="submit" class="send" id="send" aria-label="Invia">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+      </button>
+    </div>
+  </form>
+
+  <!-- IMPOSTAZIONI -->
+  <section id="panel" aria-label="Impostazioni" hidden>
+    <div class="panel-head">
+      <h2 class="serif">Memoria</h2>
+      <button class="round" id="close-settings" aria-label="Chiudi">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <main class="settings" id="settings"></main>
+  </section>
 </div>
+
+<input type="file" id="photo-input" accept="image/*" hidden>
 
 <!-- Scheda modifica -->
 <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
