@@ -9,7 +9,8 @@ const durLabel = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ' ' + (m %
 
 const state = load();
 let plan = {};
-let view = 'chat';
+let view = 'home';
+let stackIdx = 0;
 let selDay = dateKey(new Date());
 let busy = false;
 let pending = null; // proposta in attesa di conferma: { draft, msgId }
@@ -241,12 +242,18 @@ const undoExists = hasUndo;
 // ---------------------------------------------------------------- render: chat
 function renderChat() {
   const el = $('#chat');
+  $('#chips').hidden = !state.chat.length;
   if (!state.chat.length) {
-    el.innerHTML = `<div class="empty">
-      <h2>Parla con il tuo tempo.</h2>
-      <p>Dimmi cosa devi fare oggi, gli impegni fissi e cosa conta di più. Io stimo le durate, organizzo la giornata e la riorganizzo quando qualcosa cambia.</p>
-      <p>Per esempio: <i>«Oggi lavoro fino alle 18:30. Devo fare la spesa, voglio produrre un beat per almeno un'ora e mezza e sistemare il portfolio. Alle 21 arriva un amico.»</i></p>
-      ${aiMode() !== 'base' ? '' : '<p><b>Per la conversazione completa</b> scegli un assistente AI in <a href="#" data-goto="settings">Memoria</a>: ci sono anche modelli open gratuiti, persino sul telefono. Intanto funziona una modalità base.</p>'}
+    const sugg = [
+      ['Organizzami la giornata: oggi lavoro fino alle 18:30, poi voglio fare un beat e la spesa', 'Organizza la mia giornata', ICONS.e2],
+      ['Cosa riesco realisticamente a fare oggi?', 'Cosa riesco a fare oggi?', ICONS.e3],
+      ['Sono in ritardo di 30 minuti', 'Sono in ritardo di 30 minuti', ICONS.ev],
+      ['Fammi una giornata più leggera', 'Fammi una giornata più leggera', ICONS.e1],
+    ];
+    el.innerHTML = `<div class="hello">
+      <h2>Ciao,<br>come posso <em>aiutarti?</em></h2>
+      <p>Dimmi cosa devi fare, gli impegni fissi e cosa conta di più: stimo le durate, organizzo la giornata e la riorganizzo quando qualcosa cambia.${aiMode() !== 'base' ? '' : ' <a href="#" data-goto="settings">Scegli un assistente AI gratuito</a> per la conversazione completa.'}</p>
+      <div class="suggest">${sugg.map(([q, l, ic]) => `<button class="sugg glass" data-ask="${esc(q)}"><span>${esc(l)}</span><span class="sg-ico">${ic.replace('<svg ', '<svg width="17" height="17" ')}</span></button>`).join('')}</div>
     </div>`;
     return;
   }
@@ -288,6 +295,7 @@ function renderComposer() {
       'Sono in ritardo di 30 min',
       'Domani alle 10 appuntamento',
     ];
+  $('#chips').hidden = !state.chat.length; // a chat vuota ci sono già le carte dei suggerimenti
   $('#chips').innerHTML = chips.filter(Boolean).map((c) => `<button type="button" class="chip">${esc(c)}</button>`).join('');
 }
 
@@ -307,34 +315,236 @@ function nextBlock() {
   return p.blocks.find((b) => b.type !== 'done' && b.start > n) || null;
 }
 
-function renderSummary() {
+const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const ICONS = {
+  e3: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>',
+  e2: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.9L12 3Z"/></svg>',
+  e1: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19c8 1 14-5 14-14-8 0-14 5-14 14Z"/><path d="M5 19 13 11"/></svg>',
+  ev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+};
+const kindOf = (it) => (it.kind === 'event' ? 'ev' : 'e' + (it.energy || 2));
+
+// ---- indicatore a semicerchio
+const G = { cx: 170, cy: 178, r: 146, w: 30 };
+const gp = (deg) => { const a = (deg * Math.PI) / 180; return [G.cx + G.r * Math.cos(a), G.cy - G.r * Math.sin(a)]; };
+const arc = (a0, a1) => { const [x0, y0] = gp(a0), [x1, y1] = gp(a1); return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${G.r} ${G.r} 0 0 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`; };
+let gaugeN = 0, gaugeShown = 0, gaugeAnim = 0, lastNowKey = '';
+
+function renderGauge(pct, n) {
+  const svg = $('#gauge-svg');
+  if (n !== gaugeN || !svg.firstChild) {
+    gaugeN = n;
+    const cap = ((G.w / 2 + 3) / G.r) * (180 / Math.PI); // spazio occupato dalle estremità arrotondate
+    const span = 180 / n;
+    let segs = '';
+    for (let i = 0; i < n; i++) {
+      const a0 = 180 - i * span - cap, a1 = 180 - (i + 1) * span + cap;
+      segs += `<path d="${arc(a0, a1)}" stroke-width="${G.w}"/>`;
+    }
+    const L = Math.PI * G.r;
+    svg.innerHTML = `
+      <defs>
+        <linearGradient id="gGrad" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#C8001F"/><stop offset="0.6" stop-color="#FF2D55"/><stop offset="1" stop-color="#FF7A93"/></linearGradient>
+        <mask id="gMask" maskUnits="userSpaceOnUse" x="0" y="0" width="340" height="200"><g fill="none" stroke="#fff" stroke-linecap="round">${segs}</g></mask>
+      </defs>
+      <path class="track" d="${arc(180, 0)}"/>
+      <g class="seg">${segs}</g>
+      <path class="prog" id="g-prog" d="${arc(180, 0)}" stroke-width="${G.w + 2}" mask="url(#gMask)" stroke-dasharray="${L}" stroke-dashoffset="${L}"/>
+      <g id="g-tip" style="transform-origin:${G.cx}px ${G.cy}px;transform-box:view-box"><rect class="tip" x="${G.cx - G.r - G.w / 2 - 4}" y="${G.cy - 1.5}" width="${G.w + 8}" height="3" rx="1.5"/></g>`;
+  }
+  const L = Math.PI * G.r;
+  requestAnimationFrame(() => {
+    const prog = $('#g-prog'), tip = $('#g-tip');
+    if (prog) prog.style.strokeDashoffset = String(L * (1 - pct));
+    if (tip) { tip.style.transform = `rotate(${180 * pct}deg)`; tip.style.opacity = pct > 0.005 && pct < 0.995 ? '1' : '0'; tip.style.transition = 'transform 1.4s cubic-bezier(.22,1,.36,1), opacity .4s'; }
+  });
+  // conteggio animato della percentuale
+  const target = Math.round(pct * 100), from = gaugeShown, t0 = performance.now();
+  cancelAnimationFrame(gaugeAnim);
+  const stepFn = (t) => {
+    const k = Math.min(1, (t - t0) / 1200), e = 1 - Math.pow(1 - k, 3);
+    gaugeShown = Math.round(from + (target - from) * e);
+    $('#gauge-pct').textContent = gaugeShown + '%';
+    if (k < 1) gaugeAnim = requestAnimationFrame(stepFn);
+  };
+  gaugeAnim = requestAnimationFrame(stepFn);
+}
+
+function renderHome() {
   const d = new Date();
   $('#today-label').textContent = d.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
-  const p = plan[today()];
-  const cur = currentBlock(), nxt = nextBlock();
-  const tag = $('#sum-tag');
-  if (cur) {
-    tag.textContent = 'Adesso'; tag.className = 'sum-tag';
-    $('#sum-title').textContent = cur.item.title;
-    $('#sum-time').textContent = `fino alle ${fmtMin(cur.end)}`;
-    $('#sum-next').textContent = nxt ? `Poi: ${nxt.item.title} alle ${fmtMin(nxt.start)}` : 'Poi niente in programma';
-  } else if (nxt) {
-    tag.textContent = 'Prossimo'; tag.className = 'sum-tag next';
-    $('#sum-title').textContent = nxt.item.title;
-    $('#sum-time').textContent = fmtMin(nxt.start);
-    const mins = nxt.start - (d.getHours() * 60 + d.getMinutes());
-    $('#sum-next').textContent = `tra ${durLabel(mins)}`;
-  } else {
-    tag.textContent = 'Oggi'; tag.className = 'sum-tag next';
-    $('#sum-title').textContent = state.items.length ? 'Niente altro in programma' : 'Giornata da organizzare';
-    $('#sum-time').textContent = '';
-    $('#sum-next').textContent = p?.unscheduled.length ? `${p.unscheduled.length} attività non entrano` : 'Tocca per vedere la giornata';
-  }
-  $('#sum-free').textContent = p ? `libero ${durLabel(p.free)}` : '';
-  const tasks = p ? p.blocks.filter((b) => b.item.kind === 'task') : [];
-  const done = tasks.filter((b) => b.type === 'done').length;
-  $('#sum-bar').style.width = tasks.length ? `${Math.round((done / tasks.length) * 100)}%` : '0%';
   $('#undo-btn').disabled = !canUndo();
+  const p = plan[today()];
+  if (!p) return;
+  const n = nowMin();
+
+  // avanzamento: minuti di attività completate sul totale di oggi
+  const taskBlocks = p.blocks.filter((b) => b.item.kind === 'task');
+  const doneMin = taskBlocks.filter((b) => b.type === 'done').reduce((s, b) => s + (b.end - b.start), 0);
+  const totMin = taskBlocks.reduce((s, b) => s + (b.end - b.start), 0) + p.unscheduled.reduce((s, u) => s + (u.item.duration || 0), 0);
+  const pct = totMin ? doneMin / totMin : 0;
+  const nTasks = taskBlocks.length + p.unscheduled.length;
+  renderGauge(pct, Math.max(3, Math.min(8, nTasks || 3)));
+  $('#gauge-label').textContent = nTasks ? 'della giornata completata' : 'nessuna attività oggi';
+  $('#gauge-free').textContent = `libero ${durLabel(p.free)}`;
+  const doneN = taskBlocks.filter((b) => b.type === 'done').length;
+  $('#gauge-done').textContent = nTasks ? `${doneN} di ${nTasks} fatte` : '';
+
+  // carta "Adesso"
+  const cur = currentBlock(), nxt = nextBlock();
+  const missed = (p.missed || [])[0];
+  let html;
+  if (cur) {
+    const it = cur.item;
+    const isTask = it.kind === 'task' && !String(cur.id).startsWith('rec:');
+    const prog = Math.max(0, Math.min(1, (n - cur.start) / Math.max(1, cur.end - cur.start)));
+    const doing = it.status === 'doing';
+    html = `<div class="now${isTask ? '' : ' event'}" data-item="${esc(cur.id)}">
+      ${isTask ? `<button class="play${doing ? '' : ' pulse'}" data-now="${doing ? 'complete' : 'start'}" data-id="${esc(it.id)}" aria-label="${doing ? 'Segna come fatta' : 'Inizia'}">${doing ? ICONS.check : ICONS.play}</button>`
+        : `<div class="play" aria-hidden="true">${ICONS.ev.replace('currentColor', '#fff')}</div>`}
+      <div class="now-body">
+        <div class="now-title">${esc(it.title)}</div>
+        <div class="now-meta"><span>fino alle ${fmtMin(cur.end)}</span><i></i><span>${durLabel(Math.max(1, cur.end - n))} rimasti</span>${it.priority === 3 ? '<i></i><span>alta priorità</span>' : ''}</div>
+        <div class="now-bar"><i style="width:${Math.round(prog * 100)}%"></i></div>
+      </div>
+    </div>`;
+  } else if (missed) {
+    html = `<div class="now calm">
+      <div class="now-body">
+        <div class="eyebrow" style="text-transform:none">Era previsto alle ${fmtMin(missed.start)}</div>
+        <div class="now-title">Com'è andata con «${esc(missed.item.title)}»?</div>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary" data-now="complete" data-id="${esc(missed.item.id)}">Fatto</button><button class="btn" data-now="notyet" data-id="${esc(missed.item.id)}">Non ancora</button></div>
+      </div>
+    </div>`;
+  } else if (nxt) {
+    const it = nxt.item;
+    const isTask = it.kind === 'task' && !String(nxt.id).startsWith('rec:');
+    html = `<div class="now calm" data-item="${esc(nxt.id)}">
+      <div class="now-body">
+        <div class="eyebrow" style="text-transform:none">Tra ${durLabel(nxt.start - n)} · alle ${fmtMin(nxt.start)}</div>
+        <div class="now-title">${esc(it.title)}</div>
+        ${isTask ? `<button class="now-cta" data-now="start" data-id="${esc(it.id)}">${ICONS.play} Inizia ora</button>` : ''}
+      </div>
+    </div>`;
+  } else {
+    html = `<button class="now calm" data-goto="chat" data-focus="1">
+      <div class="now-body">
+        <div class="now-title">${state.items.length ? 'Niente altro in programma' : 'Giornata da organizzare'}</div>
+        <div class="now-meta" style="color:var(--ink-2)">${p.unscheduled.length ? `${p.unscheduled.length} attività non entrano: chiedimi cosa rimandare` : 'Dimmi cosa vuoi fare e la organizzo io'}</div>
+      </div>
+    </button>`;
+  }
+  const key = html.match(/data-(?:item|id)="([^"]+)"/)?.[1] + (cur?.item.status || '');
+  if (key === lastNowKey) html = html.replace(/class="now/, 'class="still now');
+  lastNowKey = key;
+  $('#now-card').innerHTML = html;
+  renderStack();
+}
+
+// ---- carte delle prossime attività
+function upcomingCards() {
+  const t = today(), tm = addDays(t, 1), n = nowMin();
+  const cur = currentBlock();
+  // se non c'è niente in corso, la prossima attività è già nella carta "Adesso"
+  const shown = cur || (plan[t]?.missed?.length ? null : nextBlock());
+  const list = [];
+  for (const b of plan[t]?.blocks || []) if (b.type !== 'done' && b.start > n && b !== shown) list.push({ b, day: t });
+  if (list.length < 5) for (const b of plan[tm]?.blocks || []) if (b.type !== 'done' && list.length < 6) list.push({ b, day: tm });
+  return list.slice(0, 6);
+}
+
+function renderStack() {
+  const el = $('#stack');
+  const cards = upcomingCards();
+  if (!cards.length) {
+    el.style.height = 'auto';
+    el.innerHTML = `<div class="stack-empty glass"><b>Tutto libero</b>Niente in programma per oggi e domani.</div>`;
+    return;
+  }
+  el.style.height = '';
+  const N = cards.length;
+  stackIdx = ((stackIdx % N) + N) % N;
+  const t = today();
+  el.innerHTML = cards.map(({ b, day }, i) => {
+    const it = b.item;
+    const k = kindOf(it);
+    const when = `${day === t ? '' : 'domani '}${fmtMin(b.start)}`;
+    return `<button class="scard ${k}" data-i="${i}" data-item="${esc(b.id)}">
+      <div class="sc-top"><span class="sc-ico">${ICONS[k]}</span><span class="sc-when">${when}</span></div>
+      <div class="sc-title">${esc(it.title)}</div>
+      <div class="sc-meta"><span>${durLabel(b.end - b.start)}${it.durationEstimated ? ' · stima' : ''}</span>${it.priority === 3 ? '<i></i><span>alta priorità</span>' : ''}${it.kind === 'event' ? '<i></i><span>impegno fisso</span>' : ''}</div>
+    </button>`;
+  }).join('') + (N > 1 ? `<div class="stack-dots" style="position:absolute;left:0;right:0;bottom:0">${cards.map((_, i) => `<i class="${i === stackIdx ? 'on' : ''}"></i>`).join('')}</div>` : '');
+  layoutStack();
+}
+
+function layoutStack() {
+  const cards = [...document.querySelectorAll('#stack .scard')];
+  const N = cards.length;
+  cards.forEach((c) => {
+    const d = (((+c.dataset.i - stackIdx) % N) + N) % N;
+    const tf = [
+      'translate(0,0) rotate(0deg) scale(1)',
+      'translate(-12px,-24px) rotate(-6deg) scale(.93)',
+      'translate(14px,-42px) rotate(5deg) scale(.86)',
+    ][Math.min(d, 2)];
+    c.style.transform = tf;
+    c.style.zIndex = String(N - d);
+    c.style.opacity = d > 2 ? '0' : '1';
+    c.style.filter = d === 0 ? '' : `brightness(${1 - d * 0.18})`;
+    c.style.pointerEvents = d === 0 ? '' : 'none';
+    c.dataset.front = d === 0 ? '1' : '';
+  });
+  document.querySelectorAll('#stack .stack-dots i').forEach((dot, i) => dot.classList.toggle('on', i === stackIdx));
+}
+
+function bindStack() {
+  const el = $('#stack');
+  let drag = null;
+  el.addEventListener('pointerdown', (e) => {
+    const c = e.target.closest('.scard');
+    if (!c || !c.dataset.front) return;
+    drag = { c, x: e.clientX, y: e.clientY, t: Date.now(), dx: 0, moved: false };
+    c.classList.add('dragging');
+    c.setPointerCapture?.(e.pointerId);
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    drag.dx = e.clientX - drag.x;
+    if (Math.abs(drag.dx) > 6) drag.moved = true;
+    drag.c.style.transform = `translate(${drag.dx}px, ${Math.abs(drag.dx) * -0.08}px) rotate(${drag.dx / 16}deg)`;
+  });
+  const end = () => {
+    if (!drag) return;
+    const { c, dx, moved } = drag;
+    drag = null;
+    c.classList.remove('dragging');
+    const N = document.querySelectorAll('#stack .scard').length;
+    if (Math.abs(dx) > 70 && N > 1) {
+      // la carta vola via e torna in fondo al mazzo
+      c.style.transform = `translate(${dx > 0 ? 130 : -130}%, -20px) rotate(${dx > 0 ? 24 : -24}deg)`;
+      c.style.opacity = '0';
+      setTimeout(() => { stackIdx = (stackIdx + 1) % N; layoutStack(); }, 220);
+    } else if (!moved) {
+      openSheet(c.dataset.item);
+      layoutStack();
+    } else layoutStack();
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  // il click lo gestisce già pointerup
+  el.addEventListener('click', (e) => { if (e.target.closest('.scard')) e.preventDefault(); });
+}
+
+function moveTabIndicator() {
+  const btn = document.querySelector(`.tabbar button[data-view="${view}"]`);
+  const ind = $('#tab-ind');
+  if (!btn) { ind.style.opacity = '0'; return; }
+  ind.style.opacity = '1';
+  ind.style.width = btn.offsetWidth + 'px';
+  ind.style.transform = `translateX(${btn.offsetLeft - 6}px)`;
 }
 
 // ---------------------------------------------------------------- render: giornata
@@ -698,17 +908,22 @@ function toast(text, action) {
 const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
 
 function setView(v) {
+  if (v === view && document.querySelector('#view-' + v).classList.contains('active')) { if (v === 'home') $('#home').scrollTo({ top: 0, behavior: 'smooth' }); return; }
   view = v;
   document.querySelectorAll('.view').forEach((el) => el.classList.toggle('active', el.id === 'view-' + v));
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
+  moveTabIndicator();
+  if (v === 'home') renderHome();
   if (v === 'day') { renderDay(); requestAnimationFrame(scrollToNow); }
   if (v === 'settings') { renderSettings(); ensureFreeModels(); }
   if (v === 'chat') renderChat();
 }
 
 function renderAll() {
-  renderSummary();
+  if (view === 'home') renderHome(); else $('#undo-btn').disabled = !canUndo();
   renderComposer();
+  const mode = aiMode();
+  $('#chat-mode').textContent = { claude: 'Claude', online: (ONLINE_PRESETS[presetOf(state.settings)]?.label || 'Online') + ' · gratis', local: 'Sul telefono · gratis', base: 'Modalità base' }[mode];
   if (view === 'day') renderDay();
   if (view === 'settings') renderSettings();
   if (view === 'chat') renderChat();
@@ -717,8 +932,31 @@ function renderAll() {
 // ---------------------------------------------------------------- eventi
 function bind() {
   $('#tabbar').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setView(b.dataset.view); });
-  $('#summary').addEventListener('click', () => { selDay = today(); setView('day'); });
   $('#undo-btn').addEventListener('click', () => doUndo());
+  $('#fab').addEventListener('click', () => openSheet(null));
+  window.addEventListener('resize', moveTabIndicator);
+  // collegamenti tra le viste (avatar, "Vedi giornata", "Parla con Tempo"…)
+  document.addEventListener('click', (e) => {
+    const g = e.target.closest('[data-goto]');
+    if (!g) return;
+    e.preventDefault();
+    if (g.dataset.goto === 'day') selDay = today();
+    setView(g.dataset.goto);
+    if (g.dataset.focus) setTimeout(() => $('#input').focus(), 350);
+  });
+  $('#now-card').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-now]');
+    if (b) {
+      e.stopPropagation();
+      const id = b.dataset.id;
+      if (b.dataset.now === 'notyet') { delete state.anchors[id]; replan(); save(state); renderAll(); return; }
+      quickOp(b.dataset.now, id);
+      return;
+    }
+    const c = e.target.closest('[data-item]');
+    if (c) openSheet(c.dataset.item);
+  });
+  bindStack();
   $('#add-btn').addEventListener('click', () => openSheet(null));
 
   const input = $('#input');
@@ -736,9 +974,9 @@ function bind() {
   $('#chips').addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (c) send(c.textContent); });
 
   $('#chat').addEventListener('click', (e) => {
+    const sg = e.target.closest('[data-ask]');
+    if (sg) { send(sg.dataset.ask); return; }
     const b = e.target.closest('[data-act]');
-    const g = e.target.closest('[data-goto]');
-    if (g) { e.preventDefault(); setView(g.dataset.goto); return; }
     if (!b) return;
     if (b.dataset.act === 'apply') applyPending();
     if (b.dataset.act === 'discard') discardPending();
@@ -831,7 +1069,7 @@ function bind() {
   document.addEventListener('focusout', () => setTimeout(() => { if (!document.activeElement?.matches('textarea, input')) document.body.classList.remove('kb'); }, 50));
 
   // il tempo passa: aggiorna piano e vista
-  const tick = () => { replan(); save(state); renderSummary(); renderComposer(); if (view === 'day') { const top = $('#timeline-wrap').scrollTop; renderDay(); $('#timeline-wrap').scrollTop = top; } };
+  const tick = () => { replan(); save(state); if (view === 'home') renderHome(); renderComposer(); if (view === 'day') { const top = $('#timeline-wrap').scrollTop; renderDay(); $('#timeline-wrap').scrollTop = top; } };
   setInterval(tick, 30000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 }
@@ -855,6 +1093,8 @@ replan();
 save(state);
 bind();
 renderAll();
+requestAnimationFrame(moveTabIndicator);
+document.fonts?.ready.then(moveTabIndicator);
 navigator.storage?.persist?.().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   // quando arriva una versione nuova dell'app, ricarica una volta per usarla subito
