@@ -157,13 +157,13 @@ function historyMessages(chat) {
  * Esegue un turno di conversazione.
  * hooks.apply(ops) → applica le operazioni a una bozza e restituisce un testo con l'esito per il modello.
  */
-export async function runTurn({ state, plan, now, userText, hooks, signal }) {
+export async function runTurn({ state, plan, now, userText, hooks, signal, chat = state.chat }) {
   const Anthropic = await loadSdk();
   const client = new Anthropic({ apiKey: state.settings.apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 });
   const model = state.settings.model || 'claude-opus-5-5';
   const isHaiku = model.startsWith('claude-haiku');
 
-  const messages = historyMessages(state.chat);
+  const messages = historyMessages(chat);
   const ctx = JSON.stringify(stateForModel(state, plan, now));
   const userContent = `<stato>\n${ctx}\n</stato>\n\n${userText}`;
   if (messages.length && messages[messages.length - 1].role === 'user') messages[messages.length - 1].content += '\n\n' + userContent;
