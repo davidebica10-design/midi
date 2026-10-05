@@ -346,6 +346,8 @@ function renderChat() {
 let rec = null;
 function renderComposer() {
   const has = $('#input').value.trim().length > 0;
+  $('#app').classList.toggle('writing', has);
+  $('#app').classList.toggle('thinking', busy);
   $('#send').disabled = busy;
   $('#mic').hidden = !SR || (has && !rec);
   $('#send').hidden = !!SR && !has && !busy;
@@ -1182,12 +1184,14 @@ function bind() {
   const vv = window.visualViewport;
   const fit = () => {
     if (!vv) return;
-    if (vv.height < window.innerHeight - 80) document.documentElement.style.setProperty('--vvh', vv.height + 'px');
-    else document.documentElement.style.removeProperty('--vvh');
-    window.scrollTo(0, 0);
+    const root = document.documentElement.style;
+    root.setProperty('--vvh', Math.round(vv.height) + 'px');
+    root.setProperty('--vvt', Math.round(vv.offsetTop) + 'px');
+    if (vv.offsetTop === 0) window.scrollTo(0, 0);
   };
   vv?.addEventListener('resize', fit);
   vv?.addEventListener('scroll', fit);
+  window.addEventListener('orientationchange', () => setTimeout(fit, 300));
   fit();
   document.addEventListener('focusin', (e) => { if (e.target.matches('textarea, input[type=text], input[type=password], input[type=number]')) document.body.classList.add('kb'); });
   document.addEventListener('focusout', () => setTimeout(() => { if (!document.activeElement?.matches('textarea, input')) document.body.classList.remove('kb'); }, 50));
