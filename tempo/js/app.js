@@ -1,7 +1,7 @@
 import { planDays, updateAnchors, diffPlans, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel } from './store.js';
 import { runTurn, localParse, MODELS } from './ai.js';
-import { runOpenTurn, preloadLocal, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
+import { runOpenTurn, preloadLocal, listFreeModels, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -39,7 +39,7 @@ function aiMode() {
   const S = state.settings;
   const p = S.provider || (S.apiKey ? 'claude' : 'base');
   if (p === 'claude') return S.apiKey ? 'claude' : 'base';
-  if (p === 'online') return S.openBaseUrl && S.openModel ? 'online' : 'base';
+  if (p === 'online') return S.openBaseUrl && (S.openModel || S.openBaseUrl.includes('openrouter.ai')) ? 'online' : 'base';
   if (p === 'local') return 'local';
   return 'base';
 }
@@ -574,13 +574,19 @@ function renderSettings() {
         ${prov === 'online' ? `
         <div class="row"><label for="open-preset">Servizio</label><select id="open-preset">${Object.entries(ONLINE_PRESETS).map(([k, p]) => `<option value="${k}" ${(S.openPreset || 'openrouter') === k ? 'selected' : ''}>${p.label}</option>`).join('')}</select></div>
         <div class="row"><input type="password" id="open-key" placeholder="Chiave gratuita del servizio" value="${esc(S.openKey || '')}" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-        <div class="row"><input type="text" class="wide" id="open-model" placeholder="Nome del modello" value="${esc(S.openModel || '')}" autocapitalize="off" spellcheck="false"></div>
+        ${(S.openPreset || 'openrouter') === 'openrouter' ? `
+        <div class="row"><label for="open-model-sel">Modello<small>${S.lastWorkingModel ? 'in uso: ' + esc(S.lastWorkingModel) : S.freeModels?.length ? S.freeModels.length + ' modelli gratuiti disponibili' : 'carico l\'elenco…'}</small></label><select id="open-model-sel">
+          <option value="" ${!S.openModel ? 'selected' : ''}>Automatico (consigliato)</option>
+          ${(S.freeModels || []).map((m) => `<option value="${esc(m.id)}" ${S.openModel === m.id ? 'selected' : ''}>${esc(m.name.replace(/\s*\(free\)\s*$/i, ''))}</option>`).join('')}
+          ${S.openModel && !(S.freeModels || []).some((m) => m.id === S.openModel) ? `<option value="${esc(S.openModel)}" selected>${esc(S.openModel)}</option>` : ''}
+        </select></div>` : `
+        <div class="row"><input type="text" class="wide" id="open-model" placeholder="Nome del modello" value="${esc(S.openModel || '')}" autocapitalize="off" spellcheck="false"></div>`}
         <div class="row"><input type="text" class="wide" id="open-url" placeholder="Indirizzo API (https://…/v1)" value="${esc(S.openBaseUrl || '')}" autocapitalize="off" spellcheck="false" inputmode="url"></div>` : ''}
       </div>
       <p class="note">${{
         base: 'Senza AI la chat capisce solo frasi semplici. Pianificazione, timeline e annullamento funzionano comunque.',
         local: 'Il modello gira interamente sul tuo iPhone: gratis, privato e anche offline. Il primo avvio scarica il modello (circa 1 GB, meglio con il Wi-Fi). È meno intelligente di un modello grande: per le frasi più complesse può sbagliare, ma ogni modifica si può annullare.',
-        online: `Modelli open gratuiti su un servizio esterno: più capaci di quelli sul telefono, serve la connessione. ${(() => { const pr = ONLINE_PRESETS[S.openPreset || 'openrouter']; return pr.keyUrl ? `Crea una chiave gratuita su <a href="${pr.keyUrl}" target="_blank" rel="noopener">${pr.label}</a>.` : ''; })()} ${(S.openPreset || 'openrouter') === 'openrouter' ? 'I modelli gratuiti hanno il suffisso <b>:free</b>: se quello indicato non esiste più, scegline un altro su <a href="https://openrouter.ai/models?max_price=0" target="_blank" rel="noopener">openrouter.ai/models</a>.' : ''} I servizi gratuiti hanno limiti giornalieri e possono usare i messaggi per migliorare i loro modelli.`,
+        online: `Modelli open gratuiti su un servizio esterno: più capaci di quelli sul telefono, serve la connessione. ${(() => { const pr = ONLINE_PRESETS[S.openPreset || 'openrouter']; return pr.keyUrl ? `Crea una chiave gratuita su <a href="${pr.keyUrl}" target="_blank" rel="noopener">${pr.label}</a>.` : ''; })()} ${(S.openPreset || 'openrouter') === 'openrouter' ? 'Con «Automatico» l\'app usa il miglior modello gratuito disponibile e, se uno non risponde, passa da sola al successivo.' : ''} I servizi gratuiti hanno limiti giornalieri e possono usare i messaggi per migliorare i loro modelli.`,
         claude: 'La chiave resta solo su questo iPhone e viene inviata soltanto ad api.anthropic.com. La crei su <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a>. L\'uso dell\'API si paga a parte, non è incluso negli abbonamenti Claude.',
       }[prov]}</p>
     </div>
@@ -594,6 +600,19 @@ function renderSettings() {
       </div>
       <p class="note">I dati sono salvati sul dispositivo, nell'app installata. Esporta un backup ogni tanto.</p>
     </div>`;
+}
+
+let fetchingModels = false;
+function ensureFreeModels() {
+  const S = state.settings;
+  const prov = S.provider || (S.apiKey ? 'claude' : 'base');
+  if (prov !== 'online' || (S.openPreset || 'openrouter') !== 'openrouter' || fetchingModels) return;
+  if (S.freeModels?.length && Date.now() - (S.freeModelsAt || 0) < 864e5) return;
+  fetchingModels = true;
+  listFreeModels(S.openBaseUrl || undefined)
+    .then((list) => { S.freeModels = list.slice(0, 30); S.freeModelsAt = Date.now(); save(state); if (view === 'settings') renderSettings(); })
+    .catch(() => {})
+    .finally(() => { fetchingModels = false; });
 }
 
 function onSettingsChange(e) {
@@ -619,7 +638,7 @@ function onSettingsChange(e) {
       const pr = ONLINE_PRESETS[S.openPreset || 'openrouter'];
       Object.assign(S, { openPreset: S.openPreset || 'openrouter', openBaseUrl: pr.baseUrl, openModel: pr.model });
     }
-    save(state); renderSettings(); renderComposer();
+    save(state); renderSettings(); renderComposer(); ensureFreeModels();
   } else if (t.id === 'open-preset') {
     const pr = ONLINE_PRESETS[t.value];
     Object.assign(state.settings, { openPreset: t.value, openBaseUrl: pr.baseUrl, openModel: pr.model });
@@ -629,6 +648,8 @@ function onSettingsChange(e) {
     state.settings[k] = t.value.trim();
     save(state); renderComposer();
     toast('Salvato');
+  } else if (t.id === 'open-model-sel') {
+    state.settings.openModel = t.value; state.settings.lastWorkingModel = null; save(state); renderSettings();
   } else if (t.id === 'local-model') {
     state.settings.localModel = t.value; save(state); renderSettings();
   } else if (t.id === 'import-file' && t.files[0]) {
@@ -665,7 +686,7 @@ function setView(v) {
   document.querySelectorAll('.view').forEach((el) => el.classList.toggle('active', el.id === 'view-' + v));
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
   if (v === 'day') { renderDay(); requestAnimationFrame(scrollToNow); }
-  if (v === 'settings') renderSettings();
+  if (v === 'settings') { renderSettings(); ensureFreeModels(); }
   if (v === 'chat') renderChat();
 }
 

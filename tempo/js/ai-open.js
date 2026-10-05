@@ -11,10 +11,25 @@ export const LOCAL_MODELS = [
 ];
 
 export const ONLINE_PRESETS = {
-  openrouter: { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'meta-llama/llama-3.3-70b-instruct:free', keyUrl: 'https://openrouter.ai/settings/keys' },
+  openrouter: { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: '', keyUrl: 'https://openrouter.ai/settings/keys' },
   groq: { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', keyUrl: 'https://console.groq.com/keys' },
   custom: { label: 'Altro (compatibile OpenAI)', baseUrl: '', model: '', keyUrl: '' },
 };
+
+// Preferenze tra i modelli gratuiti: prima quelli grandi e bravi a seguire istruzioni
+const FREE_PREF = [/llama-3\.3-70b/, /deepseek-(chat|v3)/, /qwen.*(235b|72b|32b)/, /gpt-oss-120b/, /llama-4-maverick/, /gemma-3-27b/, /mistral-small/, /llama-4/, /qwen/, /gemma/];
+
+/** Elenco aggiornato dei modelli gratuiti di OpenRouter, dal migliore. */
+export async function listFreeModels(base = ONLINE_PRESETS.openrouter.baseUrl) {
+  const r = await fetch(`${base.replace(/\/+$/, '')}/models`);
+  if (!r.ok) throw new Error(`elenco modelli non disponibile (${r.status})`);
+  const j = await r.json();
+  const isFree = (m) => m.id.endsWith(':free') || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0);
+  const textOut = (m) => !m.architecture?.output_modalities || m.architecture.output_modalities.includes('text');
+  const free = (j.data || []).filter((m) => m.id && !m.id.startsWith('openrouter/') && isFree(m) && textOut(m) && (m.context_length || 0) >= 8000);
+  const rank = (m) => { const i = FREE_PREF.findIndex((re) => re.test(m.id)); return i < 0 ? 99 : i; };
+  return free.sort((a, b) => rank(a) - rank(b) || (b.context_length || 0) - (a.context_length || 0)).map((m) => ({ id: m.id, name: m.name || m.id }));
+}
 
 const WD = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
 
@@ -184,7 +199,7 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
   } else {
     const base = (S.openBaseUrl || '').replace(/\/+$/, '');
     if (!base) throw new Error('Manca l\'indirizzo del servizio');
-    const call = async (json) => {
+    const call = async (model, json) => {
       const r = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         signal,
@@ -194,20 +209,46 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
           ...(base.includes('openrouter.ai') ? { 'X-Title': 'Tempo' } : {}),
         },
         body: JSON.stringify({
-          model: S.openModel, messages, temperature: 0.2, max_tokens: 1200,
+          model, messages, temperature: 0.2, max_tokens: 1200,
           ...(json ? { response_format: { type: 'json_object' } } : {}),
         }),
       });
       const body = await r.json().catch(() => ({}));
-      if (!r.ok) throw Object.assign(new Error(body?.error?.message || `errore ${r.status}`), { status: r.status });
-      return body.choices?.[0]?.message?.content;
+      if (!r.ok || body?.error) throw Object.assign(new Error(body?.error?.message || `errore ${r.status}`), { status: r.ok ? body?.error?.code || 500 : r.status });
+      const c = body.choices?.[0]?.message?.content;
+      if (!c) throw Object.assign(new Error('risposta vuota'), { status: 502 });
+      return c;
     };
-    try { content = await call(true); }
-    catch (e) {
-      // alcuni modelli non accettano response_format: riprova senza
-      if (e.status === 400) content = await call(false);
-      else throw e;
+    // modelli da provare: quello scelto, poi (su OpenRouter) gli altri gratuiti
+    const candidates = [];
+    if (S.openModel) candidates.push(S.openModel);
+    if (base.includes('openrouter.ai')) {
+      if (!S.freeModels?.length || Date.now() - (S.freeModelsAt || 0) > 864e5) {
+        try { S.freeModels = (await listFreeModels(base)).slice(0, 30); S.freeModelsAt = Date.now(); } catch {}
+      }
+      for (const m of S.freeModels || []) if (!candidates.includes(m.id)) candidates.push(m.id);
     }
+    if (!candidates.length && base.includes('openrouter.ai')) candidates.push('meta-llama/llama-3.3-70b-instruct:free'); // riserva se l'elenco non è raggiungibile
+    if (!candidates.length) throw new Error('Manca il nome del modello');
+    let lastErr;
+    for (const model of candidates.slice(0, 4)) {
+      try {
+        try { content = await call(model, true); }
+        catch (e) {
+          // alcuni modelli non accettano response_format: riprova senza
+          if (e.status === 400) content = await call(model, false);
+          else throw e;
+        }
+        if (S.openModel && S.openModel !== model) S.openModel = ''; // il modello scelto non risponde: torna su Automatico
+        S.lastWorkingModel = model;
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (e.status === 401 || e.name === 'AbortError') throw e; // chiave sbagliata: inutile provare altri modelli
+      }
+    }
+    if (lastErr) throw lastErr;
   }
 
   let out;
