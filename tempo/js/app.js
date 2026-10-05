@@ -164,6 +164,7 @@ function errorText(e) {
   if (e?.code === 'webgpu') return 'Questo iPhone non può far girare modelli in locale: serve Safari con WebGPU (iOS 26 o successivo). Aggiorna iOS oppure scegli «Modello open online» in Memoria → Assistente AI.';
   if (aiMode() === 'local' && /memory|out of memory|device lost|allocation/i.test(e?.message || '')) return 'Il modello è troppo pesante per la memoria del telefono. Scegli un modello più piccolo in Memoria → Assistente AI.';
   if (aiMode() === 'local' && /fetch|network|load/i.test(e?.message || '')) return 'Non riesco a scaricare il modello: controlla la connessione (meglio il Wi-Fi) e riprova. Dopo il primo download funziona anche offline.';
+  if (aiMode() === 'online' && !state.settings.openKey && (st === 401 || st === 403)) return 'Manca la chiave del servizio online: creala gratis su openrouter.ai (Settings → Keys) e incollala in Memoria → Assistente AI.';
   if (aiMode() === 'online' && st === 401) return 'La chiave del servizio online non è valida. Controllala in Memoria → Assistente AI.';
   if (aiMode() === 'online' && (st === 404 || st === 400)) return 'Il servizio non riconosce il modello indicato (' + (e.message || '') + '). Controlla il nome del modello in Memoria → Assistente AI.';
   if (st === 401) return 'La chiave API non è valida. Controllala in Memoria → Assistente AI.';

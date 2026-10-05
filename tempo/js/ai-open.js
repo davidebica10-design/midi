@@ -80,6 +80,36 @@ function history(chat, n) {
   return out;
 }
 
+const REPLY_SCHEMA = {
+  type: 'object',
+  properties: {
+    reply: { type: 'string' },
+    ops: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember'] },
+          id: { type: 'string' },
+          title: { type: 'string' },
+          kind: { type: 'string', enum: ['task', 'event'] },
+          date: { type: 'string' },
+          start_time: { type: 'string' },
+          end_time: { type: 'string' },
+          duration_min: { type: 'integer' },
+          priority: { type: 'integer' },
+          energy: { type: 'integer' },
+          window: { type: 'string', enum: ['mattina', 'pomeriggio', 'sera'] },
+          note: { type: 'string' },
+        },
+        required: ['action'],
+      },
+    },
+    requires_confirmation: { type: 'boolean' },
+  },
+  required: ['reply', 'ops', 'requires_confirmation'],
+};
+
 function parseJson(text) {
   const t = String(text || '').replace(/```(?:json)?/g, '').trim();
   const a = t.indexOf('{'), b = t.lastIndexOf('}');
@@ -139,9 +169,17 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
   let content;
   if (isLocal) {
     const eng = await getEngine(S.localModel || LOCAL_MODELS[0].id, onProgress);
-    const res = await eng.chat.completions.create({
-      messages, temperature: 0.2, max_tokens: 700, response_format: { type: 'json_object' },
+    const ask = (format) => eng.chat.completions.create({
+      messages, temperature: 0.2, max_tokens: 700, ...(format ? { response_format: format } : {}),
     });
+    let res;
+    try {
+      // lo schema vincola il modello a produrre esattamente il JSON atteso
+      res = await ask({ type: 'json_object', schema: JSON.stringify(REPLY_SCHEMA) });
+    } catch (e) {
+      if (/grammar|schema|response format/i.test(e?.message || '')) res = await ask(null);
+      else throw e;
+    }
     content = res.choices?.[0]?.message?.content;
   } else {
     const base = (S.openBaseUrl || '').replace(/\/+$/, '');
