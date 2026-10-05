@@ -220,23 +220,30 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
       return c;
     };
     // modelli da provare: quello scelto, poi (su OpenRouter) gli altri gratuiti
+    const isOR = base.includes('openrouter.ai');
+    const bad = S.badModels || {};
+    const isBad = (id) => bad[id] && Date.now() - bad[id] < 864e5;
     const candidates = [];
-    if (S.openModel) candidates.push(S.openModel);
-    if (base.includes('openrouter.ai')) {
-      if (!S.freeModels?.length || Date.now() - (S.freeModelsAt || 0) > 864e5) {
-        try { S.freeModels = (await listFreeModels(base)).slice(0, 30); S.freeModelsAt = Date.now(); } catch {}
+    if (S.openModel && !(isOR && isBad(S.openModel))) candidates.push(S.openModel);
+    let listErr = null;
+    if (isOR) {
+      if (!S.freeModels?.length || Date.now() - (S.freeModelsAt || 0) > 6 * 36e5) {
+        try { S.freeModels = (await listFreeModels(base)).slice(0, 40); S.freeModelsAt = Date.now(); }
+        catch (e) { listErr = e; }
       }
-      for (const m of S.freeModels || []) if (!candidates.includes(m.id)) candidates.push(m.id);
+      for (const m of S.freeModels || []) if (!candidates.includes(m.id) && !isBad(m.id)) candidates.push(m.id);
+      if (!candidates.length) candidates.push(...(S.freeModels || []).map((m) => m.id)); // tutti scartati: riprova comunque
     }
-    if (!candidates.length && base.includes('openrouter.ai')) candidates.push('meta-llama/llama-3.3-70b-instruct:free'); // riserva se l'elenco non è raggiungibile
-    if (!candidates.length) throw new Error('Manca il nome del modello');
+    if (!candidates.length) throw new Error(listErr ? 'Non riesco a scaricare l\'elenco dei modelli gratuiti: ' + listErr.message : 'Manca il nome del modello');
+    const tried = [];
     let lastErr;
-    for (const model of candidates.slice(0, 4)) {
+    for (const model of candidates.slice(0, 8)) {
+      tried.push(model);
       try {
         try { content = await call(model, true); }
         catch (e) {
           // alcuni modelli non accettano response_format: riprova senza
-          if (e.status === 400) content = await call(model, false);
+          if (e.status === 400 && !/free|unavailable|not found|no endpoints/i.test(e.message)) content = await call(model, false);
           else throw e;
         }
         if (S.openModel && S.openModel !== model) S.openModel = ''; // il modello scelto non risponde: torna su Automatico
@@ -246,9 +253,14 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
       } catch (e) {
         lastErr = e;
         if (e.status === 401 || e.name === 'AbortError') throw e; // chiave sbagliata: inutile provare altri modelli
+        bad[model] = Date.now();
+        S.badModels = bad;
       }
     }
-    if (lastErr) throw lastErr;
+    if (lastErr) {
+      if (!isOR) throw lastErr;
+      throw Object.assign(new Error(`Nessun modello gratuito ha risposto. Provati: ${tried.map((m) => m.replace(/:free$/, '')).join(', ')}. Ultimo errore: ${lastErr.message}`), { code: 'nofree', status: lastErr.status });
+    }
   }
 
   let out;

@@ -166,6 +166,7 @@ function errorText(e) {
   if (aiMode() === 'local' && /fetch|network|load/i.test(e?.message || '')) return 'Non riesco a scaricare il modello: controlla la connessione (meglio il Wi-Fi) e riprova. Dopo il primo download funziona anche offline.';
   if (aiMode() === 'online' && !state.settings.openKey && (st === 401 || st === 403)) return 'Manca la chiave del servizio online: creala gratis su openrouter.ai (Settings → Keys) e incollala in Memoria → Assistente AI.';
   if (aiMode() === 'online' && st === 401) return 'La chiave del servizio online non è valida. Controllala in Memoria → Assistente AI.';
+  if (e?.code === 'nofree') return e.message + ' Riprova tra qualche minuto: i modelli gratuiti a volte sono sovraccarichi.';
   if (aiMode() === 'online' && (st === 404 || st === 400)) return 'Il servizio non riconosce il modello indicato (' + (e.message || '') + '). Controlla il nome del modello in Memoria → Assistente AI.';
   if (st === 401) return 'La chiave API non è valida. Controllala in Memoria → Assistente AI.';
   if (st === 429) return 'Troppe richieste in poco tempo. Riprova tra qualche secondo.';
@@ -833,7 +834,13 @@ bind();
 renderAll();
 navigator.storage?.persist?.().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // quando arriva una versione nuova dell'app, ricarica una volta per usarla subito
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloaded && !busy) { reloaded = true; location.reload(); }
+  });
+  navigator.serviceWorker.register('sw.js').then((r) => r.update()).catch(() => {});
 }
 // per i test
 window.__tempo = { state, get plan() { return plan; }, send, replan, renderAll };
