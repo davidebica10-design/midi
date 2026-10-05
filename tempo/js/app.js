@@ -1,4 +1,4 @@
-import { planDays, updateAnchors, diffPlans, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
+import { planDays, planDay, updateAnchors, diffPlans, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel } from './store.js';
 import { runTurn, localParse, MODELS } from './ai.js';
 import { runOpenTurn, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
@@ -17,7 +17,13 @@ let busy = false;
 let pending = null; // proposta in attesa di conferma: { draft, msgId }
 
 // ---------------------------------------------------------------- piano
+let planCache = {};
+/** Piano di un giorno qualsiasi: i primi giorni vengono dal piano completo, gli altri si calcolano al volo. */
+function planFor(k) {
+  return plan[k] || (planCache[k] ||= planDay(k, state.items, state.prefs, Date.now(), [], state.recurring, state.anchors || {}));
+}
 function replan() {
+  planCache = {};
   const now = Date.now();
   plan = planDays(state, now, DAYS);
   updateAnchors(state, plan, now);
@@ -49,7 +55,9 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 const draftOf = () => clone({ items: state.items, prefs: state.prefs, recurring: state.recurring, memory: state.memory, anchors: state.anchors });
 function addMsg(m) {
   const msg = { id: uid(), ts: Date.now(), ...m };
+  if (msg.role === 'assistant') replyId = msg.id;
   state.chat.push(msg);
+  if (state.chat.length > 60) state.chat = state.chat.slice(-60);
   save(state);
   renderChat();
   return msg;
@@ -60,7 +68,10 @@ async function send(text) {
   if (!text || busy) return;
   if (/^annulla( l'ultima modifica)?\.?$/i.test(text)) { addMsg({ role: 'user', text }); doUndo(); return; }
   const prior = state.chat.slice();
-  openConvo();
+  // la barra modifica il giorno che stai guardando: l'AI lo deve sapere
+  const aiText = selDay !== today() ? `[Sto guardando ${dayLabel(selDay, today())} (${selDay})] ${text}` : text;
+  $('#input').blur();
+  setComposing(false);
   addMsg({ role: 'user', text });
   if (pending) discardPending(true);
   const mode = aiMode();
@@ -74,7 +85,7 @@ async function send(text) {
     let lastPaint = 0;
     try {
       const out = await runOpenTurn({
-        state, plan, now: Date.now(), userText: text, chat: prior,
+        state, plan, now: Date.now(), userText: aiText, chat: prior,
         onProgress: (f) => {
           typing.progress = f;
           if (Date.now() - lastPaint > 400 || f >= 1) { lastPaint = Date.now(); renderChat(); }
@@ -101,6 +112,7 @@ async function send(text) {
     const before = plan;
     const itemsBefore = JSON.parse(JSON.stringify(state.items));
     const r = localParse(text, state, Date.now());
+    if (r.ops && selDay !== today()) for (const o of r.ops) if (o.action === 'add' && !o.date) o.date = selDay;
     if (!r.ops) { addMsg({ role: 'assistant', text: r.reply }); return; }
     const draft = JSON.parse(JSON.stringify({ items: state.items, prefs: state.prefs, recurring: state.recurring, memory: state.memory, anchors: state.anchors }));
     const res = applyOps(draft, r.ops);
@@ -147,7 +159,7 @@ async function send(text) {
   };
 
   try {
-    const out = await runTurn({ state, plan, now: Date.now(), userText: text, hooks, chat: prior });
+    const out = await runTurn({ state, plan, now: Date.now(), userText: aiText, hooks, chat: prior });
     removeMsg(typing.id);
     if (draft) finishChange({ text: out.text, draft, log, confirm, before, itemsBefore });
     else addMsg({ role: 'assistant', text: out.text });
@@ -283,64 +295,78 @@ function fillImages(root) {
 }
 const imgTag = (id) => `<img data-img="${esc(id)}" ${cachedImageUrl(id) ? `src="${cachedImageUrl(id)}"` : ''} alt="">`;
 
-// ---------------------------------------------------------------- conversazione
-let convoOpen = false;
-function openConvo() {
-  if (convoOpen) return;
-  convoOpen = true;
-  closePlus();
-  const c = $('#convo');
-  c.hidden = false;
-  c.classList.remove('closing');
-  renderChat();
-  renderComposer();
-}
-function closeConvo() {
-  if (!convoOpen) return;
-  convoOpen = false;
-  const c = $('#convo');
-  c.classList.add('closing');
-  setTimeout(() => { if (!convoOpen) { c.hidden = true; c.classList.remove('closing'); } }, 300);
-  $('#input').blur();
-  renderComposer();
+// ---------------------------------------------------------------- scrivere al giorno
+// La barra non è una chat: modifica il giorno. Mentre scrivi vedi solo un riassunto;
+// dopo l'invio compare una breve nota con l'esito, poi sparisce.
+let replyId = null, replyTimer = 0, composing = false;
+const seenReply = new Set();
+
+function setComposing(on) {
+  composing = on;
+  $('#app').classList.toggle('composing', on);
+  if (on) { closePlus(); renderMiniSummary(); }
 }
 
-function renderChat() {
-  const el = $('#chat');
-  if (!state.chat.length) {
-    const sugg = [
-      ['Oggi lavoro fino alle 18:30, poi voglio fare un beat e la spesa', 'Organizza la mia giornata'],
-      ['Cosa riesco realisticamente a fare oggi?', 'Cosa riesco a fare oggi?'],
-      ['Sono in ritardo di 30 minuti', 'Sono in ritardo di 30 minuti'],
-      ['Fammi una giornata più leggera', 'Una giornata più leggera'],
-    ];
-    el.innerHTML = `<div class="hello">
-      <h2>Dimmi cosa devi fare,<br>al resto penso io.</h2>
-      <p>Impegni fissi, attività, cosa conta di più: stimo le durate, organizzo la giornata e la riorganizzo quando qualcosa cambia.${aiMode() !== 'base' ? '' : ' <a href="#" data-goto="settings">Scegli un assistente AI gratuito</a> per la conversazione completa.'}</p>
-      <div class="suggest">${sugg.map(([q, l]) => `<button class="sugg" data-ask="${esc(q)}">${esc(l)}</button>`).join('')}</div>
-    </div>`;
-    return;
-  }
-  const fresh = (m) => { const isNew = !seenMsgs.has(m.id); seenMsgs.add(m.id); return isNew ? ' anim' : ''; };
-  el.innerHTML = state.chat.map((m) => {
-    if (m.pending && m.progress != null && m.progress < 1) return `<div class="msg assistant${fresh(m)}">Preparo il modello sul telefono… ${Math.round(m.progress * 100)}%<div class="applied-note">Solo la prima volta: il modello viene scaricato e salvato sul telefono. Meglio con il Wi-Fi.</div></div>`;
-    if (m.pending) return `<div class="msg assistant typing${fresh(m)}" aria-label="Sto pensando"><i></i><i></i><i></i></div>`;
-    let extra = '';
+function renderMiniSummary() {
+  const t = today();
+  const p = planFor(selDay);
+  const isToday = selDay === t;
+  const d = dateOf(selDay);
+  const n = nowMin();
+  const tasks = p.blocks.filter((b) => b.item.kind === 'task');
+  const doneN = tasks.filter((b) => b.type === 'done').length;
+  const total = tasks.length + p.unscheduled.length;
+  const cur = isToday ? currentBlock() : null;
+  const nxt = p.blocks.find((b) => b.type !== 'done' && (isToday ? b.start > n : true) && b !== cur);
+  const name = isToday ? 'Oggi' : selDay === addDays(t, 1) ? 'Domani' : cap(d.toLocaleDateString('it-IT', { weekday: 'long' }));
+  const lines = [];
+  if (cur) lines.push(`Adesso <b>${esc(cur.item.title)}</b> fino alle ${fmtMin(cur.end)}`);
+  if (nxt) lines.push(`${cur ? 'Poi' : isToday ? 'Prossimo' : 'Si parte con'} <b>${esc(nxt.item.title)}</b> alle ${fmtMin(nxt.start)}`);
+  if (p.unscheduled.length) lines.push(`<span class="warn">${p.unscheduled.length} ${p.unscheduled.length === 1 ? 'attività non entra' : 'attività non entrano'}</span>`);
+  $('#mini-sum').innerHTML = `
+    <div class="ms-top"><b>${esc(name)}</b><span>${d.getDate()} ${esc(d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', ''))}${isToday ? ' · ' + fmtMin(n) : ''}</span></div>
+    <div class="ms-bar"><i style="width:${total ? Math.round((doneN / total) * 100) : 0}%"></i></div>
+    <div class="ms-cap">${total ? `${doneN} di ${total} fatte` : 'Nessuna attività'} · ${durLabel(p.free)} libere</div>
+    ${lines.length ? `<div class="ms-lines">${lines.map((l) => `<div>${l}</div>`).join('')}</div>` : ''}
+    ${aiMode() === 'base' ? '<div class="ms-hint">Modalità base: capisco frasi semplici. <a href="#" data-goto="settings">Scegli un\'AI gratuita</a></div>' : ''}`;
+}
+
+function renderChat() { renderReply(); }
+
+function renderReply() {
+  const el = $('#reply');
+  const m = replyId ? state.chat.find((x) => x.id === replyId) : null;
+  if (!m) { el.innerHTML = ''; el.hidden = true; return; }
+  el.hidden = false;
+  const isNew = !seenReply.has(m.id + (m.pending ? 'p' : ''));
+  seenReply.add(m.id + (m.pending ? 'p' : ''));
+  let body;
+  if (m.pending) {
+    body = m.progress != null && m.progress < 1
+      ? `<div class="r-typing"><span>Preparo il modello sul telefono… ${Math.round(m.progress * 100)}%</span></div><div class="r-note">Solo la prima volta: il modello viene scaricato e salvato sul telefono.</div>`
+      : `<div class="r-typing"><i></i><i></i><i></i><span>Sto sistemando la giornata…</span></div>`;
+  } else {
+    body = `<div class="r-text">${esc(m.text)}</div>`;
     if (m.changes?.length) {
-      extra += `<ul class="changes">${m.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`;
-      if (m.applied === null && pending?.msgId === m.id) {
-        extra += `<div class="actions"><button class="btn primary" data-act="apply">Applica</button><button class="btn" data-act="discard">Lascia com'è</button></div>`;
-      } else if (m.applied === null || m.applied === false) {
-        extra += `<div class="applied-note">Non applicate.</div>`;
-      } else if (m.undone) {
-        extra += `<div class="applied-note">Annullate.</div>`;
-      } else if (m.undoId && undoExists(m.undoId)) {
-        extra += `<div class="actions"><button class="btn" data-act="undo" data-id="${m.undoId}">Annulla</button></div>`;
-      }
+      const shown = m.changes.slice(0, 4);
+      body += `<ul class="r-changes">${shown.map((c) => `<li>${esc(c)}</li>`).join('')}${m.changes.length > 4 ? `<li class="more">e altre ${m.changes.length - 4} modifiche</li>` : ''}</ul>`;
+      if (m.applied === null && pending?.msgId === m.id) body += `<div class="r-actions"><button class="btn primary" data-act="apply">Applica</button><button class="btn" data-act="discard">Lascia com'è</button></div>`;
+      else if (m.applied === false) body += `<div class="r-note">Non applicate.</div>`;
+      else if (m.undone) body += `<div class="r-note">Annullate.</div>`;
+      else if (m.undoId && undoExists(m.undoId)) body += `<div class="r-actions"><button class="btn" data-act="undo" data-id="${m.undoId}">Annulla</button></div>`;
     }
-    return `<div class="msg ${m.role}${m.error ? ' error' : ''}${fresh(m)}">${esc(m.text)}${extra}</div>`;
-  }).join('');
-  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+  }
+  el.innerHTML = `<div class="reply-card${m.error ? ' error' : ''}${isNew ? ' anim' : ''}">${m.pending ? '' : '<button type="button" class="r-x" data-act="dismiss" aria-label="Chiudi">×</button>'}${body}</div>`;
+  // la nota sparisce da sola, tranne quando aspetta una conferma
+  clearTimeout(replyTimer);
+  if (!m.pending && !(m.applied === null && pending?.msgId === m.id)) replyTimer = setTimeout(hideReply, m.error ? 12000 : 9000);
+}
+function hideReply() {
+  const el = $('#reply');
+  if (el.hidden) return;
+  const card = el.querySelector('.reply-card');
+  if (card) card.classList.add('out');
+  setTimeout(() => { replyId = null; renderReply(); }, 260);
 }
 
 let rec = null;
@@ -351,14 +377,6 @@ function renderComposer() {
   $('#send').disabled = busy;
   $('#mic').hidden = !SR || (has && !rec);
   $('#send').hidden = !!SR && !has && !busy;
-  const cur = currentBlock();
-  const chips = (aiMode() !== 'base'
-    ? [cur && cur.item.kind === 'task' && !String(cur.id).startsWith('rec:') ? `Ho finito ${cur.item.title.toLowerCase()}` : null,
-      'Cosa riesco a fare oggi?', 'Organizzami domani', 'Sono in ritardo di 30 minuti', 'Cosa posso rimandare?']
-    : [cur && cur.item.kind === 'task' ? `Ho finito ${cur.item.title.toLowerCase()}` : null, 'Sono in ritardo di 30 min', 'Domani alle 10 appuntamento']
-  ).filter(Boolean);
-  $('#chips').hidden = !convoOpen || !state.chat.length;
-  $('#chips').innerHTML = chips.map((c) => `<button type="button" class="chip">${esc(c)}</button>`).join('');
 }
 
 function toggleMic() {
@@ -420,8 +438,7 @@ function itemCard(b, place, i, isToday) {
 
 function renderDayView(animate) {
   const t = today();
-  if (!plan[selDay]) selDay = t;
-  const p = plan[selDay];
+  const p = planFor(selDay);
   const isToday = selDay === t;
   const n = nowMin();
   const d = dateOf(selDay);
@@ -550,17 +567,83 @@ function renderOverview(animate) {
   if (animate) animateIn($('#ov-scroll'), 1400);
 }
 
+// ---- vista mese: una carta per ogni giorno con qualcosa in programma
+let ovMode = 'list';
+const MONTHS = 6;
+function renderCalendar(animate) {
+  const t = today();
+  const d0 = dateOf(t);
+  let html = '', chips = '';
+  for (let mi = 0; mi < MONTHS; mi++) {
+    const first = new Date(d0.getFullYear(), d0.getMonth() + mi, 1);
+    const y = first.getFullYear(), m = first.getMonth();
+    chips += `<button type="button" data-month="${mi}"${mi === 0 ? ' class="on"' : ''}>${esc(cap(first.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '')))}</button>`;
+    const lead = (first.getDay() + 6) % 7; // la settimana parte dal lunedì
+    const days = new Date(y, m + 1, 0).getDate();
+    let cells = '<span class="cd-empty"></span>'.repeat(lead);
+    for (let dd = 1; dd <= days; dd++) {
+      const k = dateKey(new Date(y, m, dd));
+      const p = planFor(k);
+      const blocks = p.blocks;
+      const pick = blocks.find((b) => b.item.image) || blocks.find((b) => b.type !== 'done') || blocks[0] || (p.unscheduled[0] && { item: p.unscheduled[0].item });
+      const cls = ['cd', k < t ? 'past' : '', k === t ? 'today' : '', k === selDay ? 'sel' : ''].join(' ');
+      if (pick) {
+        const it = pick.item;
+        const allDone = blocks.length && blocks.every((b) => b.type === 'done');
+        cells += `<button class="${cls} has${it.image ? ' ph' : ''}${allDone ? ' done' : ''}" data-day="${k}" style="--r:${tilt(k)}deg" aria-label="${dd}: ${esc(it.title)}">
+          <span class="cd-card">${it.image ? imgTag(it.image) : `<span class="cd-t">${esc(it.title)}</span>`}</span><b>${dd}</b></button>`;
+      } else {
+        cells += `<button class="${cls}" data-day="${k}" aria-label="${dd}, libero"><b>${dd}</b></button>`;
+      }
+    }
+    html += `<section class="month" data-mi="${mi}" style="--i:${mi}">
+      <h3>${esc(cap(first.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })))}</h3>
+      <div class="wk"><span>L</span><span>M</span><span>M</span><span>G</span><span>V</span><span>S</span><span>D</span></div>
+      <div class="grid">${cells}</div>
+    </section>`;
+  }
+  $('#cal-scroll').innerHTML = html;
+  $('#months').innerHTML = chips;
+  fillImages($('#cal-scroll'));
+  if (animate) animateIn($('#cal-scroll'), 1200);
+}
+
+function setOvMode(m, animate) {
+  ovMode = m;
+  const list = m === 'list';
+  $('#ov-scroll').hidden = !list;
+  $('#cal-scroll').hidden = list;
+  $('#months').hidden = list;
+  $('#ov-title').textContent = list ? 'I tuoi giorni' : 'Calendario';
+  document.querySelectorAll('[data-ovmode]').forEach((b) => b.classList.toggle('on', b.dataset.ovmode === m));
+  if (list) renderOverview(animate !== false); else renderCalendar(animate !== false);
+  if (mode === 'overview') requestAnimationFrame(() => scrollOverviewTo(selDay));
+}
+
+// posizione di scorrimento che porta un mese appena sotto l'intestazione
+const monthTop = (sec) => Math.max(0, sec.offsetTop - parseFloat(getComputedStyle($('#cal-scroll')).paddingTop));
+
+function scrollOverviewTo(k) {
+  if (ovMode === 'list') {
+    const tile = document.querySelector(`.tile[data-day="${k}"]`);
+    $('#ov-scroll').scrollTop = tile ? Math.max(0, tile.offsetTop - 100) : 0;
+  } else {
+    const cell = document.querySelector(`.cd[data-day="${k}"]`);
+    const sec = cell?.closest('.month');
+    $('#cal-scroll').scrollTop = sec ? monthTop(sec) : 0;
+  }
+}
+
 function openOverview() {
   if (mode === 'overview') return;
-  closeConvo();
+  setComposing(false);
   closePlus();
   mode = 'overview';
-  renderOverview(true);
+  setOvMode(ovMode, true);
   const ov = $('#overview');
   ov.hidden = false;
   void ov.offsetWidth;
-  const tile = document.querySelector(`.tile[data-day="${selDay}"]`);
-  if (tile) $('#ov-scroll').scrollTop = Math.max(0, tile.offsetTop - 100);
+  scrollOverviewTo(selDay);
   $('#app').classList.add('mode-overview');
 }
 
@@ -607,7 +690,7 @@ function bindPinch() {
     active = true;
     if (mode === 'overview') {
       const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2, my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      target = document.elementFromPoint(mx, my)?.closest('.tile') || null;
+      target = document.elementFromPoint(mx, my)?.closest('.tile, .cd') || null;
     }
   }, { passive: true });
   app.addEventListener('touchmove', (e) => {
@@ -634,9 +717,10 @@ function bindPinch() {
       const tl = target;
       target = null;
       if (tl) { tl.style.transition = ''; tl.style.transform = ''; }
-      if (scale > 1.1) {
+      if (scale < 0.86 && ovMode === 'list') setOvMode('month');
+      else if (scale > 1.1) {
         const k = tl?.dataset.day || selDay;
-        openDay(k, tl || document.querySelector(`.tile[data-day="${k}"]`));
+        openDay(k, tl || document.querySelector(`.tile[data-day="${k}"], .cd[data-day="${k}"]`));
       }
     }
   };
@@ -807,7 +891,7 @@ function quickOp(action, id, extra = {}) {
 let settingsOpen = false;
 function openSettings() {
   settingsOpen = true;
-  closeConvo();
+  setComposing(false);
   closePlus();
   const p = $('#panel');
   p.hidden = false;
@@ -905,7 +989,7 @@ function renderSettings() {
       <div class="card">
         <div class="row"><span class="lbl">Esporta un backup</span><button class="btn" id="export">Esporta</button></div>
         <div class="row"><span class="lbl">Ripristina da backup</span><label class="btn" for="import-file">Importa</label><input type="file" id="import-file" accept="application/json,.json" hidden></div>
-        <div class="row"><span class="lbl">Svuota la chat</span><button class="btn" id="clear-chat">Svuota</button></div>
+        <div class="row"><span class="lbl">Dimentica le richieste passate<small>l'AI non ne terrà più conto</small></span><button class="btn" id="clear-chat">Dimentica</button></div>
         <div class="row"><span class="lbl">Cancella tutto</span><button class="btn danger" id="reset">Cancella</button></div>
       </div>
       <p class="note">I dati sono salvati sul dispositivo, nell'app installata. Esporta un backup ogni tanto.</p>
@@ -999,23 +1083,40 @@ function toast(text, action) {
 const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
 
 function renderAll() {
-  if (mode === 'day') renderDayView(false); else renderOverview(false);
+  if (mode === 'day') renderDayView(false); else if (ovMode === 'list') renderOverview(false); else renderCalendar(false);
   $('#undo-btn').hidden = !canUndo();
   renderComposer();
-  $('#chat-mode').textContent = { claude: 'Claude', online: (ONLINE_PRESETS[presetOf(state.settings)]?.label || 'Online') + ' · gratis', local: 'Sul telefono · gratis', base: 'Modalità base, senza AI' }[aiMode()];
-  if (convoOpen) renderChat();
+  if (composing) renderMiniSummary();
+  renderReply();
   if (settingsOpen) renderSettings();
 }
 
 // ---------------------------------------------------------------- eventi
 function bind() {
   $('#to-overview').addEventListener('click', openOverview);
-  $('#ov-today').addEventListener('click', () => { const k = today(); openDay(k, document.querySelector(`.tile[data-day="${k}"]`)); });
+  $('#ov-today').addEventListener('click', () => { const k = today(); openDay(k, document.querySelector(`.tile[data-day="${k}"]:not([hidden] *), .cd[data-day="${k}"]`)); });
   $('#ov-scroll').addEventListener('click', (e) => { const t = e.target.closest('.tile'); if (t) openDay(t.dataset.day, t); });
+  $('#cal-scroll').addEventListener('click', (e) => { const c = e.target.closest('.cd'); if (c) openDay(c.dataset.day, c); });
+  document.querySelectorAll('[data-ovmode]').forEach((b) => b.addEventListener('click', () => setOvMode(b.dataset.ovmode)));
+  $('#months').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-month]');
+    const sec = b && document.querySelector(`.month[data-mi="${b.dataset.month}"]`);
+    if (sec) $('#cal-scroll').scrollTo({ top: monthTop(sec), behavior: 'smooth' });
+  });
+  // il mese in alto segue lo scorrimento
+  $('#cal-scroll').addEventListener('scroll', () => {
+    const top = $('#cal-scroll').scrollTop + 40;
+    let cur = 0;
+    document.querySelectorAll('.month').forEach((m) => { if (monthTop(m) <= top) cur = +m.dataset.mi; });
+    document.querySelectorAll('#months [data-month]').forEach((b) => {
+      const on = +b.dataset.month === cur;
+      if (on && !b.classList.contains('on')) b.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+      b.classList.toggle('on', on);
+    });
+  }, { passive: true });
   $('#open-settings').addEventListener('click', openSettings);
   $('#close-settings').addEventListener('click', closeSettings);
   $('#undo-btn').addEventListener('click', () => doUndo());
-  $('#convo-close').addEventListener('click', closeConvo);
 
   // collegamenti (riepilogo → panoramica, "scegli un assistente" → impostazioni)
   document.addEventListener('click', (e) => {
@@ -1064,7 +1165,12 @@ function bind() {
   const input = $('#input');
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(132, input.scrollHeight) + 'px'; };
   input.addEventListener('input', () => { grow(); renderComposer(); });
-  input.addEventListener('focus', () => { closePlus(); openConvo(); });
+  input.addEventListener('focus', () => setComposing(true));
+  input.addEventListener('blur', () => setTimeout(() => {
+    if (document.activeElement !== input && !input.value.trim() && !rec) setComposing(false);
+  }, 120));
+  // toccando la giornata mentre scrivi, si torna alle carte
+  $('#day-scroll').addEventListener('pointerdown', () => { if (composing) { input.blur(); if (!input.value.trim()) setComposing(false); } });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#composer').requestSubmit(); }
   });
@@ -1077,34 +1183,27 @@ function bind() {
     send(v);
     renderComposer();
   });
-  $('#mic').addEventListener('click', () => { openConvo(); toggleMic(); });
+  $('#mic').addEventListener('click', () => { setComposing(true); toggleMic(); });
   $('#plus').addEventListener('click', () => togglePlus());
   $('#plus-menu').addEventListener('click', (e) => {
     const b = e.target.closest('[data-plus]');
     if (!b) return;
     closePlus();
-    closeConvo();
     if (b.dataset.plus === 'task') openSheet(null);
     else pickPhoto('new');
   });
   document.addEventListener('pointerdown', (e) => { if (!e.target.closest('#plus-menu, #plus')) closePlus(); });
   $('#photo-input').addEventListener('change', (e) => onPhotoPicked(e.target.files[0]));
-  $('#chips').addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (c) send(c.textContent); });
 
-  // conversazione
-  $('#chat').addEventListener('click', (e) => {
-    const sg = e.target.closest('[data-ask]');
-    if (sg) { send(sg.dataset.ask); return; }
+  // nota con l'esito
+  $('#reply').addEventListener('click', (e) => {
     const b = e.target.closest('[data-act]');
     if (!b) return;
     if (b.dataset.act === 'apply') applyPending();
     if (b.dataset.act === 'discard') discardPending();
     if (b.dataset.act === 'undo') doUndo(b.dataset.id);
+    if (b.dataset.act === 'dismiss') hideReply();
   });
-  // trascinando in giù dall'alto la conversazione si chiude
-  let y0 = null;
-  $('#convo').addEventListener('touchstart', (e) => { y0 = $('#chat').scrollTop <= 0 && e.touches.length === 1 ? e.touches[0].clientY : null; }, { passive: true });
-  $('#convo').addEventListener('touchmove', (e) => { if (y0 != null && e.touches[0].clientY - y0 > 90) { y0 = null; closeConvo(); } }, { passive: true });
 
   // scheda
   $('#sheet-backdrop').addEventListener('click', closeSheet);
@@ -1170,7 +1269,7 @@ function bind() {
         .catch((err) => { if (status) status.textContent = errorText(err); t.disabled = false; });
     }
     if (t.id === 'export') exportData();
-    if (t.id === 'clear-chat' && confirm('Svuotare la conversazione? Attività e memoria restano.')) { state.chat = []; pending = null; save(state); toast('Chat svuotata'); }
+    if (t.id === 'clear-chat' && confirm('Dimenticare le richieste passate? Attività e memoria restano.')) { state.chat = []; pending = null; replyId = null; save(state); renderReply(); toast('Fatto'); }
     if (t.id === 'reset' && confirm('Cancellare tutte le attività, la memoria e la chat? (La chiave API resta.)')) {
       commit('Cancella tutto', () => Object.assign(state, { items: [], recurring: [], memory: [], anchors: {}, chat: [] }));
       toastUndo('Tutto cancellato');
@@ -1200,7 +1299,7 @@ function bind() {
   const tick = () => {
     replan();
     save(state);
-    if (mode === 'day') renderDayView(false); else renderOverview(false);
+    if (mode === 'day') renderDayView(false); else if (ovMode === 'list') renderOverview(false); else renderCalendar(false);
     renderComposer();
   };
   setInterval(tick, 30000);

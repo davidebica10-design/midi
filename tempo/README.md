@@ -17,8 +17,8 @@ lui pianifica la giornata e la ripianifica quando qualcosa cambia.
 ## Come si usa
 
 - **La giornata** è un collage di carte: riepilogo, attività in corso, impegni e attività in ordine di orario. Tocca il cerchio per segnare una cosa come fatta, tocca la carta per modificarla.
-- **La barra in basso** serve a parlare con l'assistente (anche a voce) e, con **+**, ad aggiungere attività, anche con una foto.
-- **Pizzica verso l'interno** (o tocca l'icona in alto a sinistra) per vedere tutti i giorni uno sotto l'altro; tocca un giorno o allarga le dita per aprirlo.
+- **La barra in basso** modifica il giorno che stai guardando: toccandola le carte salgono e resta un piccolo riassunto; scrivi (o detta) cosa cambiare e l'esito compare in una breve nota con «Annulla». Con **+** aggiungi attività, anche con una foto.
+- **Pizzica verso l'interno** (o tocca l'icona in alto a sinistra) per vedere tutti i giorni uno sotto l'altro; pizzica ancora per la vista **Mese**, con una carta per ogni giorno che ha qualcosa. Tocca un giorno o allarga le dita per aprirlo.
 - **⋯** in alto a destra apre memoria e impostazioni.
 
 I dati restano sul telefono, dentro l'app installata (le foto in un archivio a parte). Dalle impostazioni puoi esportare un backup delle attività.
