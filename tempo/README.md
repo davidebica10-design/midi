@@ -23,6 +23,8 @@ Tempo non è un'agenda: costruisce la giornata in base a ciò che stai cercando 
 - **Memoria**: le sessioni lasciate a metà ripartono da dove eri rimasto; le sessioni saltate vengono notate («recuperi sabato o alleggerisco l'obiettivo?»).
 - **Sessioni vere**: decompressione dopo il lavoro, pause tra le sessioni, durata massima di fila, giorni in cui stacchi, e uno stop esplicito a fine serata.
 - **Il tuo contesto** (⋯): tutto quello che l'app usa per decidere, modificabile.
+- **Riepilogo**: nel calendario (pizzico sul giorno) l'icona in alto a sinistra mostra i punti chiave su come sta andando, i prossimi 7 giorni e i progetti; puoi fare domande come in una chat.
+- **La barra** sta nel «+» in basso a destra: toccalo per parlare con Tempo.
 
 ## Come si usa
 

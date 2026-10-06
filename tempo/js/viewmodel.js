@@ -288,3 +288,81 @@ export function week(ctx) {
     emptyText: cards.length ? null : 'Niente in programma questa settimana. Dimmi cosa vuoi ottenere e preparo le sessioni.',
   };
 }
+
+/**
+ * Riepilogo (chat): i punti chiave su come sta andando, i prossimi 7 giorni e i progetti.
+ * ctx: { state, plan, longPlan, planFor, now, fits }
+ */
+export function summary(ctx) {
+  const { state, now } = ctx;
+  const t = dateKey(new Date(now));
+  const fits = ctx.fits || {};
+  const w = week({ ...ctx, offset: 0, anchor: t });
+  const points = [];
+
+  // questa settimana
+  const done = w.cards.reduce((s, c) => s + c.ticks.reduce((a, x) => a + x.done, 0), 0);
+  points.push(w.sessions ? `Questa settimana: ${done} di ${w.sessions} ${w.sessions === 1 ? 'sessione fatta' : 'sessioni fatte'}${done === w.sessions ? '. Settimana chiusa.' : '.'}` : 'Questa settimana non hai sessioni in programma.');
+  // obiettivi
+  for (const g of state.goals || []) {
+    const mine = state.items.filter((x) => x.goalId === g.id && x.kind === 'task' && !x.habitId);
+    const ok = mine.filter((x) => x.status === 'done').length;
+    const f = fits[g.id];
+    const pr = g.projectId ? projectOf(state, g.projectId) : null;
+    const name = pr?.name || g.title;
+    let line = `${name}: ${ok} di ${plural(mine.length, 'sessione', 'sessioni')}`;
+    if (g.due) {
+      if (f?.late) line += `, ma ${plural(f.late, 'sessione resta', 'sessioni restano')} oltre il ${dateLong(g.due)}`;
+      else if (f?.lastDay) { const margin = daysBetween(f.lastDay, g.due); line += `, finisci il ${dateLong(f.lastDay)}: ${margin > 0 ? `${plural(margin, 'giorno', 'giorni')} prima della scadenza` : 'proprio alla scadenza'}`; }
+      else line += `, scadenza ${dateLong(g.due)}`;
+    }
+    points.push(line + '.');
+  }
+  // il mese
+  const monthEnd = (() => { const [y, m] = t.split('-').map(Number); return dateKey(new Date(y, m, 0)); })();
+  let monthSessions = 0, busiest = null;
+  for (let k = t; k <= monthEnd; k = addDays(k, 1)) {
+    const p = ctx.plan?.[k] || ctx.longPlan?.[k] || ctx.planFor?.(k);
+    const n = p ? p.blocks.filter((b) => b.item.kind === 'task' && !isRecOrRest(b.id) && b.type !== 'done').length : 0;
+    monthSessions += n;
+    if (n && (!busiest || n > busiest.n)) busiest = { k, n };
+  }
+  if (monthSessions) points.push(`Da qui a fine mese: ${plural(monthSessions, 'sessione', 'sessioni')}${busiest && busiest.n > 1 ? `, il giorno più pieno è ${weekdayName(busiest.k)} ${+busiest.k.slice(8)}` : ''}.`);
+  const skips = (state.log || []).filter((e) => e.type === 'skip' && e.at >= now - 7 * 864e5).length;
+  if (skips >= 2) points.push(`Negli ultimi 7 giorni hai saltato ${plural(skips, 'sessione', 'sessioni')}.`);
+
+  // prossimi 7 giorni (la lista con le spunte)
+  const rows = [];
+  for (let i = 0; i < 7 && rows.length < 6; i++) {
+    const k = addDays(t, i);
+    const p = ctx.plan?.[k] || ctx.longPlan?.[k] || ctx.planFor?.(k);
+    for (const b of p?.blocks || []) {
+      if (b.item.kind !== 'task' || isRecOrRest(b.id) || rows.length >= 6) continue;
+      rows.push({ id: b.item.id, day: k, title: b.item.title, sub: `${k === t ? 'Oggi' : k === addDays(t, 1) ? 'Domani' : cap(weekdayName(k))} ${b.type === 'done' ? '· fatta' : `alle ${fmtMin(b.start)}`} · ${durLabel(b.end - b.start)}`, done: b.type === 'done' });
+    }
+  }
+
+  const projects = w.cards.filter((c) => c.kind === 'project').map((c) => {
+    const goal = (state.goals || []).find((g) => g.projectId === c.key);
+    return { key: c.key, name: c.tag, color: c.color, text: `${c.label === 'Questa settimana' ? 'Nessuna sessione questa settimana.' : `${c.label} questa settimana.`} ${c.note}`.replace(/\s+/g, ' ').trim(), footer: goal?.due ? `Scadenza ${dateLong(goal.due)}` : goal ? goal.title : 'Progetto', day: c.openDay };
+  });
+
+  const intro = points.length > 1 ? 'Ecco come stai andando, in breve.' : 'Ecco il punto della situazione.';
+  return { date: dateLong(t), intro, points, list: { date: dateLong(t), title: 'I prossimi 7 giorni', rows }, projects, monthSessions };
+}
+
+/**
+ * Risposte senza AI alle domande del riepilogo (come va, la settimana, il mese, un progetto per nome).
+ * Restituisce un testo oppure null se la domanda non è riconosciuta.
+ */
+export function answerLocally(question, sum, state) {
+  const q = String(question || '').toLowerCase();
+  const pr = (state.projects || []).find((p) => q.includes(p.name.toLowerCase()));
+  if (pr) { const c = sum.projects.find((x) => x.key === pr.id); return c ? `${c.name}: ${c.text}` : `Su ${pr.name} non c'è niente in programma: dimmi il prossimo passo nella barra del giorno.`; }
+  if (/(come (sto andando|va|procede)|com'è andata|a che punto|riassum|riepilog|in generale)/.test(q)) return sum.points.map((p) => `• ${p}`).join('\n');
+  if (/(settiman|prossimi giorni|cosa (faccio|ho)|cosa mi aspetta)/.test(q)) return sum.list.rows.length ? sum.list.rows.map((r) => `${r.done ? '✓' : '•'} ${r.title} — ${r.sub}`).join('\n') : 'Nei prossimi 7 giorni non hai sessioni.';
+  if (/(mese|mensile)/.test(q)) return sum.points.find((p) => p.startsWith('Da qui a fine mese')) || 'Da qui a fine mese non ci sono sessioni.';
+  if (/(scadenz|quando finisc|ce la faccio|in tempo|in ritardo)/.test(q)) return sum.points.filter((p) => /scadenza|oltre il|finisci il/.test(p)).join('\n') || 'Non hai obiettivi con una scadenza.';
+  if (/(saltat|salto|perso)/.test(q)) return sum.points.find((p) => p.startsWith('Negli ultimi 7 giorni')) || 'Negli ultimi 7 giorni non hai saltato sessioni.';
+  return null;
+}

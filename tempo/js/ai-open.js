@@ -274,6 +274,19 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
   return { text: out.reply || (out.ops.length ? 'Fatto.' : 'Non ho capito, puoi riformulare?'), ops: out.ops, confirm: out.requires_confirmation };
 }
 
+const onlineCompletePlain = (S, messages, signal) => onlineComplete(S, messages, signal, { json: false }).then((r) => r.content);
+
+/** Domanda al riepilogo con un modello open: risposta a parole. */
+export async function openAsk(state, system, history, signal) {
+  const S = state.settings;
+  const messages = [{ role: 'system', content: system }, ...history];
+  if (S.provider === 'local') {
+    const eng = await getEngine(S.localModel || LOCAL_MODELS[0].id);
+    return String((await eng.chat.completions.create({ messages, temperature: 0.3, max_tokens: 600 })).choices?.[0]?.message?.content || '').trim();
+  }
+  return String((await onlineCompletePlain(S, messages, signal)) || '').trim();
+}
+
 /** Piano dell'obiettivo con un modello open: restituisce l'oggetto JSON grezzo. */
 export async function openGoalPlan(state, goal, now, signal) {
   const S = state.settings;
@@ -294,7 +307,7 @@ const authError = (e) => e.status === 401 || e.status === 403 || /api key|apikey
  * Manda i messaggi al servizio online provando, se serve, più modelli.
  * Restituisce { content, model }.
  */
-export async function onlineComplete(S, messages, signal) {
+export async function onlineComplete(S, messages, signal, { json = true } = {}) {
   const preset = presetOf(S);
   const base = (S.openBaseUrl || ONLINE_PRESETS[preset]?.baseUrl || '').replace(/\/+$/, '');
   if (!base) throw new Error('Manca l\'indirizzo del servizio');
@@ -348,7 +361,7 @@ export async function onlineComplete(S, messages, signal) {
     tried.push(model);
     try {
       let content;
-      try { content = await call(model, true); }
+      try { content = await call(model, json); }
       catch (e) {
         // alcuni modelli non accettano response_format: riprova senza
         if (e.status === 400 && !authError(e) && !/free|unavailable|not found|no endpoints|does not exist|decommission/i.test(e.message)) content = await call(model, false);

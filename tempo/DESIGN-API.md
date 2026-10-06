@@ -2,6 +2,8 @@
 
 Ogni schermata è disegnata a partire da una funzione pura in `js/viewmodel.js`: stato + piano + ora → dati. Questo file elenca, per ogni schermata, i campi disponibili e tutti gli stati da disegnare. I testi sono già pronti in italiano. Orari `HH:MM`, date `YYYY-MM-DD`.
 
+La barra per parlare con Tempo sta chiusa nel «+» laterale in basso a destra e si apre toccandolo; si richiude da sola quando non serve più.
+
 Ambiente comune (`env`, dentro `today()`): `online` (bool) e `ai` (`'base' | 'online' | 'local' | 'claude'`).
 
 ---
@@ -88,25 +90,24 @@ Al massimo 2 al giorno; quelle già mostrate restano fino a sera.
 
 ---
 
-## 2. Settimana — `week({ state, plan, longPlan, planFor, now, offset, anchor })`
+## 2. Riepilogo — `summary({ state, plan, longPlan, planFor, now, fits })`
 
-È la vista che si apre con il pizzico dal giorno, con i pulsanti Giorno · Settimana · Mese in alto. C'è una carta per progetto (più «Altro» per le attività senza progetto).
+Si apre dall'icona «riassumi» in alto a sinistra del calendario. È una chat: in cima i punti chiave, poi le domande dell'utente e le risposte.
 
 | Campo | Contenuto |
 | --- | --- |
-| `title` | «Questa settimana», «Settimana prossima», «Settimana» |
-| `range` | «5 – 11 ottobre» (o «28 set – 4 ott» a cavallo di due mesi) |
-| `monday`, `sunday`, `offset`, `isCurrent` | per le frecce ‹ › |
-| `days[]` | `{ day, letter (L M M G V S D), n, today, off }` |
-| `cards[]` | vedi sotto |
-| `sessions` | totale delle sessioni della settimana |
-| `emptyText` | se non c'è niente |
+| `date` | «8 ottobre» |
+| `intro` | «Ecco come stai andando, in breve.» |
+| `points[]` | punti chiave: la settimana, ogni obiettivo (in linea, in anticipo o in ritardo rispetto alla scadenza), il mese, le sessioni saltate |
+| `list` | `{ date, title («I prossimi 7 giorni»), rows[] { id, day, title, sub («Domani alle 19:15 · 1 h 30'»), done } }` (massimo 6 righe) |
+| `projects[]` | `{ key, name, color, text, footer («Scadenza 30 novembre»), day }`: le carte orizzontali |
+| `monthSessions` | per il pulsante «Vedi tutto il mese (N sessioni)» |
 
-Ogni carta: `{ key, kind ('project' \| 'other'), tag (nome del progetto, sull'etichetta lime), color (colore della macchia), label («1 di 4 fatte · 6 h»), value («4»), unit («sessioni»), ticks[7] { day, letter, off, done, planned, today, past }, note («Prossima: Beat 02, domani alle 19:15. Scadenza 30 novembre.»), openDay (giorno da aprire toccando la carta), total }`.
+Con un'AI attiva i punti chiave li scrive l'AI (salvati in `state.askIntro`, rifatti quando il piano cambia). Le domande vanno all'AI con questi dati e una risposta a parole; senza AI risponde `answerLocally(question, summary, state)`, che riconosce: come sto andando, la settimana, il mese, le scadenze, le sessioni saltate e i progetti per nome. Da qui il piano non si modifica: le modifiche si chiedono dalla barra del giorno.
 
-Stati: settimana corrente (segno «Oggi» sulla scala) · settimana futura o passata · progetto con obiettivo e nessuna sessione («Nessuna sessione questa settimana.») · settimana chiusa (tutte fatte: spunta sulla macchia) · giorno di stacco (lettera barrata) · settimana vuota (`emptyText`).
+Stati: senza AI · AI che scrive (puntini) · AI in errore o in timeout (risposta senza AI con una nota) · nessuna sessione in programma · nessun progetto.
 
-`days()` (l'elenco dei giorni della vista precedente) resta disponibile ma l'app non lo usa più.
+`week()` resta disponibile (fornisce i dati delle carte dei progetti), ma la vista Settimana non c'è più: il pizzico porta solo al calendario, e al giorno si torna toccando un giorno.
 
 ## 3. Mese — `month({ state, longPlan, planFor, now, months, selected })`
 

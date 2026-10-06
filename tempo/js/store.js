@@ -19,6 +19,8 @@ export function emptyState() {
     habits: [],     // abitudini con frequenza: { id, title, perWeek, duration, project, goalId, window }
     learned: { durations: {}, slots: {} }, // cosa ha imparato dal tuo comportamento
     seenObs: { day: null, ids: [] },       // osservazioni già mostrate oggi (massimo 2)
+    askChat: [],    // le domande del riepilogo e le risposte
+    askIntro: null, // i punti chiave scritti dall'AI: { key, text }
     prefs: { ...DEFAULT_PREFS },
     recurring: [],
     memory: [],
@@ -72,6 +74,8 @@ export function sanitizeState(s) {
   s.memory = ids(s.memory).map((m) => ({ ...m, text: str(m.text, 200), category: ['vincolo', 'preferenza', 'obiettivo', 'nota'].includes(m.category) ? m.category : 'nota' }));
   s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate) }));
   s.chat = arr(s.chat).filter((m) => m && typeof m === 'object' && safeId(m.id)).map((m) => ({ ...m, text: str(m.text, 4000), changes: arr(m.changes).map((c) => str(c, 300)), undoId: safeId(m.undoId) }));
+  s.askChat = arr(s.askChat).filter((m) => m && typeof m === 'object' && safeId(m.id) && !m.pending).map((m) => ({ id: m.id, role: m.role === 'user' ? 'user' : 'assistant', text: str(m.text, 4000), ts: num(m.ts, 0, 9e15, 0), error: !!m.error })).slice(-40);
+  s.askIntro = s.askIntro && typeof s.askIntro === 'object' ? { key: str(s.askIntro.key, 2000), text: str(s.askIntro.text, 2000) } : null;
   s.anchors = Object.fromEntries(Object.entries(obj(s.anchors)).filter(([k]) => safeId(k)));
   s.log = arr(s.log).filter((e) => e && typeof e === 'object').map((e) => ({ ...e, id: safeId(e.id), project: safeId(e.project) }));
   const L = obj(s.learned);

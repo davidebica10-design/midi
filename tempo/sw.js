@@ -1,9 +1,11 @@
 // Cache dell'app per l'uso offline. Aggiorna VERSION a ogni rilascio.
-const VERSION = 'tempo-v15';
+const VERSION = 'tempo-v16';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/scheduler.js', 'js/store.js', 'js/ai.js', 'js/ai-open.js', 'js/images.js', 'js/companion.js', 'js/parse.js', 'js/templates.js', 'js/goals.js', 'js/learn.js', 'js/viewmodel.js', 'js/format.js',
   'vendor/anthropic-sdk.mjs',
+  'icons/ui/plus.svg', 'icons/ui/mic.svg', 'icons/ui/arrow-up.svg', 'icons/ui/arrow-left.svg', 'icons/ui/notepad-text.svg', 'icons/ui/grid-2x2.svg',
+  'icons/ui/file-text.svg', 'icons/ui/arrow-up-right.svg', 'icons/ui/circle-check.svg', 'icons/ui/circle.svg', 'icons/ui/newspaper.svg', 'icons/ui/x.svg',
   'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 

@@ -19,7 +19,7 @@
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Tinos:wght@700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -29,9 +29,7 @@
   <!-- GIORNO: saluto + carte -->
   <section id="day" class="layer" aria-label="Giornata">
     <div class="topbar">
-      <button class="round" id="to-overview" aria-label="Tutti i giorni">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="4" y="4" width="16" height="6.5" rx="2.2"/><rect x="4" y="13.5" width="16" height="6.5" rx="2.2"/></svg>
-      </button>
+      <button class="round" id="to-overview" aria-label="Calendario"><i class="ic ic-grid" aria-hidden="true"></i></button>
       <div class="topbar-right">
         <button class="round" id="undo-btn" aria-label="Annulla ultima modifica" hidden>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
@@ -50,32 +48,32 @@
     </main>
   </section>
 
-  <!-- SETTIMANA / MESE -->
-  <section id="overview" class="layer" aria-label="Settimana e mese" hidden>
+  <!-- CALENDARIO (si torna al giorno toccando un giorno) -->
+  <section id="overview" class="layer" aria-label="Calendario" hidden>
     <div class="ov-head">
       <div class="ov-top">
-        <button class="round" id="ov-back" aria-label="Torna al giorno">
-          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m11 6-6 6 6 6"/></svg>
-        </button>
-        <span class="ov-kicker" id="ov-title">Il tuo piano</span>
-        <button class="pill-btn" id="ov-today">Oggi</button>
+        <button class="round" id="ov-sum" aria-label="Riepilogo: come sta andando"><i class="ic ic-sum" aria-hidden="true"></i></button>
+        <h2 id="ov-title">Calendario</h2>
+        <span class="ov-spacer" aria-hidden="true"></span>
       </div>
-      <div class="ov-range">
-        <h2 id="ov-range"></h2>
-        <div class="ov-nav" id="ov-nav">
-          <button type="button" id="wk-prev" aria-label="Settimana precedente"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
-          <button type="button" id="wk-next" aria-label="Settimana successiva"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
-        </div>
-      </div>
-      <div class="ov-seg" role="tablist" aria-label="Vista">
-        <button type="button" role="tab" data-ovmode="day" aria-selected="false">Giorno</button>
-        <button type="button" role="tab" data-ovmode="week" aria-selected="true" class="on">Settimana</button>
-        <button type="button" role="tab" data-ovmode="month" aria-selected="false">Mese</button>
-      </div>
-      <div class="months" id="months" hidden></div>
+      <div class="months" id="months"></div>
     </div>
-    <main class="ov-scroll" id="ov-scroll"></main>
-    <main class="cal-scroll" id="cal-scroll" hidden></main>
+    <main class="cal-scroll" id="cal-scroll"></main>
+  </section>
+
+  <!-- RIEPILOGO: punti chiave e domande all'AI -->
+  <section id="summary" class="layer" aria-label="Riepilogo" hidden>
+    <div class="sum-head">
+      <button class="round" id="sum-close" aria-label="Torna al calendario"><i class="ic ic-back" aria-hidden="true"></i></button>
+      <span class="sum-title">Riepilogo</span>
+      <span class="ov-spacer" aria-hidden="true"></span>
+    </div>
+    <main class="sum-scroll" id="sum-scroll" aria-live="polite"></main>
+    <form class="ask" id="ask" autocomplete="off">
+      <i class="ic ic-sum" aria-hidden="true"></i>
+      <textarea id="ask-input" rows="1" placeholder="Chiedi a Tempo come sta andando…" enterkeyhint="send" aria-label="Domanda"></textarea>
+      <button type="submit" class="send" id="ask-send" aria-label="Chiedi"><i class="ic ic-up" aria-hidden="true"></i></button>
+    </form>
   </section>
 
   <!-- bagliore dietro la barra (ispirato a Maike) -->
@@ -90,16 +88,10 @@
       <button type="button" data-plus="photo"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="3"/><circle cx="12" cy="12.5" r="3.5"/><path d="M8 5l1.5-2h5L16 5"/></svg>Attività con foto</button>
     </div>
     <div class="bar-row">
-      <button type="button" class="bar-btn" id="plus" aria-label="Aggiungi">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-      </button>
+      <button type="button" class="bar-btn" id="plus" aria-label="Parla con Tempo" aria-expanded="false"><i class="ic ic-plus" aria-hidden="true"></i></button>
       <textarea id="input" rows="1" placeholder="Scrivi a Tempo…" enterkeyhint="send" aria-label="Messaggio"></textarea>
-      <button type="button" class="bar-btn" id="mic" aria-label="Detta" hidden>
-        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-      </button>
-      <button type="submit" class="send" id="send" aria-label="Invia">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
-      </button>
+      <button type="button" class="bar-btn" id="mic" aria-label="Detta" hidden><i class="ic ic-mic" aria-hidden="true"></i></button>
+      <button type="submit" class="send" id="send" aria-label="Invia"><i class="ic ic-up" aria-hidden="true"></i></button>
     </div>
   </form>
 

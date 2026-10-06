@@ -260,6 +260,31 @@ export async function claudeGoalPlan(state, goal, now, signal) {
   return JSON.parse(text.slice(a, b + 1));
 }
 
+/** Il contesto per le domande del riepilogo: punti chiave già calcolati + lo stato compatto. */
+export function askSystem(state, plan, now, sum) {
+  return `Sei Tempo, il companion che organizza le giornate dell'utente. Qui l'utente ti chiede come sta andando, cosa lo aspetta, come procedono obiettivi e progetti.
+Rispondi in italiano, in seconda persona, breve e concreta: al massimo 5 punti chiave, ognuno su una riga che inizia con «• », oppure 1–3 frasi se basta. Niente titoli, niente markdown, niente punti esclamativi.
+Usa solo i dati qui sotto: non inventare attività, numeri o date. Da qui non puoi modificare il piano: se l'utente chiede un cambiamento, digli di scriverlo nella barra del giorno.
+
+Oggi: ${dateKey(new Date(now))}
+Punti chiave calcolati:
+${sum.points.map((p) => '- ' + p).join('\n')}
+Prossimi 7 giorni:
+${sum.list.rows.map((r) => `- ${r.title} (${r.sub})${r.done ? ' fatta' : ''}`).join('\n') || '- niente'}
+Progetti:
+${sum.projects.map((p) => `- ${p.name}: ${p.text} ${p.footer}`).join('\n') || '- nessuno'}
+Stato dettagliato:
+${JSON.stringify(stateForModel(state, plan, now))}`;
+}
+
+/** Domanda al riepilogo con Claude: risposta a parole. */
+export async function claudeAsk(state, system, history, signal) {
+  const Anthropic = await loadSdk();
+  const client = new Anthropic({ apiKey: state.settings.apiKey, dangerouslyAllowBrowser: true, maxRetries: 1 });
+  const res = await client.messages.create({ model: state.settings.model || 'claude-opus-5-5', max_tokens: 1200, system, messages: history }, { signal });
+  return res.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
+}
+
 /** Una promessa con un tempo massimo: oltre, viene annullata e rifiutata con code 'timeout'. */
 export function withTimeout(fn, ms) {
   const ctrl = new AbortController();

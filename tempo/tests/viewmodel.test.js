@@ -72,3 +72,17 @@ test('week(): una carta per progetto, scala dei 7 giorni, domenica di stacco', (
   assert.equal(next.title, 'Settimana prossima');
   assert.equal(next.range, '12 – 18 ottobre');
 });
+
+test('summary(): punti chiave, prossimi 7 giorni, progetti; risposte senza AI', () => {
+  const { s, plan, long } = setup();
+  const sum = vm.summary({ state: s, plan, longPlan: long, now: NOW, fits: {} });
+  assert.ok(sum.points.length >= 3, sum.points.join(' | '));
+  assert.match(sum.points[0], /^Questa settimana: 0 di \d+ sessioni fatte\.$/);
+  assert.ok(sum.points.some((p) => /^EP: 0 di 22 sessioni, scadenza 30 novembre\.$/.test(p)), sum.points.join(' | '));
+  assert.ok(sum.list.rows.length > 0 && sum.list.rows.length <= 6);
+  assert.equal(sum.list.rows[0].title, 'Beat 01');
+  assert.ok(sum.projects.some((p) => p.name === 'EP' && /Scadenza 30 novembre/.test(p.footer)));
+  assert.match(vm.answerLocally('come sto andando?', sum, s), /^• Questa settimana/);
+  assert.match(vm.answerLocally('e l\'EP?', sum, s), /^EP: /);
+  assert.equal(vm.answerLocally('che tempo fa a Milano?', sum, s), null);
+});

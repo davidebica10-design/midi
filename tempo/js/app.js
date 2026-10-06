@@ -6,8 +6,8 @@ import { validatePlan } from './templates.js';
 import { learnedObservations, learnedList, forgetLearned, updateDurations } from './learn.js';
 import * as vm from './viewmodel.js';
 import { plural, windowLabel, durLabel } from './format.js';
-import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout } from './ai.js';
-import { runOpenTurn, openGoalPlan, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
+import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout, askSystem, claudeAsk } from './ai.js';
+import { runOpenTurn, openGoalPlan, openAsk, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
 
 const $ = (s) => document.querySelector(s);
@@ -300,8 +300,6 @@ const undoExists = hasUndo;
 const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const hash = (s) => { let h = 7; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) | 0; return Math.abs(h); };
 const tilt = (id) => ((hash(id) % 60) / 10 - 3).toFixed(1); // da -3° a +3°, sempre uguale per la stessa carta
-const mondayOf = (k) => addDays(k, -((dateOf(k).getDay() + 6) % 7));
-const daysBetweenKeys = (a, b) => Math.round((dateOf(b) - dateOf(a)) / 864e5);
 const dateOf = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
@@ -348,6 +346,24 @@ function setComposing(on) {
   composing = on;
   $('#app').classList.toggle('composing', on);
   if (on) { closePlus(); renderMiniSummary(); }
+  syncBar();
+}
+
+// La barra sta chiusa nel «+» laterale; si apre toccandolo e si richiude quando non serve più
+let barForced = false, plusAt = 0;
+function syncBar() {
+  const input = $('#input');
+  const open = barForced || composing || busy || !$('#reply').hidden || !$('#plus-menu').hidden || !!input.value.trim() || !!rec;
+  $('#app').classList.toggle('bar-open', open);
+  $('#plus').setAttribute('aria-expanded', open);
+  $('#plus').setAttribute('aria-label', open ? 'Aggiungi un\'attività' : 'Parla con Tempo');
+  if (!open) barForced = false;
+}
+function openBar() {
+  barForced = true;
+  syncBar();
+  $('#input').focus({ preventScroll: true });
+  setTimeout(() => { barForced = false; }, 400);
 }
 
 function renderMiniSummary() {
@@ -379,7 +395,7 @@ function renderChat() { renderReply(); }
 function renderReply() {
   const el = $('#reply');
   const m = replyId ? state.chat.find((x) => x.id === replyId) : null;
-  if (!m) { el.innerHTML = ''; el.hidden = true; return; }
+  if (!m) { el.innerHTML = ''; el.hidden = true; syncBar(); return; }
   el.hidden = false;
   const isNew = !seenReply.has(m.id + (m.pending ? 'p' : ''));
   seenReply.add(m.id + (m.pending ? 'p' : ''));
@@ -403,6 +419,7 @@ function renderReply() {
   // la nota sparisce da sola, tranne quando aspetta una conferma
   clearTimeout(replyTimer);
   if (!m.pending && !(m.applied === null && pending?.msgId === m.id)) replyTimer = setTimeout(hideReply, m.error ? 12000 : 9000);
+  syncBar();
 }
 function hideReply() {
   const el = $('#reply');
@@ -420,6 +437,7 @@ function renderComposer() {
   $('#send').disabled = busy;
   $('#mic').hidden = !SR || (has && !rec);
   $('#send').hidden = !!SR && !has && !busy;
+  syncBar();
 }
 
 function toggleMic() {
@@ -449,51 +467,53 @@ function currentBlock() {
   return p.blocks.find((b) => b.type !== 'done' && b.start <= n && n < b.end) || null;
 }
 
-/** Le carte del giorno (dati da viewmodel.today). */
-function cardHtml(c, place, i) {
-  const style = `--x:${place.x}%;--r:${place.r}deg;--z:${place.z};--i:${i}`;
+/** Le carte del giorno (dati da viewmodel.today), nello stile delle carte di Dot. */
+const projMark = (p) => p ? `<span class="pc-mark" style="--pc:${safeColor(p.color) || 'var(--accent)'}" aria-hidden="true">${esc(p.name.charAt(0).toUpperCase())}</span>` : '';
+function cardHtml(c, i) {
+  const st = `--r:${c.r ?? 0}deg;--i:${i}`;
   if (c.type === 'rest') {
-    return `<div class="pc rest" style="${style}" aria-label="${esc(`${c.title}, dalle ${c.start} alle ${c.end}`)}">
-      <div class="pc-time">${c.start} – ${c.end}</div><div class="pc-title">${esc(c.title)}</div><div class="pc-foot"><span>${esc(c.note)}</span></div></div>`;
+    return `<div class="pc rest" style="${st}" aria-label="${esc(`${c.title}, dalle ${c.start} alle ${c.end}`)}">
+      <div class="pc-body"><div class="pc-title">${esc(c.title)}</div><div class="pc-desc">${c.start} – ${c.end}</div></div>
+      <div class="pc-label">${esc(c.note)}</div></div>`;
   }
   if (c.type === 'missed') {
-    return `<div class="pc note-card" style="${style}">
-      <div class="pc-time">Era previsto alle ${c.start}</div>
-      <div class="pc-title">Hai fatto «${esc(c.title)}»?</div>
-      <div class="pc-actions"><button class="mini-btn primary" data-act2="done" data-id="${esc(c.id)}">Sì</button><button class="mini-btn" data-act2="part" data-id="${esc(c.id)}" data-min="${c.minutes}">In parte</button><button class="mini-btn" data-act2="notyet" data-id="${esc(c.id)}" data-start="${c.start}">No</button></div>
-    </div>`;
+    return `<div class="pc note-card" style="${st}">
+      <div class="pc-body"><div class="pc-title">Hai fatto «${esc(c.title)}»?</div><div class="pc-desc">Era previsto alle ${c.start}.</div>
+      <div class="pc-actions"><button class="mini-btn primary" data-act2="done" data-id="${esc(c.id)}">Sì</button><button class="mini-btn" data-act2="part" data-id="${esc(c.id)}" data-min="${c.minutes}">In parte</button><button class="mini-btn" data-act2="notyet" data-id="${esc(c.id)}" data-start="${c.start}">No</button></div></div></div>`;
   }
   if (c.type === 'unscheduled') {
-    return `<div class="pc note-card" role="button" tabindex="0" data-item="${esc(c.id)}" style="${style}" aria-label="${esc(`${c.title}: non entra`)}">
-      <div class="pc-time">Non entra ${c.moveTo === 'domani' ? 'oggi' : 'in questa giornata'}</div>
-      <div class="pc-title">${esc(c.title)}</div>
-      <div class="pc-foot"><span>${durLabel(c.minutes)} · ${esc(c.reason)}</span></div>
-      <div class="pc-actions"><button class="mini-btn primary" data-act2="move" data-id="${esc(c.id)}">Sposta a ${c.moveTo}</button></div>
-    </div>`;
+    return `<div class="pc note-card" role="button" tabindex="0" data-item="${esc(c.id)}" style="${st}" aria-label="${esc(`${c.title}: non entra`)}">
+      <div class="pc-body"><div class="pc-title">${esc(c.title)}</div><div class="pc-desc">Non entra ${c.moveTo === 'domani' ? 'oggi' : 'in questa giornata'}: ${esc(c.reason)}.</div>
+      <div class="pc-actions"><button class="mini-btn primary" data-act2="move" data-id="${esc(c.id)}">Sposta a ${c.moveTo}</button></div></div></div>`;
   }
   if (c.type === 'conflict') {
-    return `<div class="pc note-card" style="${style}"><div class="pc-time">Conflitto</div><div class="pc-title">${esc(c.a)} si sovrappone a ${esc(c.b)}</div></div>`;
+    return `<div class="pc note-card" style="${st}"><div class="pc-body"><div class="pc-title">Si sovrappongono</div><div class="pc-desc">${esc(c.a)} e ${esc(c.b)}.</div></div></div>`;
+  }
+  if (c.type === 'stop') {
+    return `<div class="pc quote stop" style="${st}"><div class="pc-body"><div class="pc-quote">${esc(c.text)}</div></div><div class="pc-label">${c.at}</div></div>`;
+  }
+  if (c.type === 'obs') {
+    const acts = c.actions ? `<div class="pc-actions">${c.actions.map((ac) => `<button class="mini-btn" data-brief="${esc(ac.act)}" data-arg="${esc(ac.arg)}">${esc(ac.label)}</button>`).join('')}</div>` : '';
+    return `<div class="pc obs" style="${st}" data-bid="${esc(c.id)}"><div class="pc-body"><div class="pc-desc strong">${esc(c.text)}</div>${acts}</div><div class="pc-label">Osservazione</div></div>`;
   }
   const isEvent = c.type === 'event';
   const isTask = c.type === 'task';
   const done = !!c.done;
-  const time = done ? `Fatto alle ${c.doneAt}` : isEvent ? `${c.start} – ${c.end}` : `${c.start}${c.pinned ? ' · orario fissato' : ''}`;
-  const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso')
-    : `${c.project ? `<i class="proj" style="--pc:${safeColor(c.project.color) || 'var(--accent)'}"></i>${esc(c.project.name)}` : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività'} · ${durLabel(c.minutes)}${c.part ? ' · parte' : c.resumed ? ' · ripresa' : c.estimated ? ' (stima)' : ''}`;
+  const when = done ? `Fatto alle ${c.doneAt}` : isEvent ? `${c.start} – ${c.end}` : `${c.start}${c.pinned ? ' · orario fissato' : ''} · ${durLabel(c.minutes)}`;
+  const desc = [when, c.pauseBefore ? `dopo ${c.pauseBefore}' di pausa` : null, isTask && !done ? (c.part ? 'una parte' : c.resumed ? 'si riprende' : c.estimated ? 'durata stimata' : null) : null].filter(Boolean).join(' · ');
+  const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : c.project ? c.project.name : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività';
   const cls = ['pc', isEvent ? 'event' : 'task', done ? 'done' : '', c.image ? 'photo' : '', changedIds.has(c.itemId) ? 'flash' : ''].join(' ');
-  const label = `${c.title}, ${time}${isTask ? ', ' + durLabel(c.minutes) : ''}${c.project ? ', ' + c.project.name : ''}`;
-  const open = `role="button" tabindex="0" data-item="${esc(c.id)}"`;
+  const label = `${c.title}, ${when}${c.project ? ', ' + c.project.name : ''}`;
+  const open = `role="button" tabindex="0" data-item="${esc(c.id)}" aria-label="${esc(label)}"`;
   const check = isTask ? `<button class="pc-check" data-check="${esc(c.id)}" aria-label="${done ? 'Riapri' : 'Segna come fatta'}: ${esc(c.title)}" aria-pressed="${done}">${ICON_CHECK}</button>` : '';
   const title = `${c.important ? '<i class="imp" title="Importante"></i>' : ''}${esc(c.title)}`;
   if (c.image) {
-    return `<div class="${cls}" ${open} aria-label="${esc(label)}" style="${style}">${imgTag(c.image)}${check}
-      <div class="ph-cap"><div class="pc-time">${time}</div><div class="pc-title">${title}</div></div></div>`;
+    return `<div class="${cls}" ${open} style="${st}">${imgTag(c.image)}${check}
+      <div class="ph-cap"><b>${title}</b><span>${esc(desc)}</span></div></div>`;
   }
-  const pause = c.pauseBefore ? `<span class="pc-pause" title="Pausa prima di iniziare">pausa ${c.pauseBefore}'</span>` : '';
-  return `<div class="${cls}" ${open} aria-label="${esc(label)}${c.pauseBefore ? `, dopo una pausa di ${c.pauseBefore} minuti` : ''}" style="${style}">
-    <div class="pc-time"><span>${time}</span>${pause}</div>
-    <div class="pc-title">${title}</div>
-    <div class="pc-foot"><span>${foot}</span>${check}</div>
+  return `<div class="${cls}" ${open} style="${st}">
+    <div class="pc-body"><div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div></div>
+    <div class="pc-foot">${isTask ? projMark(c.project) : ''}<span>${esc(foot)}</span>${check}</div>
   </div>`;
 }
 
@@ -523,52 +543,38 @@ function renderDayView(animate) {
     if (animate) animateIn(ht, 1200);
   }
 
-  let html = '';
-  let i = 0, z = 1, side = 0;
-  // carte quadrate a zig-zag su due colonne; dopo una carta larga o una pausa si riparte da sinistra
-  const next = (id, wide) => {
-    if (wide) { side = 0; return { x: 4, r: 0, z: z++ }; }
-    const pl = { x: side % 2 ? 51 : 2, r: tilt(id), z: z++ };
-    side++;
-    return pl;
-  };
+  // collage su due colonne (come Dot): in ordine di lettura sinistra, destra, sinistra…
+  const cols = [[], []];
+  let i = 0;
+  const put = (html) => { cols[i % 2].push(html); i++; };
+  const rot = (id) => (+tilt(id) * 0.8).toFixed(1);
 
-  // 1. "adesso": una sola carta (oggi) oppure il riepilogo (altri giorni)
+  // 1. "adesso" (oggi) come la carta-affermazione, poi il riepilogo del giorno
   const sum = v.summary;
   if (v.now) {
     const a = v.now;
-    const pl = next('adv', true);
     const act = a.action ? `<button class="adv-go" data-adv="${a.action.type}" data-id="${esc(a.action.id)}">${a.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(a.action.label)}</span></button>` : '';
-    const blk = a.block ? `<div class="adv-day" role="progressbar" aria-valuenow="${a.block.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.block.title)}"><span class="adv-bar" style="--w:${a.block.pct}%"><i></i></span><span>${esc(a.block.title)} · fino alle ${a.block.until} · ${a.block.left} rimasti</span></div>` : '';
-    html += `<div class="pc adv wide mood-${a.mood}" style="--z:${pl.z};--i:${i++}" aria-live="polite">
-      <div class="adv-k"><i class="adv-dot"></i>Adesso</div>
-      <div class="adv-t">${esc(a.title)}</div>
-      ${a.why ? `<div class="adv-why">${esc(a.why)}</div>` : ''}
-      ${act}${blk}
-      ${v.observations.length ? `<div class="adv-brief">${v.observations.map((x) => `<div class="ab" data-bid="${esc(x.id)}"><span>${esc(x.text)}</span>${x.actions ? `<div class="ab-acts">${x.actions.map((ac) => `<button class="mini-btn" data-brief="${ac.act}" data-arg="${esc(ac.arg)}">${esc(ac.label)}</button>`).join('')}</div>` : ''}</div>`).join('')}</div>` : ''}
-      <button class="adv-day" data-goto="overview" aria-label="Tutti i giorni: ${esc(sum.caption)}"><span class="adv-bar" style="--w:${sum.pct}%"><i></i></span><span>${sum.caption}</span></button>
-    </div>`;
-  } else if (!v.isToday) {
-    const ovPl = next('ov' + v.day);
-    const d = dateOf(v.day);
-    html += `<div class="pc ov" role="button" tabindex="0" data-goto="overview" aria-label="${esc(`${v.header.weekday} ${v.header.date}: ${sum.caption}`)}" style="--x:${ovPl.x}%;--r:-2deg;--z:${ovPl.z};--i:${i++}">
-    <div class="ov-day">${esc(v.header.weekday)}</div>
-    <div class="ov-date">${d.getDate()} ${esc(d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', ''))}</div>
-    <div class="ov-bar" style="--w:${sum.pct}%"><i></i></div>
-    <div class="ov-cap">${sum.caption}</div>
-  </div>`;
+    const blk = a.block ? `<div class="pc-progress" role="progressbar" aria-valuenow="${a.block.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.block.title)}"><i style="--w:${a.block.pct}%"></i></div><div class="pc-desc">${esc(a.block.title)} · fino alle ${a.block.until} · ${a.block.left} rimasti</div>` : '';
+    put(`<div class="pc quote adv mood-${a.mood}" style="--r:-2deg;--i:0" aria-live="polite">
+      <div class="pc-body"><div class="pc-quote">${esc(a.title)}</div>${a.why ? `<div class="pc-desc">${esc(a.why)}</div>` : ''}${blk}${act}</div>
+      <div class="pc-label">Adesso</div></div>`);
   }
+  const d = dateOf(v.day);
+  put(`<div class="pc daily" role="button" tabindex="0" data-goto="overview" aria-label="${esc(`${v.header.weekday} ${v.header.date}: ${sum.caption}. Apri il calendario`)}" style="--r:2deg;--i:${i}">
+    <div class="pc-body"><div class="dl-day">${esc(v.header.weekday)}</div><div class="dl-date">${d.getDate()} ${esc(d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', ''))}</div></div>
+    <div class="pc-label">${v.isToday ? 'Il tuo giorno' : 'Giorno'} · ${sum.total ? `${sum.done} di ${sum.total}` : 'libero'}</div></div>`);
 
-  // 2. le carte della giornata
+  // 2. osservazioni (massimo 2) come carte
+  for (const o of v.observations) put(cardHtml({ ...o, type: 'obs', r: rot(o.id) }, i));
+
+  // 3. le carte della giornata
   let pauseBefore = 0;
   for (const c of v.cards) {
     if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
-
-    if (c.type === 'stop') { const pl = next('stop' + v.day, true); html += `<div class="pc stop wide" style="--z:${pl.z};--i:${i++}"><div class="pc-time">${c.at}</div><div class="stop-t">${esc(c.text)}</div></div>`; continue; }
-    html += cardHtml({ ...c, pauseBefore }, next(c.type === 'missed' ? 'm' + c.id : c.type === 'unscheduled' ? 'u' + c.id : c.id), i++);
+    put(cardHtml({ ...c, pauseBefore, r: rot((c.type === 'missed' ? 'm' : c.type === 'unscheduled' ? 'u' : '') + (c.id || c.at)) }, i));
     pauseBefore = 0;
   }
-  if (v.emptyText) html += `<p class="empty-hint">${esc(v.emptyText)}</p>`;
+  const html = `<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>${v.emptyText ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : ''}`;
 
   const col = $('#collage');
   col.innerHTML = html;
@@ -578,38 +584,8 @@ function renderDayView(animate) {
 }
 
 // ---------------------------------------------------------------- tutti i giorni
-// ---- settimana: una carta per progetto (sessioni, scala dei 7 giorni, prossima sessione)
-let weekOff = 0;
-function weekModel() {
-  goalFits();
-  return vm.week({ state, plan, longPlan: fitCache?.long, planFor, now: Date.now(), offset: weekOff, anchor: today() });
-}
-function renderWeek(animate) {
-  const w = weekModel();
-  $('#ov-range').textContent = w.range;
-  $('#ov-title').textContent = w.title;
-  const cards = w.cards.map((c, i) => {
-    const ticks = c.ticks.map((tk) => {
-      const st = tk.done ? 'done' : tk.planned ? 'plan' : tk.off ? 'off' : '';
-      const n = tk.done + tk.planned;
-      return `<span class="tk ${st}${tk.today ? ' today' : ''}${tk.past ? ' past' : ''}">${tk.today ? '<em>Oggi</em>' : ''}<i></i><i></i><i></i>${n ? `<u>${n > 1 ? n : ''}</u>` : ''}<b>${tk.letter}</b></span>`;
-    }).join('');
-    const label = `${c.tag}: ${c.value} ${c.unit}, ${c.label}. ${c.note}`;
-    return `<button class="wcard${c.kind === 'other' ? ' other' : ''}" data-day="${esc(c.openDay)}" style="${safeColor(c.color) ? `--pc:${c.color};` : ''}--i:${i}" aria-label="${esc(label)}">
-      <span class="blob" aria-hidden="true"><i></i><i></i><i></i>${c.total && c.ticks.every((x) => !x.planned) ? `<span class="blob-ok">${ICON_CHECK}</span>` : ''}</span>
-      <span class="w-side"><span class="w-tag">${esc(c.tag)}</span><span class="w-lbl">${esc(c.label)}</span><span class="w-val">${c.value}<small>${c.unit}</small></span></span>
-      <span class="w-scale" aria-hidden="true">${ticks}</span>
-      <span class="w-note">${esc(c.note)}</span>
-    </button>`;
-  }).join('');
-  $('#ov-scroll').innerHTML = cards || `<p class="empty-hint">${esc(w.emptyText)}</p>`;
-  $('#wk-prev').disabled = weekOff <= -2;
-  $('#wk-next').disabled = weekOff >= 8;
-  if (animate) animateIn($('#ov-scroll'), 1400);
-}
-
 // ---- vista mese: una carta per ogni giorno con qualcosa in programma
-let ovMode = 'week';
+const ovMode = 'month'; // il pizzico porta solo al calendario
 const MONTHS = 6;
 function renderCalendar(animate) {
   goalFits();
@@ -638,20 +614,7 @@ function renderCalendar(animate) {
 }
 
 function setOvMode(m, animate) {
-  if (m === 'day') { openDay(selDay); return; }
-  ovMode = m;
-  const wk = m === 'week';
-  $('#ov-scroll').hidden = !wk;
-  $('#cal-scroll').hidden = wk;
-  $('#months').hidden = wk;
-  $('#ov-nav').hidden = !wk;
-  document.querySelectorAll('[data-ovmode]').forEach((b) => { const on = b.dataset.ovmode === m; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
-  if (wk) renderWeek(animate !== false);
-  else {
-    $('#ov-title').textContent = 'Il tuo piano';
-    $('#ov-range').textContent = 'Calendario';
-    renderCalendar(animate !== false);
-  }
+  renderCalendar(animate !== false);
   if (mode === 'overview') requestAnimationFrame(() => scrollOverviewTo(selDay));
 }
 
@@ -659,13 +622,9 @@ function setOvMode(m, animate) {
 const monthTop = (sec) => Math.max(0, sec.offsetTop - parseFloat(getComputedStyle($('#cal-scroll')).paddingTop));
 
 function scrollOverviewTo(k) {
-  if (ovMode === 'week') {
-    $('#ov-scroll').scrollTop = 0;
-  } else {
-    const cell = document.querySelector(`.cd[data-day="${esc(k)}"]`);
-    const sec = cell?.closest('.month');
-    $('#cal-scroll').scrollTop = sec ? monthTop(sec) : 0;
-  }
+  const cell = document.querySelector(`.cd[data-day="${esc(k)}"]`);
+  const sec = cell?.closest('.month');
+  $('#cal-scroll').scrollTop = sec ? monthTop(sec) : 0;
 }
 
 function openOverview() {
@@ -673,8 +632,6 @@ function openOverview() {
   setComposing(false);
   closePlus();
   mode = 'overview';
-  // la settimana parte da quella del giorno che stavi guardando
-  weekOff = Math.floor((daysBetweenKeys(mondayOf(today()), mondayOf(selDay))) / 7);
   setOvMode(ovMode, true);
   const ov = $('#overview');
   ov.hidden = false;
@@ -726,7 +683,7 @@ function bindPinch() {
     active = true;
     if (mode === 'overview') {
       const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2, my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      target = document.elementFromPoint(mx, my)?.closest('.wcard, .cd') || null;
+      target = document.elementFromPoint(mx, my)?.closest('.cd') || null;
     }
   }, { passive: true });
   app.addEventListener('touchmove', (e) => {
@@ -753,8 +710,7 @@ function bindPinch() {
       const tl = target;
       target = null;
       if (tl) { tl.style.transition = ''; tl.style.transform = ''; }
-      if (scale < 0.86 && ovMode === 'week') setOvMode('month');
-      else if (scale > 1.1) {
+      if (scale > 1.1 && tl) {
         const k = tl?.dataset.day || selDay;
         openDay(k, tl || document.querySelector(`.cd[data-day="${esc(k)}"]`));
       }
@@ -764,12 +720,121 @@ function bindPinch() {
   app.addEventListener('touchcancel', end);
 }
 
+
+// ---------------------------------------------------------------- riepilogo (chat)
+// Dal calendario: i punti chiave su come sta andando, poi le domande. Da qui non si modifica il piano.
+let summaryOpen = false, asking = false;
+function summaryModel() {
+  goalFits();
+  return vm.summary({ state, plan, longPlan: fitCache?.long, planFor, now: Date.now(), fits: goalFits() });
+}
+function openSummary() {
+  summaryOpen = true;
+  const el = $('#summary');
+  el.hidden = false;
+  el.classList.remove('closing');
+  $('#overview').inert = true;
+  renderSummary(true);
+  aiIntro();
+}
+function closeSummary() {
+  summaryOpen = false;
+  const el = $('#summary');
+  el.classList.add('closing');
+  $('#overview').inert = false;
+  setTimeout(() => { if (!summaryOpen) { el.hidden = true; el.classList.remove('closing'); } }, 320);
+}
+const introKey = (sum) => today() + '|' + sum.points.join('|');
+function renderSummary(animate) {
+  const sum = summaryModel();
+  const intro = state.askIntro?.key === introKey(sum) ? state.askIntro.text : null;
+  const para = (t) => `<p>${esc(t)}</p>`;
+  const lines = (txt) => String(txt).split(/\n+/).filter(Boolean).map(para).join('');
+  let html = `<div class="sm-time">${esc(cap(new Date().toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })))}</div>`;
+  html += `<div class="sm-ai">${intro ? lines(intro) : para(sum.intro) + sum.points.map((p) => para('• ' + p)).join('')}${introPending ? '<p class="sm-typing"><i></i><i></i><i></i></p>' : ''}</div>`;
+  if (sum.list.rows.length) {
+    html += `<div class="sm-ai"><p>Ecco i prossimi giorni, in base al</p><p class="sm-ref"><i class="ic ic-file" aria-hidden="true"></i><b>tuo calendario e ai tuoi obiettivi.</b></p></div>
+    <div class="sm-list"><div class="sl-head"><span>${esc(sum.list.date)}</span><b>${esc(sum.list.title)}</b></div>
+      ${sum.list.rows.map((r) => `<button type="button" class="sl-row${r.done ? ' done' : ''}" data-day="${esc(r.day)}"><i class="ic ${r.done ? 'ic-check' : 'ic-circle'}" aria-hidden="true"></i><span><b>${esc(r.title)}</b><small>${esc(r.sub)}</small></span></button>`).join('')}
+    </div>`;
+  }
+  if (sum.projects.length) {
+    html += `<div class="sm-ai"><p>E i tuoi progetti:</p></div><div class="sm-cards">${sum.projects.map((p, i) => `<button type="button" class="sm-card" data-day="${esc(p.day)}" style="--pc:${safeColor(p.color) || 'var(--accent)'};--r:${i % 2 ? 1 : -1}deg">
+      <span class="sc-body"><b>${esc(p.name)}</b><span>${esc(p.text)}</span></span>
+      <span class="sc-foot">${projMark({ name: p.name, color: p.color })}<span>${esc(p.footer)}</span><i class="ic ic-out" aria-hidden="true"></i></span></button>`).join('')}</div>`;
+  }
+  if (sum.monthSessions) html += `<button type="button" class="sm-more" id="sm-more"><i class="ic ic-grid" aria-hidden="true"></i>Vedi tutto il mese (${plural(sum.monthSessions, 'sessione', 'sessioni')})</button>`;
+  // la conversazione
+  for (const m of state.askChat || []) {
+    if (m.role === 'user') html += `<div class="sm-user"><p>${esc(m.text)}</p></div>`;
+    else html += `<div class="sm-ai${m.error ? ' err' : ''}">${m.pending ? '<p class="sm-typing"><i></i><i></i><i></i></p>' : lines(m.text)}</div>`;
+  }
+  const sc = $('#sum-scroll');
+  const atEnd = sc.scrollTop + sc.clientHeight > sc.scrollHeight - 40;
+  sc.innerHTML = html;
+  if (animate) { animateIn(sc, 1200); sc.scrollTop = 0; } else if (atEnd) sc.scrollTop = sc.scrollHeight;
+  $('#ask-send').disabled = asking;
+}
+
+/** Con un'AI attiva, i punti chiave li scrive l'AI (una volta, finché il piano non cambia). */
+let introPending = false;
+async function aiIntro() {
+  const mode = aiMode();
+  const sum = summaryModel();
+  if (mode === 'base' || introPending || state.askIntro?.key === introKey(sum) || !navigator.onLine && mode !== 'local') return;
+  introPending = true;
+  renderSummary(false);
+  try {
+    const text = await askAi('Fammi il punto: come sto andando e cosa mi aspetta nei prossimi giorni e nel mese, in punti chiave.', sum, []);
+    if (text) { state.askIntro = { key: introKey(sum), text: text.slice(0, 2000) }; save(state); }
+  } catch (e) { console.warn('riepilogo AI non disponibile', e); }
+  introPending = false;
+  if (summaryOpen) renderSummary(false);
+}
+
+function askAi(question, sum, history) {
+  const mode = aiMode();
+  const system = askSystem(state, plan, Date.now(), sum);
+  const msgs = [...history, { role: 'user', content: question }];
+  const run = (signal) => (mode === 'claude' ? claudeAsk(state, system, msgs, signal) : openAsk(state, system, msgs, signal));
+  return mode === 'local' ? run() : withTimeout(run, AI_TIMEOUT);
+}
+
+async function ask(text) {
+  text = text.trim();
+  if (!text || asking) return;
+  state.askChat ||= [];
+  const history = state.askChat.filter((m) => !m.pending && !m.error).slice(-8).map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+  state.askChat.push({ id: uid(), role: 'user', text: text.slice(0, 1000), ts: Date.now() });
+  const ans = { id: uid(), role: 'assistant', pending: true, text: '', ts: Date.now() };
+  state.askChat.push(ans);
+  if (state.askChat.length > 40) state.askChat = state.askChat.slice(-40);
+  asking = true;
+  renderSummary(false);
+  $('#sum-scroll').scrollTop = $('#sum-scroll').scrollHeight;
+  const sum = summaryModel();
+  const local = vm.answerLocally(text, sum, state);
+  try {
+    if (aiMode() === 'base') ans.text = local || 'Senza AI so rispondere a: come sto andando, cosa ho questa settimana, il mese, le scadenze e i progetti per nome. Per tutto il resto scegli un\'AI gratuita in ⋯ → Assistente AI.';
+    else ans.text = (await askAi(text, sum, history)) || local || 'Non ho una risposta.';
+  } catch (e) {
+    ans.text = local ? `${e.code === 'timeout' ? 'L\'AI non risponde' : 'L\'AI ha avuto un problema'}: ecco cosa so.\n${local}` : errorText(e);
+    ans.error = !local;
+  }
+  ans.pending = false;
+  asking = false;
+  save(state);
+  renderSummary(false);
+  $('#sum-scroll').scrollTop = $('#sum-scroll').scrollHeight;
+}
+
 // ---------------------------------------------------------------- menu "+" e foto
 function togglePlus(force) {
   const m = $('#plus-menu');
   const open = force ?? m.hidden;
   m.hidden = !open;
   $('#plus').classList.toggle('open', open);
+  syncBar();
 }
 const closePlus = () => togglePlus(false);
 
@@ -1314,7 +1379,7 @@ function toast(text, action) {
 const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
 
 function renderAll() {
-  if (mode === 'day') renderDayView(false); else if (ovMode === 'week') renderWeek(false); else renderCalendar(false);
+  if (mode === 'day') renderDayView(false); else renderCalendar(false);
   $('#undo-btn').hidden = !canUndo();
   renderComposer();
   if (composing) renderMiniSummary();
@@ -1325,13 +1390,19 @@ function renderAll() {
 // ---------------------------------------------------------------- eventi
 function bind() {
   $('#to-overview').addEventListener('click', openOverview);
-  $('#ov-today').addEventListener('click', () => { const k = today(); openDay(k, ovMode === 'month' ? document.querySelector(`.cd[data-day="${esc(k)}"]`) : null); });
-  $('#ov-back').addEventListener('click', () => openDay(selDay));
-  $('#ov-scroll').addEventListener('click', (e) => { const t = e.target.closest('.wcard'); if (t) openDay(t.dataset.day, t); });
-  $('#wk-prev').addEventListener('click', () => { weekOff--; renderWeek(true); });
-  $('#wk-next').addEventListener('click', () => { weekOff++; renderWeek(true); });
+  $('#ov-sum').addEventListener('click', openSummary);
+  $('#sum-close').addEventListener('click', closeSummary);
+  $('#sum-scroll').addEventListener('click', (e) => {
+    const d = e.target.closest('[data-day]');
+    if (d) { closeSummary(); openDay(d.dataset.day); return; }
+    if (e.target.closest('#sm-more')) closeSummary();
+  });
+  const askIn = $('#ask-input');
+  const askGrow = () => { askIn.style.height = 'auto'; askIn.style.height = Math.min(askIn.scrollHeight, 120) + 'px'; };
+  askIn.addEventListener('input', askGrow);
+  askIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#ask').requestSubmit(); } });
+  $('#ask').addEventListener('submit', (e) => { e.preventDefault(); const v = askIn.value; askIn.value = ''; askGrow(); ask(v); });
   $('#cal-scroll').addEventListener('click', (e) => { const c = e.target.closest('.cd'); if (c) openDay(c.dataset.day, c); });
-  document.querySelectorAll('[data-ovmode]').forEach((b) => b.addEventListener('click', () => setOvMode(b.dataset.ovmode)));
   $('#months').addEventListener('click', (e) => {
     const b = e.target.closest('[data-month]');
     const sec = b && document.querySelector(`.month[data-mi="${b.dataset.month}"]`);
@@ -1398,6 +1469,7 @@ function bind() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('#onb').hidden) { $('#onb-skip').click(); return; }
+    if (summaryOpen) { closeSummary(); return; }
     if (!$('#sheet').hidden) { closeSheet(); return; }
     if (settingsOpen) { closeSettings(); return; }
     if (!$('#plus-menu').hidden) { closePlus(); return; }
@@ -1420,6 +1492,7 @@ function bind() {
   input.addEventListener('input', () => { grow(); renderComposer(); });
   input.addEventListener('focus', () => setComposing(true));
   input.addEventListener('blur', () => setTimeout(() => {
+    if (Date.now() - plusAt < 500) return; // toccando il + a barra aperta si apre il menu, non si chiude la barra
     if (document.activeElement !== input && !input.value.trim() && !rec) setComposing(false);
   }, 120));
   // toccando la giornata mentre scrivi, si torna alle carte
@@ -1437,7 +1510,8 @@ function bind() {
     renderComposer();
   });
   $('#mic').addEventListener('click', () => { setComposing(true); toggleMic(); });
-  $('#plus').addEventListener('click', () => togglePlus());
+  $('#plus').addEventListener('pointerdown', () => { if ($('#app').classList.contains('bar-open')) plusAt = Date.now(); });
+  $('#plus').addEventListener('click', () => { if (!$('#app').classList.contains('bar-open')) openBar(); else togglePlus(); });
   $('#plus-menu').addEventListener('click', (e) => {
     const b = e.target.closest('[data-plus]');
     if (!b) return;
@@ -1608,7 +1682,7 @@ function bind() {
     const after = positions(plan);
     if ([...after].some(([id, p]) => before.has(id) && (before.get(id).day !== p.day || before.get(id).start !== p.start))) countAutoReplan();
     save(state);
-    if (mode === 'day') renderDayView(false); else if (ovMode === 'week') renderWeek(false); else renderCalendar(false);
+    if (mode === 'day') renderDayView(false); else renderCalendar(false);
     renderComposer();
   };
   setInterval(tick, 30000);
