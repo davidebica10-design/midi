@@ -4,13 +4,14 @@ import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from 
 import { goalFit, planSummary, horizonFor } from './goals.js';
 import { validatePlan } from './templates.js';
 import { learnedObservations, learnedList, forgetLearned, updateDurations } from './learn.js';
+import * as vm from './viewmodel.js';
+import { plural, windowLabel, durLabel } from './format.js';
 import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout } from './ai.js';
 import { runOpenTurn, openGoalPlan, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const durLabel = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ' ' + (m % 60) + "'" : ''}` : `${m} min`);
 
 const state = load();
 let plan = {};
@@ -436,53 +437,72 @@ function currentBlock() {
   return p.blocks.find((b) => b.type !== 'done' && b.start <= n && n < b.end) || null;
 }
 
-function greeting(day) {
-  const t = today();
-  if (day === t) { const h = new Date().getHours(); return h < 5 ? 'Buonanotte' : h < 13 ? 'Buongiorno' : h < 18 ? 'Buon pomeriggio' : 'Buonasera'; }
-  if (day === addDays(t, 1)) return 'Domani';
-  return cap(dateOf(day).toLocaleDateString('it-IT', { weekday: 'long' }));
-}
-
-function itemCard(b, place, i, isToday) {
-  const it = b.item;
-  const id = String(b.id);
-  if (it.kind === 'rest') {
-    return `<div class="pc rest" style="--x:${place.x}%;--r:${place.r}deg;--z:${place.z};--i:${i}">
-      <div class="pc-time">${fmtMin(b.start)} – ${fmtMin(b.end)}</div>
-      <div class="pc-title">${esc(it.title)}</div>
-      <div class="pc-foot"><span>Stacca · niente schermi di lavoro</span></div>
+/** Le carte del giorno (dati da viewmodel.today). */
+function cardHtml(c, place, i) {
+  const style = `--x:${place.x}%;--r:${place.r}deg;--z:${place.z};--i:${i}`;
+  if (c.type === 'rest') {
+    return `<div class="pc rest" style="${style}" aria-label="${esc(`${c.title}, dalle ${c.start} alle ${c.end}`)}">
+      <div class="pc-time">${c.start} – ${c.end}</div><div class="pc-title">${esc(c.title)}</div><div class="pc-foot"><span>${esc(c.note)}</span></div></div>`;
+  }
+  if (c.type === 'missed') {
+    return `<div class="pc note-card" style="${style}">
+      <div class="pc-time">Era previsto alle ${c.start}</div>
+      <div class="pc-title">Hai fatto «${esc(c.title)}»?</div>
+      <div class="pc-actions"><button class="mini-btn primary" data-act2="done" data-id="${esc(c.id)}">Sì</button><button class="mini-btn" data-act2="part" data-id="${esc(c.id)}" data-min="${c.minutes}">In parte</button><button class="mini-btn" data-act2="notyet" data-id="${esc(c.id)}" data-start="${c.start}">No</button></div>
     </div>`;
   }
-  const pr = it.project ? projectOf(state, it.project) : null;
-  const isTask = it.kind === 'task' && !id.startsWith('rec:');
-  const done = b.type === 'done';
-  const time = done ? `Fatto alle ${fmtMin(b.end)}` : it.kind === 'event' ? `${fmtMin(b.start)} – ${fmtMin(b.end)}` : `${fmtMin(b.start)}${b.type === 'pinned' ? ' · orario fissato' : ''}`;
-  const foot = it.kind === 'event' ? (it.recurring ? 'Impegno ricorrente' : 'Impegno fisso')
-    : `${pr ? `<i class="proj" style="--pc:${pr.color}"></i>${esc(pr.name)}` : (it.energy || 2) >= 3 ? 'Concentrazione' : (it.energy || 2) <= 1 ? 'Leggera' : 'Attività'} · ${durLabel(b.end - b.start)}${b.part ? ' · parte' : it.spent > 0 && !done ? ' · ripresa' : it.durationEstimated && !done ? ' (stima)' : ''}`;
-  const cls = ['pc', it.kind === 'event' ? 'event' : 'task', done ? 'done' : '', it.image ? 'photo' : '', changedIds.has(it.id) ? 'flash' : ''].join(' ');
-  const style = `--x:${place.x}%;--r:${place.r}deg;--z:${place.z};--i:${i}`;
-  const check = isTask ? `<button class="pc-check" data-check="${esc(id)}" aria-label="${done ? 'Riapri' : 'Segna come fatta'}">${ICON_CHECK}</button>` : '';
-  const title = `${it.priority === 3 && !done ? '<i class="imp" title="Importante"></i>' : ''}${esc(it.title)}`;
-  if (it.image) {
-    return `<div class="${cls}" role="button" tabindex="0" data-item="${esc(id)}" style="${style}">${imgTag(it.image)}${check}
+  if (c.type === 'unscheduled') {
+    return `<div class="pc note-card" role="button" tabindex="0" data-item="${esc(c.id)}" style="${style}" aria-label="${esc(`${c.title}: non entra`)}">
+      <div class="pc-time">Non entra ${c.moveTo === 'domani' ? 'oggi' : 'in questa giornata'}</div>
+      <div class="pc-title">${esc(c.title)}</div>
+      <div class="pc-foot"><span>${durLabel(c.minutes)} · ${esc(c.reason)}</span></div>
+      <div class="pc-actions"><button class="mini-btn primary" data-act2="move" data-id="${esc(c.id)}">Sposta a ${c.moveTo}</button></div>
+    </div>`;
+  }
+  if (c.type === 'conflict') {
+    return `<div class="pc note-card" style="${style}"><div class="pc-time">Conflitto</div><div class="pc-title">${esc(c.a)} si sovrappone a ${esc(c.b)}</div></div>`;
+  }
+  const isEvent = c.type === 'event';
+  const isTask = c.type === 'task';
+  const done = !!c.done;
+  const time = done ? `Fatto alle ${c.doneAt}` : isEvent ? `${c.start} – ${c.end}` : `${c.start}${c.pinned ? ' · orario fissato' : ''}`;
+  const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso')
+    : `${c.project ? `<i class="proj" style="--pc:${c.project.color}"></i>${esc(c.project.name)}` : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività'} · ${durLabel(c.minutes)}${c.part ? ' · parte' : c.resumed ? ' · ripresa' : c.estimated ? ' (stima)' : ''}`;
+  const cls = ['pc', isEvent ? 'event' : 'task', done ? 'done' : '', c.image ? 'photo' : '', changedIds.has(c.itemId) ? 'flash' : ''].join(' ');
+  const label = `${c.title}, ${time}${isTask ? ', ' + durLabel(c.minutes) : ''}${c.project ? ', ' + c.project.name : ''}`;
+  const open = `role="button" tabindex="0" data-item="${esc(c.id)}"`;
+  const check = isTask ? `<button class="pc-check" data-check="${esc(c.id)}" aria-label="${done ? 'Riapri' : 'Segna come fatta'}: ${esc(c.title)}" aria-pressed="${done}">${ICON_CHECK}</button>` : '';
+  const title = `${c.important ? '<i class="imp" title="Importante"></i>' : ''}${esc(c.title)}`;
+  if (c.image) {
+    return `<div class="${cls}" ${open} aria-label="${esc(label)}" style="${style}">${imgTag(c.image)}${check}
       <div class="ph-cap"><div class="pc-time">${time}</div><div class="pc-title">${title}</div></div></div>`;
   }
-  return `<div class="${cls}" role="button" tabindex="0" data-item="${esc(id)}" style="${style}">
+  return `<div class="${cls}" ${open} aria-label="${esc(label)}" style="${style}">
     <div class="pc-time">${time}</div>
     <div class="pc-title">${title}</div>
     <div class="pc-foot"><span>${foot}</span>${check}</div>
   </div>`;
 }
 
+function dayModel() {
+  return vm.today({ state, plan, planFor, now: Date.now(), day: selDay, fits: goalFits(), backupDue: backupDue(), env: { online: navigator.onLine, ai: aiMode() } });
+}
+
 function renderDayView(animate) {
   const t = today();
-  const p = planFor(selDay);
-  const isToday = selDay === t;
-  const n = nowMin();
-  const d = dateOf(selDay);
+  const v = dayModel();
+  // osservazioni mostrate oggi: si ricordano (massimo 2 al giorno)
+  if (v.isToday && JSON.stringify(v.seen) !== JSON.stringify(state.seenObs)) {
+    state.seenObs = v.seen;
+    for (const o of v.observations) {
+      if (o.goalId && o.id.startsWith('due-')) { const g = state.goals.find((x) => x.id === o.goalId); if (g && !g.askedDueOn) g.askedDueOn = t; }
+      if (o.learnKey) { const d = state.learned.durations[o.learnKey]; if (d) d.announced = d.ratio; } // "ho aggiornato le stime": detto una volta
+    }
+    save(state);
+  }
 
-  $('#hero-time').textContent = isToday ? fmtMin(n) : d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
-  const g = greeting(selDay);
+  $('#hero-time').textContent = v.header.time;
+  const g = v.header.greeting;
   const ht = $('#hero-title');
   if (ht.dataset.g !== g || animate) {
     ht.innerHTML = g.split(' ').map((w, i) => `<span style="animation-delay:${i * 90}ms">${esc(w)}</span>`).join('<br>');
@@ -499,115 +519,39 @@ function renderDayView(animate) {
     return pl;
   };
 
-  // 1. il companion (oggi) oppure il riepilogo (altri giorni)
-  const taskBlocks = p.blocks.filter((b) => b.item.kind === 'task' && !String(b.id).startsWith('rec:'));
-  const doneN = taskBlocks.filter((b) => b.type === 'done').length;
-  const total = taskBlocks.length + p.unscheduled.length;
-  const pct = total ? Math.round((doneN / total) * 100) : 0;
-  const capTxt = [total ? `${doneN} di ${total} fatte` : 'Nessuna attività', p.free > 0 ? `${durLabel(p.free)} libere` : null].filter(Boolean).join(' · ');
-  if (isToday) {
-    const adv = nowAdvice(state, plan, Date.now());
-    const { shown: brief, seen } = pickObservations(briefing(state, plan, Date.now(), { fits: goalFits(), backupDue: backupDue(), learned: learnedObservations(state, Date.now()) }), state.seenObs, t);
-    if (JSON.stringify(seen) !== JSON.stringify(state.seenObs)) {
-      state.seenObs = seen;
-      for (const o of brief) {
-        if (o.goalId && o.id.startsWith('due-')) { const g = state.goals.find((x) => x.id === o.goalId); if (g && !g.askedDueOn) g.askedDueOn = t; }
-        // "ho aggiornato le stime": detto una volta
-        if (o.learnKey) { const d = state.learned.durations[o.learnKey]; if (d) d.announced = d.ratio; }
-      }
-      save(state);
-    }
-    const hasCur = !!currentBlock();
-    if (adv) {
-      const pl = next('adv', true);
-      const act = adv.action && !hasCur ? `<button class="adv-go" data-adv="${adv.action.type}" data-id="${esc(adv.action.id)}">${adv.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(adv.action.label)}</span></button>` : '';
-      html += `<div class="pc adv wide mood-${adv.mood}" style="--z:${pl.z};--i:${i++}">
-        <div class="adv-k"><i class="adv-dot"></i>Adesso</div>
-        <div class="adv-t">${esc(adv.title)}</div>
-        ${adv.why ? `<div class="adv-why">${esc(adv.why)}</div>` : ''}
-        ${act}
-        ${brief.length ? `<div class="adv-brief">${brief.map((x) => `<div class="ab" data-bid="${esc(x.id)}"><span>${esc(x.text)}</span>${x.actions ? `<div class="ab-acts">${x.actions.map((a) => `<button class="mini-btn" data-brief="${a.act}" data-arg="${esc(a.arg)}">${esc(a.label)}</button>`).join('')}</div>` : ''}</div>`).join('')}</div>` : ''}
-        <button class="adv-day" data-goto="overview"><span class="adv-bar" style="--w:${pct}%"><i></i></span><span>${capTxt}</span></button>
-      </div>`;
-    }
-  } else {
-    const ovPl = next('ov' + selDay);
-    html += `<div class="pc ov" role="button" tabindex="0" data-goto="overview" style="--x:${ovPl.x}%;--r:-2deg;--z:${ovPl.z};--i:${i++}">
-    <div class="ov-day">${esc(cap(d.toLocaleDateString('it-IT', { weekday: 'long' })))}</div>
+  // 1. "adesso": una sola carta (oggi) oppure il riepilogo (altri giorni)
+  const sum = v.summary;
+  if (v.now) {
+    const a = v.now;
+    const pl = next('adv', true);
+    const act = a.action ? `<button class="adv-go" data-adv="${a.action.type}" data-id="${esc(a.action.id)}">${a.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(a.action.label)}</span></button>` : '';
+    const blk = a.block ? `<div class="adv-day" role="progressbar" aria-valuenow="${a.block.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.block.title)}"><span class="adv-bar" style="--w:${a.block.pct}%"><i></i></span><span>${esc(a.block.title)} · fino alle ${a.block.until} · ${a.block.left} rimasti</span></div>` : '';
+    html += `<div class="pc adv wide mood-${a.mood}" style="--z:${pl.z};--i:${i++}" aria-live="polite">
+      <div class="adv-k"><i class="adv-dot"></i>Adesso</div>
+      <div class="adv-t">${esc(a.title)}</div>
+      ${a.why ? `<div class="adv-why">${esc(a.why)}</div>` : ''}
+      ${act}${blk}
+      ${v.observations.length ? `<div class="adv-brief">${v.observations.map((x) => `<div class="ab" data-bid="${esc(x.id)}"><span>${esc(x.text)}</span>${x.actions ? `<div class="ab-acts">${x.actions.map((ac) => `<button class="mini-btn" data-brief="${ac.act}" data-arg="${esc(ac.arg)}">${esc(ac.label)}</button>`).join('')}</div>` : ''}</div>`).join('')}</div>` : ''}
+      <button class="adv-day" data-goto="overview" aria-label="Tutti i giorni: ${esc(sum.caption)}"><span class="adv-bar" style="--w:${sum.pct}%"><i></i></span><span>${sum.caption}</span></button>
+    </div>`;
+  } else if (!v.isToday) {
+    const ovPl = next('ov' + v.day);
+    const d = dateOf(v.day);
+    html += `<div class="pc ov" role="button" tabindex="0" data-goto="overview" aria-label="${esc(`${v.header.weekday} ${v.header.date}: ${sum.caption}`)}" style="--x:${ovPl.x}%;--r:-2deg;--z:${ovPl.z};--i:${i++}">
+    <div class="ov-day">${esc(v.header.weekday)}</div>
     <div class="ov-date">${d.getDate()} ${esc(d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', ''))}</div>
-    <div class="ov-bar" style="--w:${pct}%"><i></i></div>
-    <div class="ov-cap">${capTxt}</div>
+    <div class="ov-bar" style="--w:${sum.pct}%"><i></i></div>
+    <div class="ov-cap">${sum.caption}</div>
   </div>`;
   }
 
-  // 2. adesso (solo oggi)
-  const cur = isToday ? currentBlock() : null;
-  if (cur) {
-    const it = cur.item;
-    const isTask = it.kind === 'task' && !String(cur.id).startsWith('rec:');
-    const doing = it.status === 'doing';
-    const prog = Math.max(0, Math.min(1, (n - cur.start) / Math.max(1, cur.end - cur.start)));
-    const pl = next(cur.id, true);
-    html += `<div class="pc now wide${isTask ? '' : ' event'}${changedIds.has(it.id) ? ' flash' : ''}" ${it.kind === 'rest' ? '' : `role="button" tabindex="0" data-item="${esc(cur.id)}"`} style="--z:${pl.z};--i:${i++}">
-      <div class="pc-time">${isTask ? (doing ? 'In corso' : 'Adesso') : it.kind === 'rest' ? 'Adesso · stacca' : 'Adesso · impegno fisso'}</div>
-      <div class="now-row">
-        <div class="pc-title">${esc(it.title)}</div>
-        ${isTask ? `<button class="play${doing ? '' : ' pulse'}" data-now="${doing ? 'complete' : 'start'}" data-id="${esc(it.id)}" aria-label="${doing ? 'Segna come fatta' : 'Inizia'}">${doing ? ICON_CHECK : ICON_PLAY}</button>`
-          : `<span class="play" aria-hidden="true">${ICON_CAL}</span>`}
-      </div>
-      <div class="now-bar" style="--w:${Math.round(prog * 100)}%"><i></i></div>
-      <div class="now-meta"><span>fino alle ${fmtMin(cur.end)}</span><span>${durLabel(Math.max(1, cur.end - n))} rimasti</span></div>
-    </div>`;
+  // 2. le carte della giornata
+  for (const c of v.cards) {
+    if (c.type === 'pause') { html += `<div class="pause" style="--i:${i++}"><span>${c.at}</span>pausa ${c.minutes}'</div>`; continue; }
+    if (c.type === 'stop') { const pl = next('stop' + v.day, true); html += `<div class="pc stop wide" style="--z:${pl.z};--i:${i++}"><div class="pc-time">${c.at}</div><div class="stop-t">${esc(c.text)}</div></div>`; continue; }
+    html += cardHtml(c, next(c.type === 'missed' ? 'm' + c.id : c.type === 'unscheduled' ? 'u' + c.id : c.id), i++);
   }
-
-  // 3. da confermare
-  for (const m of isToday ? p.missed || [] : []) {
-    const pl = next('m' + m.item.id);
-    html += `<div class="pc note-card" style="--x:${pl.x}%;--r:${pl.r}deg;--z:${pl.z};--i:${i++}">
-      <div class="pc-time">Era previsto alle ${fmtMin(m.start)}</div>
-      <div class="pc-title">Hai fatto «${esc(m.item.title)}»?</div>
-      <div class="pc-actions"><button class="mini-btn primary" data-act2="done" data-id="${esc(m.item.id)}">Sì</button><button class="mini-btn" data-act2="part" data-id="${esc(m.item.id)}" data-min="${m.end - m.start}">In parte</button><button class="mini-btn" data-act2="notyet" data-id="${esc(m.item.id)}" data-start="${fmtMin(m.start)}">No</button></div>
-    </div>`;
-  }
-
-  // 4. le attività della giornata, in ordine di orario, con le pause e lo stop
-  const live = p.blocks.filter((b) => b.type !== 'done');
-  const lastTask = [...live].reverse().find((b) => b.item.kind === 'task' && !String(b.id).startsWith('rec:'));
-  let prev = null;
-  for (const b of p.blocks) {
-    if (prev && b.type !== 'done' && prev.type !== 'done' && b !== cur) {
-      const gap = b.start - prev.end;
-      if (gap >= 5 && gap <= 45 && prev.item.kind !== 'rest' && b.item.kind !== 'rest') html += `<div class="pause" style="--i:${i++}"><span>${fmtMin(prev.end)}</span>pausa ${gap}'</div>`;
-    }
-    prev = b;
-    if (b === cur) continue;
-    html += itemCard(b, next(b.id), i++, isToday);
-    if (b === lastTask && b.end >= 17 * 60 && (!isToday || b.end > n)) {
-      const pl = next('stop' + selDay, true);
-      html += `<div class="pc stop wide" style="--z:${pl.z};--i:${i++}"><div class="pc-time">${fmtMin(b.end)}</div><div class="stop-t">Stop. Hai fatto abbastanza.</div></div>`;
-    }
-  }
-
-  // 5. cose che non entrano o si sovrappongono
-  for (const u of p.unscheduled) {
-    const pl = next('u' + u.item.id);
-    html += `<div class="pc note-card" role="button" tabindex="0" data-item="${esc(u.item.id)}" style="--x:${pl.x}%;--r:${pl.r}deg;--z:${pl.z};--i:${i++}">
-      <div class="pc-time">Non entra ${isToday ? 'oggi' : 'in questa giornata'}</div>
-      <div class="pc-title">${esc(u.item.title)}</div>
-      <div class="pc-foot"><span>${durLabel(u.item.duration)} · ${esc(u.reason)}</span></div>
-      <div class="pc-actions"><button class="mini-btn primary" data-act2="move" data-id="${esc(u.item.id)}">Sposta a ${selDay === t ? 'domani' : 'giorno dopo'}</button></div>
-    </div>`;
-  }
-  for (const [a, b] of p.conflicts) {
-    const pl = next('c' + a + b);
-    html += `<div class="pc note-card" style="--x:${pl.x}%;--r:${pl.r}deg;--z:${pl.z};--i:${i++}">
-      <div class="pc-time">Conflitto</div>
-      <div class="pc-title">${esc(title(state, a))} si sovrappone a ${esc(title(state, b))}</div>
-    </div>`;
-  }
-  if (!p.blocks.length && !p.unscheduled.length) {
-    html += `<p class="empty-hint">${isToday ? 'Giornata libera.' : 'Niente in programma.'} Scrivi qui sotto cosa vuoi fare, oppure tocca + per aggiungere un'attività.</p>`;
-  }
+  if (v.emptyText) html += `<p class="empty-hint">${esc(v.emptyText)}</p>`;
 
   const col = $('#collage');
   col.innerHTML = html;
@@ -619,26 +563,17 @@ function renderDayView(animate) {
 // ---------------------------------------------------------------- tutti i giorni
 const HUES = [300, 330, 20, 280, 345, 250, 200];
 function renderOverview(animate) {
-  const t = today();
-  const days = Object.keys(plan).sort();
   const spots = [{ x: '0%', y: '8px', r: -3 }, { x: '34.5%', y: '18px', r: 2.5 }, { x: '69%', y: '4px', r: -1.5 }];
-  $('#ov-scroll').innerHTML = days.map((k, i) => {
-    const p = plan[k];
-    const d = dateOf(k);
-    const tasks = p.blocks.filter((b) => b.item.kind === 'task').length + p.unscheduled.length;
-    const evs = p.blocks.filter((b) => b.item.kind === 'event').length;
-    const sub = [tasks ? `${tasks} attività` : null, evs ? `${evs} impegni` : null, `${durLabel(p.free)} libere`].filter(Boolean).join(' · ');
-    const minis = p.blocks.filter((b) => b.type !== 'done').slice(0, 3).map((b, j) => {
-      const s = spots[j];
-      const st = `--x:${s.x};--y:${s.y};--r:${s.r}deg`;
-      return b.item.image ? `<div class="mini photo" style="${st}">${imgTag(b.item.image)}</div>`
-        : `<div class="mini" style="${st}"><small>${fmtMin(b.start)}</small>${esc(b.item.title)}</div>`;
+  $('#ov-scroll').innerHTML = vm.days({ state, plan, now: Date.now(), selected: selDay }).map((d, i) => {
+    const minis = d.minis.map((b, j) => {
+      const sp = spots[j];
+      const st = `--x:${sp.x};--y:${sp.y};--r:${sp.r}deg`;
+      return b.image ? `<div class="mini photo" style="${st}">${imgTag(b.image)}</div>` : `<div class="mini" style="${st}"><small>${b.time}</small>${esc(b.title)}</div>`;
     }).join('');
-    const name = k === t ? 'Oggi' : k === addDays(t, 1) ? 'Domani' : cap(d.toLocaleDateString('it-IT', { weekday: 'long' }));
-    return `<button class="tile${k === selDay ? ' sel' : ''}" data-day="${k}" style="--h:${HUES[d.getDay()]};--i:${i}">
-      <div class="t-head"><b>${esc(name)}</b><span>${esc(d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' }))}</span></div>
-      <div class="t-sub">${sub}</div>
-      <div class="t-mini">${minis || '<div class="t-empty">Giornata libera</div>'}</div>
+    return `<button class="tile${d.selected ? ' sel' : ''}" data-day="${d.day}" style="--h:${HUES[d.weekday]};--i:${i}" aria-label="${esc(`${d.name} ${d.date}: ${d.sub}`)}">
+      <div class="t-head"><b>${esc(d.name)}</b><span>${esc(d.date)}</span></div>
+      <div class="t-sub">${d.sub}</div>
+      <div class="t-mini">${minis || `<div class="t-empty">${d.emptyText}</div>`}</div>
     </button>`;
   }).join('');
   fillImages($('#ov-scroll'));
@@ -649,33 +584,21 @@ function renderOverview(animate) {
 let ovMode = 'list';
 const MONTHS = 6;
 function renderCalendar(animate) {
-  const t = today();
-  const d0 = dateOf(t);
+  goalFits();
+  const months = vm.month({ state, longPlan: { ...(fitCache?.long || {}), ...plan }, planFor, now: Date.now(), months: MONTHS, selected: selDay });
   let html = '', chips = '';
-  for (let mi = 0; mi < MONTHS; mi++) {
-    const first = new Date(d0.getFullYear(), d0.getMonth() + mi, 1);
-    const y = first.getFullYear(), m = first.getMonth();
-    chips += `<button type="button" data-month="${mi}"${mi === 0 ? ' class="on"' : ''}>${esc(cap(first.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '')))}</button>`;
-    const lead = (first.getDay() + 6) % 7; // la settimana parte dal lunedì
-    const days = new Date(y, m + 1, 0).getDate();
-    let cells = '<span class="cd-empty"></span>'.repeat(lead);
-    for (let dd = 1; dd <= days; dd++) {
-      const k = dateKey(new Date(y, m, dd));
-      const p = planFor(k);
-      const blocks = p.blocks;
-      const pick = blocks.find((b) => b.item.image) || blocks.find((b) => b.type !== 'done') || blocks[0] || (p.unscheduled[0] && { item: p.unscheduled[0].item });
-      const cls = ['cd', k < t ? 'past' : '', k === t ? 'today' : '', k === selDay ? 'sel' : ''].join(' ');
-      if (pick) {
-        const it = pick.item;
-        const allDone = blocks.length && blocks.every((b) => b.type === 'done');
-        cells += `<button class="${cls} has${it.image ? ' ph' : ''}${allDone ? ' done' : ''}" data-day="${k}" style="--r:${tilt(k)}deg" aria-label="${dd}: ${esc(it.title)}">
-          <span class="cd-card">${it.image ? imgTag(it.image) : `<span class="cd-t">${esc(it.title)}</span>`}</span><b>${dd}</b></button>`;
-      } else {
-        cells += `<button class="${cls}" data-day="${k}" aria-label="${dd}, libero"><b>${dd}</b></button>`;
-      }
+  for (const mo of months) {
+    chips += `<button type="button" data-month="${mo.index}"${mo.index === 0 ? ' class="on"' : ''}>${esc(mo.short)}</button>`;
+    let cells = '<span class="cd-empty"></span>'.repeat(mo.lead);
+    for (const c of mo.cells) {
+      const cls = ['cd', c.past ? 'past' : '', c.today ? 'today' : '', c.selected ? 'sel' : ''].join(' ');
+      if (c.pick) {
+        cells += `<button class="${cls} has${c.pick.image ? ' ph' : ''}${c.allDone ? ' done' : ''}" data-day="${c.day}" style="--r:${tilt(c.day)}deg" aria-label="${esc(c.label)}">
+          <span class="cd-card">${c.pick.image ? imgTag(c.pick.image) : `<span class="cd-t">${esc(c.pick.title)}</span>`}</span><b>${c.n}</b></button>`;
+      } else cells += `<button class="${cls}" data-day="${c.day}" aria-label="${esc(c.label)}"><b>${c.n}</b></button>`;
     }
-    html += `<section class="month" data-mi="${mi}" style="--i:${mi}">
-      <h3>${esc(cap(first.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })))}</h3>
+    html += `<section class="month" data-mi="${mo.index}" style="--i:${mo.index}">
+      <h3>${esc(mo.title)}</h3>
       <div class="wk"><span>L</span><span>M</span><span>M</span><span>G</span><span>V</span><span>S</span><span>D</span></div>
       <div class="grid">${cells}</div>
     </section>`;
@@ -1044,13 +967,7 @@ function briefAction(act, arg) {
 
 // ---------------------------------------------------------------- presentazione
 // Quattro domande, una alla volta: cosa vuoi ottenere, cosa non si sposta, su cosa lavori, come rendi meglio.
-const ONB = [
-  { k: null, kick: 'Tempo', q: 'Non sono un\'agenda.', sub: 'Dimmi cosa stai cercando di ottenere e costruisco io le tue giornate: cosa fare, quando, e quando fermarti. Quattro domande, un minuto.' },
-  { k: 'goals', kick: 'Obiettivi', q: 'Cosa vuoi ottenere?', sub: 'Anche in grande. Ci penso io a farlo diventare sessioni concrete.', ph: 'Voglio far uscire il mio EP tra 6 settimane.', ex: ['Finire il portfolio entro un mese', 'Andare in palestra 3 volte a settimana'] },
-  { k: 'constraints', kick: 'Vincoli', q: 'Cosa non si sposta?', sub: 'Lavoro, orari, giorni liberi, cose che non vuoi.', ph: 'Lavoro 9–18:30. Sabato sono libero. Non voglio lavorare sulla musica ogni sera.', ex: ['Lavoro 9–18', 'Il sabato sono libero'] },
-  { k: 'projects', kick: 'Progetti', q: 'Su cosa stai lavorando?', sub: 'Separali con una virgola.', ph: 'EP, portfolio, palestra, Spazio Desk', ex: ['EP', 'Portfolio', 'Palestra'] },
-  { k: 'prefs', kick: 'Preferenze', q: 'Come lavori meglio?', sub: 'Quando rendi, quanto reggi di fila, quando vuoi staccare.', ph: 'La sera produco meglio. Non voglio più di 2h consecutive. La domenica voglio staccare.', ex: ['La sera produco meglio', 'Max 2h di fila', 'La domenica stacco'] },
-];
+const ONB = vm.onboarding().map((x) => ({ k: x.key, kick: x.kick, q: x.q, sub: x.sub, ph: x.placeholder, ex: x.examples }));
 let onbStep = 0;
 const onbAns = {};
 function openOnboarding() {
@@ -1142,6 +1059,7 @@ function closeSettings() {
 // ---------------------------------------------------------------- impostazioni / memoria
 function renderSettings() {
   const P = state.prefs, S = state.settings;
+  const ctxv = vm.context({ state, now: Date.now(), fits: goalFits() });
   const st = computeStats(state);
   const prov = S.provider || (S.apiKey ? 'claude' : 'base');
   const preset = presetOf(S);
@@ -1151,10 +1069,11 @@ function renderSettings() {
     <p class="ctx-intro">Quello che so di te. Da qui costruisco ogni giornata: cambialo quando vuoi, oppure dimmelo nella barra.</p>
 
     <div class="group"><h2>Obiettivi</h2>
-      ${(state.goals || []).map((g) => { const pr = g.projectId ? projectOf(state, g.projectId) : null; const dd = g.due ? Math.round((dateOf(g.due) - dateOf(today())) / 864e5) : null; return `<div class="goal" style="--pc:${pr?.color || 'var(--accent)'}">
+      ${ctxv.goals.map((g) => `<div class="goal" style="--pc:${g.project?.color || 'var(--accent)'}">
         <div class="goal-t">${esc(g.title)}</div>
-        <div class="goal-m">${pr ? `<span><i class="proj"></i>${esc(pr.name)}</span>` : ''}${g.due ? `<span>${dd < 0 ? 'scaduto' : dd === 0 ? 'oggi' : dd < 14 ? `tra ${dd} giorni` : `tra ${Math.round(dd / 7)} settimane`} · ${esc(dateOf(g.due).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }))}</span>` : '<span>senza scadenza</span>'}</div>
-        <button class="x" data-delgoal="${g.id}" aria-label="Rimuovi obiettivo">×</button></div>`; }).join('')}
+        <div class="goal-m">${g.project ? `<span><i class="proj"></i>${esc(g.project.name)}</span>` : ''}<span>${g.dueText}${g.dueDate ? ' · ' + esc(g.dueDate) : ''}</span>${g.sessions.total ? `<span>${g.sessions.done} di ${plural(g.sessions.total, 'sessione', 'sessioni')}</span>` : ''}${g.late ? `<span>${plural(g.late, 'sessione non entra', 'sessioni non entrano')}</span>` : ''}</div>
+        <button class="x" data-delgoal="${g.id}" aria-label="Rimuovi l'obiettivo ${esc(g.title)}">×</button></div>`).join('')}
+      ${ctxv.habits.map((h) => `<div class="card"><div class="row"><span class="lbl">${esc(h.text)}</span><button class="x" data-delhabit="${h.id}" aria-label="Rimuovi l'abitudine ${esc(h.title)}">×</button></div></div>`).join('')}
       <div class="card"><div class="row"><input type="text" class="wide" id="goal-new" placeholder="Es. far uscire l'EP tra 6 settimane" enterkeyhint="done"><button class="btn" id="goal-add">Aggiungi</button></div></div>
     </div>
 
@@ -1167,7 +1086,7 @@ function renderSettings() {
       <div class="card">
         ${state.recurring.map((r) => `<div class="row"><span class="lbl">${esc(r.title)}<small>${fmtMin(r.start)}–${fmtMin(r.end)} · ${r.weekdays.map((d) => wd[d]).join(' ')}</small></span><button class="x" data-delrec="${r.id}" aria-label="Elimina">×</button></div>`).join('')}
         <div class="row"><span class="lbl">Giorni in cui stacchi<small>niente lavoro sui progetti</small></span></div>
-        <div class="row days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button class="dchip${(P.offDays || []).includes(d) ? ' on' : ''}" data-offday="${d}">${wd[d]}</button>`).join('')}</div>
+        <div class="row days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button class="dchip${(P.offDays || []).includes(d) ? ' on' : ''}" data-offday="${d}" aria-pressed="${(P.offDays || []).includes(d)}" aria-label="${['Domenica', 'Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato'][d]}">${wd[d]}</button>`).join('')}</div>
         ${state.memory.filter((m) => m.category === 'vincolo').map((m) => `<div class="row"><div class="mem-item"><span>${esc(m.text)}</span></div><button class="x" data-forget="${m.id}" aria-label="Dimentica">×</button></div>`).join('')}
         <div class="row"><input type="text" class="wide" id="vin-new" placeholder="Es. lavoro 9–18:30" enterkeyhint="done"><button class="btn" id="vin-add">Aggiungi</button></div>
       </div>
@@ -1175,7 +1094,7 @@ function renderSettings() {
 
     <div class="group"><h2>Preferenze</h2>
       <div class="card">
-        <div class="row"><label for="p-fw">Rendi di più<small>per il lavoro creativo e pesante</small></label><select id="p-fw" data-pref="focusWindow"><option value="">Indifferente</option>${Object.keys(WINDOWS).map((w) => `<option ${P.focusWindow === w ? 'selected' : ''} value="${w}">la ${w}</option>`).join('')}</select></div>
+        <div class="row"><label for="p-fw">Rendi di più<small>per il lavoro creativo e pesante</small></label><select id="p-fw" data-pref="focusWindow"><option value="">Indifferente</option>${Object.keys(WINDOWS).map((w) => `<option ${P.focusWindow === w ? 'selected' : ''} value="${w}">${windowLabel(w)}</option>`).join('')}</select></div>
         <div class="row"><label for="p-mb">Sessione più lunga<small>poi ti fermo</small></label><select id="p-mb" data-pref="maxBlock">${[45, 60, 90, 120, 150, 180, 240].map((m) => `<option value="${m}" ${P.maxBlock === m ? 'selected' : ''}>${durLabel(m)}</option>`).join('')}</select></div>
         <div class="row"><label for="p-buf">Pausa tra sessioni<small>minuti</small></label><input type="number" id="p-buf" data-pref="buffer" min="0" max="60" step="5" value="${P.buffer}" inputmode="numeric"></div>
         <div class="row"><label for="p-dc">Decompressione<small>dopo una lunga giornata di lavoro</small></label><input type="number" id="p-dc" data-pref="decompress" min="0" max="120" step="5" value="${P.decompress ?? 45}" inputmode="numeric"></div>
@@ -1532,7 +1451,19 @@ function bind() {
     const tt = t.closest('button');
     if (tt?.dataset.learnToggle) commit('Cosa ho imparato', () => { const d = state.learned.durations[tt.dataset.learnToggle]; if (d) d.disabled = !d.disabled; updateDurations(state); });
     if (tt?.dataset.learnForget) commit('Dimentica', () => forgetLearned(state, tt.dataset.learnForget, Date.now()));
-    if (tt?.dataset.delgoal) commit('Obiettivo rimosso', () => { state.goals = state.goals.filter((g) => g.id !== tt.dataset.delgoal); });
+    if (tt?.dataset.delhabit) commit('Abitudine rimossa', () => applyOps(state, [{ action: 'remove_habit', id: tt.dataset.delhabit }]));
+    if (tt?.dataset.delgoal) {
+      const gid = tt.dataset.delgoal;
+      const open = state.items.filter((x) => x.goalId === gid && x.status === 'todo' && !(x.spent > 0));
+      const drop = open.length && confirm(`Togliere anche ${plural(open.length, 'sessione non ancora iniziata', 'sessioni non ancora iniziate')}?`);
+      commit('Obiettivo rimosso', () => {
+        state.goals = state.goals.filter((g) => g.id !== gid);
+        if (drop) state.items = state.items.filter((x) => !open.includes(x));
+        state.items.forEach((x) => { if (x.goalId === gid) x.goalId = null; });
+        state.habits = (state.habits || []).filter((h) => h.goalId !== gid);
+      });
+      toastUndo('Obiettivo rimosso');
+    }
     if (tt?.dataset.delproj) commit('Progetto rimosso', () => {
       state.projects = state.projects.filter((p) => p.id !== tt.dataset.delproj);
       state.items.forEach((x) => { if (x.project === tt.dataset.delproj) x.project = null; });
@@ -1540,7 +1471,9 @@ function bind() {
     });
     if (tt?.dataset.offday) {
       const d = +tt.dataset.offday;
-      commit('Giorni di riposo', () => { const o = new Set(state.prefs.offDays || []); o.has(d) ? o.delete(d) : o.add(d); state.prefs.offDays = [...o]; });
+      const o = new Set(state.prefs.offDays || []);
+      o.has(d) ? o.delete(d) : o.add(d);
+      commit('Giorni di riposo', () => applyOps(state, [{ action: 'set_pref', pref_key: 'off_days', pref_value: [...o].join(',') }]));
     }
     if (t.id === 'goal-add') addContext('goal');
     if (t.id === 'vin-add') addContext('vin');
