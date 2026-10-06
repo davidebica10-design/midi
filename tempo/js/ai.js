@@ -3,6 +3,7 @@
 // pianificazione (scheduler.js) e la validazione (store.js) decidono il resto.
 import { fmtMin, dateKey, addDays, dayLabel } from './scheduler.js';
 import { COMPANION_RULES, companionContext } from './companion.js';
+import { sanitizeOps } from './store.js';
 
 let sdkPromise = null;
 const loadSdk = () => (sdkPromise ||= import('../vendor/anthropic-sdk.mjs').then((m) => m.default));
@@ -54,7 +55,7 @@ const OP_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'remember', 'forget', 'set_pref', 'add_recurring', 'remove_recurring', 'set_goal', 'remove_goal', 'add_project', 'set_availability'] },
+    action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'remember', 'forget', 'set_pref', 'add_recurring', 'remove_recurring', 'set_goal', 'remove_goal', 'plan_goal', 'add_project', 'set_availability', 'add_habit', 'remove_habit'] },
     id: { ...N('string'), description: 'id dell\'elemento esistente (per update/move/start/complete/reopen/delete/forget/remove_recurring)' },
     title: N('string'),
     kind: { type: ['string', 'null'], enum: ['task', 'event', null] },
@@ -73,12 +74,16 @@ const OP_SCHEMA = {
     note: { ...N('string'), description: 'per remember: la nota; per add/update: una nota sull\'attività' },
     project: { ...N('string'), description: 'nome del progetto a cui appartiene l\'attività o l\'obiettivo' },
     category: { type: ['string', 'null'], enum: ['vincolo', 'preferenza', 'obiettivo', 'nota', null], description: 'per remember' },
-    pref_key: { type: ['string', 'null'], enum: ['day_start', 'day_end', 'buffer_min', 'slack_percent', 'focus_window', 'max_block_min', 'decompress_min', 'off_days', null] },
+    sessions: {
+      type: ['array', 'null'], description: 'per plan_goal: le sessioni concrete dell\'obiettivo (massimo 30)',
+      items: { type: 'object', additionalProperties: false, properties: { key: { type: 'string' }, title: { type: 'string' }, duration_min: { type: 'integer' }, energy: { type: 'integer' }, after: { type: 'array', items: { type: 'string' } } }, required: ['key', 'title', 'duration_min', 'energy', 'after'] },
+    },
+    pref_key: { type: ['string', 'null'], enum: ['day_start', 'day_end', 'buffer_min', 'slack_percent', 'focus_window', 'max_block_min', 'decompress_min', 'off_days', 'free_days', null] },
     pref_value: N('string'),
     weekdays: { type: ['array', 'null'], items: { type: 'integer' } },
     unpin: { ...N('boolean'), description: 'true per togliere l\'orario fisso a un task' },
   },
-  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'project', 'category', 'pref_key', 'pref_value', 'weekdays', 'unpin'],
+  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'project', 'category', 'sessions', 'pref_key', 'pref_value', 'weekdays', 'unpin'],
 };
 
 const TOOL = {
@@ -207,7 +212,7 @@ export async function runTurn({ state, plan, now, userText, hooks, signal, chat 
       let out;
       try {
         out = u.name === 'update_plan' && u.input && Array.isArray(u.input.ops)
-          ? hooks.apply(u.input)
+          ? hooks.apply({ ...u.input, ops: sanitizeOps(u.input.ops).ops })
           : { text: 'Strumento sconosciuto o input non valido', error: true };
       } catch (e) {
         out = { text: 'Errore: ' + e.message, error: true };
@@ -217,6 +222,52 @@ export async function runTurn({ state, plan, now, userText, hooks, signal, chat 
     messages.push({ role: 'user', content: results });
   }
   return { text: finalText || 'Fatto.' };
+}
+
+// ------------------------------------------------------------------
+// Da obiettivo a piano con l'AI (la risposta viene validata da templates.validatePlan)
+// ------------------------------------------------------------------
+export function goalPlanPrompt(state, goal, now) {
+  const pr = (state.projects || []).find((p) => p.id === goal.projectId);
+  const today = dateKey(new Date(now));
+  return `Trasforma questo obiettivo in sessioni di lavoro concrete. Rispondi SOLO con un oggetto JSON, senza altro testo:
+{"sessions":[{"key":"s1","title":"Beat 01","duration_min":120,"energy":3,"after":[]},{"key":"s2","title":"Arrangiamento 01","duration_min":90,"energy":3,"after":["s1"]}]}
+
+Regole:
+- Al massimo 30 sessioni, ognuna tra 20 e ${state.prefs.maxBlock || 120} minuti.
+- Titoli brevi e concreti, come azioni («Registrazione voce 02», «Caso studio 1»), mai vaghi («Lavora all'obiettivo»).
+- energy: 1 leggera (amministrativa), 2 media, 3 concentrazione o lavoro creativo.
+- after: le chiavi delle sessioni che devono essere finite prima.
+- Metti le fasi nell'ordine reale del lavoro; ciò che va fatto con anticipo (per esempio il caricamento su un distributore) va prima della scadenza.
+
+Oggi è ${today}.
+Obiettivo: ${goal.title}${goal.note && goal.note !== goal.title ? ` (detto così: «${goal.note}»)` : ''}
+Scadenza: ${goal.due || 'nessuna'}
+Progetto: ${pr?.name || 'nessuno'}
+Cosa so dell'utente: ${(state.memory || []).map((m) => m.text).join('; ') || 'niente'}`;
+}
+
+/** Piano dell'obiettivo con Claude: restituisce l'oggetto JSON grezzo. */
+export async function claudeGoalPlan(state, goal, now, signal) {
+  const Anthropic = await loadSdk();
+  const client = new Anthropic({ apiKey: state.settings.apiKey, dangerouslyAllowBrowser: true, maxRetries: 1 });
+  const res = await client.messages.create({
+    model: state.settings.model || 'claude-opus-5-5', max_tokens: 4000,
+    messages: [{ role: 'user', content: goalPlanPrompt(state, goal, now) }],
+  }, { signal });
+  const text = res.content.filter((c) => c.type === 'text').map((c) => c.text).join('');
+  const a = text.indexOf('{'), b = text.lastIndexOf('}');
+  return JSON.parse(text.slice(a, b + 1));
+}
+
+/** Una promessa con un tempo massimo: oltre, viene annullata e rifiutata con code 'timeout'. */
+export function withTimeout(fn, ms) {
+  const ctrl = new AbortController();
+  let timer;
+  return Promise.race([
+    fn(ctrl.signal),
+    new Promise((_, reject) => { timer = setTimeout(() => { ctrl.abort(); reject(Object.assign(new Error('timeout'), { code: 'timeout' })); }, ms); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 // ------------------------------------------------------------------

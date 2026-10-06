@@ -1,8 +1,10 @@
 import { planDays, planDay, updateAnchors, diffPlans, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf } from './store.js';
-import { nowAdvice, briefing, nextSaturday, contextOps } from './companion.js';
-import { runTurn, localParse, MODELS } from './ai.js';
-import { runOpenTurn, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate } from './store.js';
+import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from './companion.js';
+import { goalFit, planSummary, horizonFor } from './goals.js';
+import { validatePlan } from './templates.js';
+import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout } from './ai.js';
+import { runOpenTurn, openGoalPlan, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
 
 const $ = (s) => document.querySelector(s);
@@ -23,8 +25,20 @@ let planCache = {};
 function planFor(k) {
   return plan[k] || (planCache[k] ||= planDay(k, state.items, { ...state.prefs, projectDue: projectDue(state) }, Date.now(), [], state.recurring, state.anchors || {}));
 }
+let planRev = 0, fitCache = null;
+/** Dove finiscono le sessioni di ogni obiettivo (orizzonte lungo, calcolato solo quando serve). */
+function goalFits() {
+  if (fitCache?.rev === planRev) return fitCache.fits;
+  const now = Date.now();
+  const goals = (state.goals || []).filter((g) => state.items.some((x) => x.goalId === g.id && x.status !== 'done'));
+  const long = goals.length ? planDays(state, now, horizonFor(state, now)) : {};
+  const fits = Object.fromEntries(goals.map((g) => [g.id, goalFit(state, g, now, long)]));
+  fitCache = { rev: planRev, fits, long };
+  return fits;
+}
 function replan() {
   planCache = {};
+  planRev++;
   const now = Date.now();
   plan = planDays(state, now, DAYS);
   updateAnchors(state, plan, now);
@@ -487,7 +501,12 @@ function renderDayView(animate) {
   const capTxt = [total ? `${doneN} di ${total} fatte` : 'Nessuna attività', p.free > 0 ? `${durLabel(p.free)} libere` : null].filter(Boolean).join(' · ');
   if (isToday) {
     const adv = nowAdvice(state, plan, Date.now());
-    const brief = briefing(state, plan, Date.now());
+    const { shown: brief, seen } = pickObservations(briefing(state, plan, Date.now(), { fits: goalFits(), backupDue: backupDue() }), state.seenObs, t);
+    if (JSON.stringify(seen) !== JSON.stringify(state.seenObs)) {
+      state.seenObs = seen;
+      for (const o of brief) if (o.goalId && o.id.startsWith('due-')) { const g = state.goals.find((x) => x.id === o.goalId); if (g && !g.askedDueOn) g.askedDueOn = t; }
+      save(state);
+    }
     const hasCur = !!currentBlock();
     if (adv) {
       const pl = next('adv', true);
@@ -951,6 +970,35 @@ function briefAction(act, arg) {
     });
     toastUndo(`Sabato recuperi ${pr?.name || 'il progetto'}`);
   }
+  if (act === 'due') {
+    const [gid, v] = arg.split('|');
+    const g = state.goals.find((x) => x.id === gid);
+    if (!g) return;
+    const t = today();
+    const [y, m, d] = t.split('-').map(Number);
+    const due = v === '0' ? null : v.startsWith('m') ? dateKey(new Date(y, m - 1 + +v.slice(1), d)) : addDays(t, +v);
+    commit('Scadenza', () => { g.dueAnswered = true; if (due) applyOps(state, [{ action: 'set_goal', id: g.id, title: g.title, deadline: due }]); });
+    toastUndo(due ? `Scadenza: ${dateOf(due).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}` : 'Nessuna scadenza');
+  }
+  if (act === 'extend') {
+    const [gid, to] = arg.split('|');
+    const g = state.goals.find((x) => x.id === gid);
+    if (!g) return;
+    commit('Scadenza spostata', () => applyOps(state, [{ action: 'set_goal', id: g.id, title: g.title, deadline: to }]));
+    toastUndo(`Nuova scadenza: ${dateOf(to).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}`);
+  }
+  if (act === 'trim') {
+    const n = state.items.filter((x) => x.goalId === arg && x.optional && x.status !== 'done').length;
+    commit('Solo l\'essenziale', () => { state.items = state.items.filter((x) => !(x.goalId === arg && x.optional && x.status !== 'done')); });
+    toastUndo(`${n} ${n === 1 ? 'sessione facoltativa tolta' : 'sessioni facoltative tolte'}`);
+  }
+  if (act === 'goal-done') {
+    const g = state.goals.find((x) => x.id === arg);
+    commit('Obiettivo raggiunto', () => { state.goals = state.goals.filter((x) => x.id !== arg); });
+    toastUndo(g ? `«${g.title}» archiviato` : 'Archiviato');
+  }
+  if (act === 'goal-more') { $('#input').focus(); toast('Dimmi il prossimo passo: lo metto al posto giusto.'); }
+  if (act === 'backup') exportData();
   if (act === 'reduce') {
     const g = (state.goals || []).find((x) => x.id === arg);
     if (!g) return;
@@ -1003,17 +1051,41 @@ function closeOnboarding() {
   state.onboarded = true;
   save(state);
 }
-function finishOnboarding() {
+async function finishOnboarding() {
   onbSave();
-  const ops = contextOps(onbAns, today());
+  const ops = contextOps(onbAns, today(), state.prefs.offDays);
   closeOnboarding();
   if (!ops.length) return;
-  commit('Il tuo contesto', () => applyOps(state, ops));
+  busy = true; renderComposer();
+  const typing = addMsg({ role: 'assistant', pending: true });
+  try { await aiPlans(ops); } finally { removeMsg(typing.id); busy = false; renderComposer(); }
+  const goalsBefore = new Set(state.goals.map((g) => g.id));
+  let res;
+  const undoId = commit('Il tuo contesto', () => { res = applyOps(state, ops); });
   renderDayView(true);
-  // con un'AI attiva, gli obiettivi diventano subito sessioni concrete
-  if (aiMode() !== 'base' && onbAns.goals) {
-    send(`Ti ho appena raccontato il mio contesto (obiettivi, vincoli, progetti, preferenze: li trovi in memoria). Trasforma i miei obiettivi nelle prime sessioni concrete per i prossimi 7 giorni, rispettando vincoli e preferenze. Sessioni brevi e precise, con il progetto giusto.`);
-  } else toast('Fatto. Ora dimmi il primo passo concreto, ci penso io a metterlo al posto giusto.');
+  goalFits();
+  const lines = state.goals.filter((g) => !goalsBefore.has(g.id)).map((g) => planSummary(state, g, Date.now(), fitCache?.long)).filter(Boolean);
+  addMsg({ role: 'assistant', text: lines.join(' ') || 'Fatto: ho il tuo contesto. Dimmi cosa vuoi ottenere e preparo le sessioni.', changes: res.log.filter((l) => /^[◎⟳]/.test(l)), applied: true, undoId });
+}
+
+/**
+ * Con un'AI attiva, il piano di ogni nuovo obiettivo lo propone l'AI (JSON validato, tetto alle sessioni).
+ * Se l'AI non risponde in tempo o sbaglia formato, resta il modello per categoria.
+ */
+async function aiPlans(ops) {
+  const mode = aiMode();
+  if (mode === 'base') return;
+  for (const o of ops) {
+    if (o.action !== 'plan_goal' || o.sessions) continue;
+    const g0 = ops.find((x) => x.action === 'set_goal' && x.title === o.title);
+    if (!g0) continue;
+    const goal = { title: g0.title, note: g0.note, due: g0.deadline || null, projectId: (state.projects || []).find((p) => p.name.toLowerCase() === String(g0.project || '').toLowerCase())?.id };
+    try {
+      const raw = await withTimeout((signal) => (mode === 'claude' ? claudeGoalPlan(state, goal, Date.now(), signal) : openGoalPlan(state, goal, Date.now(), signal)), 25000);
+      const v = validatePlan(raw);
+      if (v) o.sessions = v;
+    } catch (e) { console.warn('piano AI non disponibile, uso il modello', e); }
+  }
 }
 
 // ---------------------------------------------------------------- impostazioni
@@ -1204,7 +1276,8 @@ function onSettingsChange(e) {
     t.files[0].text().then((txt) => {
       const d = JSON.parse(txt);
       if (!Array.isArray(d.items)) throw new Error('file non valido');
-      commit('Ripristino backup', () => Object.assign(state, { items: d.items, prefs: { ...state.prefs, ...d.prefs }, recurring: d.recurring || [], memory: d.memory || [], anchors: {}, chat: d.chat || state.chat }));
+      const m = migrate({ ...d, settings: state.settings }, Date.now());
+      commit('Ripristino backup', () => Object.assign(state, { ...m, settings: state.settings, anchors: {} }));
       toast('Backup ripristinato');
     }).catch((err) => toast('Backup non valido: ' + err.message));
   }
@@ -1506,8 +1579,18 @@ function bind() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 }
 
+/** Promemoria di backup: niente export da 14 giorni (e l'app si usa da almeno 14). */
+function backupDue() {
+  const last = state.settings.lastExportAt || state.stats.createdAt || Date.now();
+  return state.items.length > 0 && Date.now() - last > 14 * 864e5;
+}
+
 function exportData() {
-  const data = JSON.stringify({ app: 'tempo', version: 1, exportedAt: new Date().toISOString(), items: state.items, prefs: state.prefs, recurring: state.recurring, memory: state.memory, chat: state.chat }, null, 2);
+  // tutto tranne le chiavi API
+  const { settings, ...rest } = state;
+  const data = JSON.stringify({ app: 'tempo', version: 2, exportedAt: new Date().toISOString(), ...rest }, null, 2);
+  state.settings.lastExportAt = Date.now();
+  save(state);
   const file = new File([data], `tempo-backup-${today()}.json`, { type: 'application/json' });
   if (navigator.canShare?.({ files: [file] })) {
     navigator.share({ files: [file], title: 'Backup Tempo' }).catch(() => {});

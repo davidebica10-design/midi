@@ -96,58 +96,113 @@ export function skippedThisWeek(state, now) {
 }
 
 /**
- * Il briefing: memoria di ieri, obiettivi, osservazioni.
- * Ogni voce: { id, text, actions?: [{ label, act, arg }] }
+ * Le osservazioni possibili oggi, dalla più importante: { id, text, actions? }.
+ * extra.fits: goalId → goalFit(...) (calcolato dall'app su un orizzonte lungo)
+ * extra.learned: osservazioni da learn.js
+ * Quali mostrare lo decide pickObservations (massimo 2 al giorno).
  */
-export function briefing(state, plan, now) {
+export function briefing(state, plan, now, extra = {}) {
   const t = dateKey(new Date(now));
   const p = plan[t];
   if (!p) return [];
   const out = [];
   const n = nowMinOf(now);
+  const nice = (d) => new Date(d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
   const where = (id) => {
     for (const [d, x] of Object.entries(plan)) { const b = x.blocks.find((bb) => bb.id === id && bb.type !== 'done' && !(d === t && bb.end <= n)); if (b) return { d, b }; }
     return null;
   };
-  // 1. continuità: ciò che era iniziato o è rimasto indietro
-  for (const it of state.items) {
-    if (it.kind !== 'task' || it.status === 'done') continue;
-    const behind = it.date && it.date < t;
-    if (!(it.spent > 0) && !behind) continue;
-    const w = where(it.id);
-    const at = w ? `${w.d === t ? 'oggi' : dayLabel(w.d, t).toLowerCase()} alle ${fmtMin(w.b.start)}` : null;
-    if (it.spent > 0) out.push({ id: 'carry-' + it.id, text: `«${it.title}»: hai già fatto ${dur(it.spent)}, non riparti da zero. ${at ? `Gli altri ${dur(remainingOf(it))} li ho messi ${at}.` : (p.missed || []).some((m) => m.item.id === it.id) ? 'Com\'è andata la sessione di prima?' : `Mancano ${dur(remainingOf(it))}, ma per ora non entrano.`}` });
-    else out.push({ id: 'behind-' + it.id, text: `${it.title} è rimasta indietro. ${at ? 'L\'ho rimessa ' + at + '.' : 'Oggi non entra: dimmi se la sposto o la togliamo.'}` });
-    if (out.length >= 2) break;
-  }
-  // 2. obiettivi con scadenza
+  const nameOf = (g) => { const pr = g.projectId ? projectOf(state, g.projectId) : null; return pr ? (pr.name === 'EP' ? "l'EP" : pr.name) : `«${g.title}»`; };
+
+  // 1. un obiettivo che non ci sta prima della scadenza
   for (const g of state.goals || []) {
-    if (!g.due) continue;
-    const days = daysBetween(t, g.due);
-    if (days < 0) continue;
-    const pr = g.projectId ? projectOf(state, g.projectId) : null;
-    const planned = pr ? Object.values(plan).reduce((s, x) => s + x.blocks.filter((b) => b.item.project === pr.id && b.type !== 'done').length, 0) : 0;
-    const when = days === 0 ? 'oggi' : days < 14 ? `tra ${days} giorni` : `tra ${Math.round(days / 7)} settimane`;
-    out.push({ id: 'goal-' + g.id, text: `${g.title}: ${when}.${pr ? planned ? ` Hai ${planned} sessioni di ${pr.name} in programma nelle prossime due settimane.` : ` Non c'è niente di ${pr.name} in programma: dimmi il prossimo passo.` : ''}` });
-    if (out.length >= 3) break;
+    const fit = extra.fits?.[g.id];
+    if (!g.due || !fit || !fit.late) continue;
+    const to = fit.lastDay && fit.lastDay > g.due ? fit.lastDay : addDays(g.due, 14);
+    const optional = state.items.some((x) => x.goalId === g.id && x.optional && x.status !== 'done');
+    out.push({
+      id: 'fit-' + g.id,
+      text: `Le sessioni per ${nameOf(g)} non entrano tutte entro il ${nice(g.due)}: ${fit.late === 1 ? 'ne resta fuori una' : `ne restano fuori ${fit.late}`}. Sposto la scadenza o tengo solo l'essenziale?`,
+      actions: [
+        { label: `Sposta al ${nice(to)}`, act: 'extend', arg: `${g.id}|${to}` },
+        ...(optional ? [{ label: 'Solo l\'essenziale', act: 'trim', arg: g.id }] : []),
+      ],
+    });
   }
-  // 3. osservazioni: sessioni saltate
+  // 2. sessioni saltate
   const skips = skippedThisWeek(state, now);
-  for (const [pid, n] of Object.entries(skips)) {
-    if (n < 3) continue;
+  for (const [pid, k] of Object.entries(skips)) {
+    if (k < 3) continue;
     const pr = projectOf(state, pid);
     if (!pr) continue;
     const goal = (state.goals || []).find((g) => g.projectId === pid);
-    out.unshift({
+    out.push({
       id: 'skip-' + pid,
-      text: `Questa settimana hai saltato ${n} sessioni di ${pr.name}.${goal ? ' Vuoi che riduca l\'obiettivo o preferisci recuperare sabato?' : ' Vuoi recuperare sabato?'}`,
+      text: `Questa settimana hai saltato ${k} sessioni di ${pr.name}.${goal ? ' Vuoi che riduca l\'obiettivo o preferisci recuperare sabato?' : ' Vuoi recuperare sabato?'}`,
       actions: [
         { label: 'Recupera sabato', act: 'recover', arg: pid },
         ...(goal ? [{ label: 'Riduci l\'obiettivo', act: 'reduce', arg: goal.id }] : []),
       ],
     });
   }
-  return out.slice(0, 2);
+  // 3. scadenza mancante: chiesta una volta sola
+  for (const g of state.goals || []) {
+    if (g.due || g.dueAnswered || (g.askedDueOn && g.askedDueOn !== t)) continue;
+    if ((state.habits || []).some((h) => h.goalId === g.id)) continue;
+    out.push({
+      id: 'due-' + g.id, goalId: g.id,
+      text: `${nameOf(g).charAt(0).toUpperCase() + nameOf(g).slice(1)}: entro quando vuoi arrivarci? Così distribuisco le sessioni.`,
+      actions: [['2 settimane', 14], ['1 mese', 'm1'], ['3 mesi', 'm3'], ['Nessuna', 0]].map(([label, v]) => ({ label, act: 'due', arg: `${g.id}|${v}` })),
+    });
+  }
+  // 4. cose imparate (durate, fasce orarie)
+  out.push(...(extra.learned || []));
+  // 5. continuità: ciò che era iniziato o è rimasto indietro
+  let carry = 0;
+  for (const it of state.items) {
+    if (carry >= 2) break;
+    if (it.kind !== 'task' || it.status === 'done' || it.habitId) continue;
+    const behind = it.date && it.date < t;
+    if (!(it.spent > 0) && !behind) continue;
+    const w = where(it.id);
+    const at = w ? `${w.d === t ? 'oggi' : dayLabel(w.d, t).toLowerCase()} alle ${fmtMin(w.b.start)}` : null;
+    if (it.spent > 0) out.push({ id: 'carry-' + it.id, text: `«${it.title}»: hai già fatto ${dur(it.spent)}, non riparti da zero. ${at ? `Gli altri ${dur(remainingOf(it))} li ho messi ${at}.` : (p.missed || []).some((m) => m.item.id === it.id) ? 'Com\'è andata la sessione di prima?' : `Mancano ${dur(remainingOf(it))}, ma per ora non entrano.`}` });
+    else out.push({ id: 'behind-' + it.id, text: `${it.title} è rimasta indietro. ${at ? 'L\'ho rimessa ' + at + '.' : 'Oggi non entra: dimmi se la sposto o la togliamo.'}` });
+    carry++;
+  }
+  // 6. a che punto sono gli obiettivi
+  for (const g of state.goals || []) {
+    const mine = state.items.filter((x) => x.goalId === g.id && x.kind === 'task' && !x.habitId);
+    const open = mine.filter((x) => x.status !== 'done');
+    if (g.planned && mine.length && !open.length) {
+      out.push({ id: 'done-' + g.id, text: `Le sessioni per ${nameOf(g)} sono finite. Obiettivo raggiunto?`, actions: [{ label: 'Sì, archivialo', act: 'goal-done', arg: g.id }, { label: 'Non ancora', act: 'goal-more', arg: g.id }] });
+      continue;
+    }
+    if (!g.due || daysBetween(t, g.due) < 0 || !mine.length) continue;
+    const days = daysBetween(t, g.due);
+    const when = days === 0 ? 'oggi' : days < 14 ? `tra ${days} giorni` : `tra ${Math.round(days / 7)} settimane`;
+    out.push({ id: 'goal-' + g.id, text: `${g.title}: ${when}. ${mine.length - open.length} sessioni fatte su ${mine.length}.` });
+  }
+  // 7. backup
+  if (extra.backupDue) out.push({ id: 'backup', text: 'Non esporti un backup da più di due settimane. I dati stanno solo su questo telefono.', actions: [{ label: 'Esporta ora', act: 'backup', arg: '' }] });
+  return out;
+}
+
+/**
+ * Massimo 2 osservazioni al giorno: quelle già mostrate oggi restano, le nuove entrano solo se c'è posto.
+ * seen = { day, ids } (viene aggiornato e restituito).
+ */
+export function pickObservations(cands, seen, today, max = 2) {
+  const s = seen && seen.day === today ? { day: today, ids: [...seen.ids] } : { day: today, ids: [] };
+  const byId = new Map(cands.map((c) => [c.id, c]));
+  const shown = s.ids.map((id) => byId.get(id)).filter(Boolean);
+  for (const c of cands) {
+    if (s.ids.length >= max) break;
+    if (s.ids.includes(c.id)) continue;
+    s.ids.push(c.id);
+    shown.push(c);
+  }
+  return { shown: shown.slice(0, max), seen: s };
 }
 
 /** Prossimo sabato (o oggi se è sabato) */
@@ -169,13 +224,14 @@ export const COMPANION_RULES = `Chi sei
 - Osserva e chiedi, non imporre: se lo stato mostra sessioni saltate su un progetto, fai notare il fatto e proponi due strade (recuperare sabato o alleggerire l'obiettivo). Non fare la predica.
 
 Obiettivi e progetti
-- "Voglio far uscire il mio EP tra 6 settimane" → set_goal (title, deadline YYYY-MM-DD calcolata da oggi, project "EP"). Poi spezzalo in sessioni concrete (add, kind task, project, energy, duration_min ≤ sessione massima, depends_on quando c'è un ordine: prima il beat, poi l'arrangiamento, poi l'export). Nomina le sessioni come azioni concrete («Finisci il beat 02», «Arrangiamento», «Esporta e manda al rapper»), mai vaghe («Lavora all'EP»).
+- "Voglio far uscire il mio EP tra 6 settimane" → set_goal (title, deadline YYYY-MM-DD calcolata da oggi, project "EP"), poi plan_goal (title dell'obiettivo) con sessions: le sessioni concrete fino alla scadenza (massimo 30; key, title, duration_min ≤ sessione massima, energy, after = chiavi delle sessioni da finire prima). Nomina le sessioni come azioni concrete («Beat 02», «Registrazione voce 02», «Carica sul distributore»), mai vaghe («Lavora all'EP»). Se non sai spezzarlo, plan_goal con sessions null usa un modello per categoria. Imposta requires_confirmation=true.
+- Abitudini con frequenza ("palestra 3 volte a settimana") → add_habit (title, pref_value = volte a settimana, duration_min): le sessioni vengono sparse nella settimana, mai nei giorni di stacco.
 - Ogni attività che appartiene a un progetto ha il campo project (nome del progetto). Nuovo progetto → add_project.
 - Lavoro creativo = energy 3: il motore lo mette nella fascia in cui l'utente rende meglio.
 - Rispetta la sessione massima (max_block_min): sessioni più lunghe vengono spezzate dal motore con pause. Non riempire ogni sera con lo stesso progetto se l'utente non vuole.
 
 Vincoli e preferenze
-- "Lavoro 9–18:30" → add_recurring lun–ven. "Sabato sono libero" → remember (category vincolo). "La domenica voglio staccare" → set_pref off_days "0" + remember. "Non voglio più di 2h consecutive" → set_pref max_block_min 120. "La sera produco meglio" → set_pref focus_window sera. Ogni preferenza stabile va anche in remember con la category giusta.
+- "Lavoro 9–18:30" → add_recurring lun–ven. "Sabato sono libero" → set_pref free_days "6" + remember (category vincolo). "La domenica voglio staccare" → set_pref off_days "0" + remember. "Non voglio più di 2h consecutive" → set_pref max_block_min 120. "La sera produco meglio" → set_pref focus_window sera. Ogni preferenza stabile va anche in remember con la category giusta.
 - "Stasera ho solo 2 ore" / "domani sono libero dalle 15" → set_availability (date, start_time, end_time).
 - Lavoro fatto a metà ("ho fatto 30 minuti del beat") → progress con actual_min: il resto viene ripianificato senza ripartire da zero. Sessione saltata → skip.
 - "Che faccio?" → una sola azione concreta adatta al tempo libero che resta prima del prossimo impegno, e cosa NON iniziare. Niente elenchi.

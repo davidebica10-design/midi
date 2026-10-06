@@ -2,7 +2,8 @@
 // compatibile con l'API OpenAI (Google Gemini, OpenRouter, Groq, …).
 // I modelli piccoli non usano strumenti: rispondono con un JSON che il codice valida.
 import { fmtMin, dateKey, addDays } from './scheduler.js';
-import { localParse } from './ai.js';
+import { localParse, goalPlanPrompt } from './ai.js';
+import { sanitizeOps } from './store.js';
 import { COMPANION_RULES, companionContext } from './companion.js';
 
 export const LOCAL_MODELS = [
@@ -98,6 +99,8 @@ Operazioni possibili in "ops" (metti solo i campi che servono):
 - Disponibilità di un giorno: {"action":"set_availability","date":"YYYY-MM-DD","start_time":"19:00","end_time":"21:00"}
 - Preferenze: {"action":"set_pref","pref_key":"max_block_min"|"focus_window"|"off_days"|"decompress_min","pref_value":"120"}
 - Impegno ricorrente: {"action":"add_recurring","title":"Lavoro","start_time":"09:00","end_time":"18:30","weekdays":[1,2,3,4,5]}
+- Piano di un obiettivo (subito dopo set_goal): {"action":"plan_goal","title":"Far uscire l'EP","sessions":[{"key":"s1","title":"Beat 01","duration_min":120,"energy":3,"after":[]}]} (massimo 30 sessioni; senza "sessions" uso un modello)
+- Abitudine: {"action":"add_habit","title":"Palestra","pref_value":"3","duration_min":60}
 
 Regole:
 - priority: 1 bassa, 2 normale, 3 alta. energy: 1 leggera, 2 media, 3 pesante (attività creative o di concentrazione).
@@ -157,7 +160,7 @@ const REPLY_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'progress', 'skip', 'set_goal', 'add_project', 'set_availability', 'set_pref', 'add_recurring'] },
+          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'progress', 'skip', 'set_goal', 'plan_goal', 'add_project', 'set_availability', 'set_pref', 'add_recurring', 'add_habit'] },
           id: { type: 'string' },
           title: { type: 'string' },
           kind: { type: 'string', enum: ['task', 'event'] },
@@ -177,6 +180,7 @@ const REPLY_SCHEMA = {
           pref_key: { type: 'string' },
           pref_value: { type: 'string' },
           weekdays: { type: 'array', items: { type: 'integer' } },
+          sessions: { type: 'array', items: { type: 'object' } },
         },
         required: ['action'],
       },
@@ -193,7 +197,7 @@ function parseJson(text) {
   const o = JSON.parse(t.slice(a, b + 1));
   return {
     reply: typeof o.reply === 'string' ? o.reply : '',
-    ops: Array.isArray(o.ops) ? o.ops.filter((x) => x && typeof x.action === 'string') : [],
+    ops: sanitizeOps(o.ops).ops,
     requires_confirmation: !!o.requires_confirmation,
   };
 }
@@ -268,6 +272,19 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
     return { text: String(content || '').trim() || 'Non ho capito, puoi riformulare?', ops: [], confirm: false };
   }
   return { text: out.reply || (out.ops.length ? 'Fatto.' : 'Non ho capito, puoi riformulare?'), ops: out.ops, confirm: out.requires_confirmation };
+}
+
+/** Piano dell'obiettivo con un modello open: restituisce l'oggetto JSON grezzo. */
+export async function openGoalPlan(state, goal, now, signal) {
+  const S = state.settings;
+  const messages = [{ role: 'user', content: goalPlanPrompt(state, goal, now) }];
+  let content;
+  if (S.provider === 'local') {
+    const eng = await getEngine(S.localModel || LOCAL_MODELS[0].id);
+    content = (await eng.chat.completions.create({ messages, temperature: 0.2, max_tokens: 1500 })).choices?.[0]?.message?.content;
+  } else content = (await onlineComplete(S, messages, signal)).content;
+  const t = String(content || '').replace(/```(?:json)?/g, '');
+  return JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
 }
 
 // ---------------------------------------------------------------- servizio online
