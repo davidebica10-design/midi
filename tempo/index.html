@@ -49,23 +49,32 @@
     </main>
   </section>
 
-  <!-- TUTTI I GIORNI / CALENDARIO -->
-  <section id="overview" class="layer" aria-label="Tutti i giorni" hidden>
+  <!-- SETTIMANA / MESE -->
+  <section id="overview" class="layer" aria-label="Settimana e mese" hidden>
     <div class="ov-head">
-      <h2 class="serif" id="ov-title">I tuoi giorni</h2>
-      <button class="pill-btn" id="ov-today">Oggi</button>
+      <div class="ov-top">
+        <button class="round" id="ov-back" aria-label="Torna al giorno">
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m11 6-6 6 6 6"/></svg>
+        </button>
+        <span class="ov-kicker" id="ov-title">Il tuo piano</span>
+        <button class="pill-btn" id="ov-today">Oggi</button>
+      </div>
+      <div class="ov-range">
+        <h2 id="ov-range"></h2>
+        <div class="ov-nav" id="ov-nav">
+          <button type="button" id="wk-prev" aria-label="Settimana precedente"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+          <button type="button" id="wk-next" aria-label="Settimana successiva"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
+        </div>
+      </div>
+      <div class="ov-seg" role="tablist" aria-label="Vista">
+        <button type="button" role="tab" data-ovmode="day" aria-selected="false">Giorno</button>
+        <button type="button" role="tab" data-ovmode="week" aria-selected="true" class="on">Settimana</button>
+        <button type="button" role="tab" data-ovmode="month" aria-selected="false">Mese</button>
+      </div>
+      <div class="months" id="months" hidden></div>
     </div>
-    <div class="months" id="months" hidden></div>
     <main class="ov-scroll" id="ov-scroll"></main>
     <main class="cal-scroll" id="cal-scroll" hidden></main>
-    <div class="ov-switch" role="tablist">
-      <button type="button" data-ovmode="list" class="on" aria-label="Giorni">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="4" y="4" width="16" height="6.5" rx="2.2"/><rect x="4" y="13.5" width="16" height="6.5" rx="2.2"/></svg>
-      </button>
-      <button type="button" data-ovmode="month" aria-label="Mese">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>
-      </button>
-    </div>
   </section>
 
   <!-- bagliore dietro la barra (ispirato a Maike) -->

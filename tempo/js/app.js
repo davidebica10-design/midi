@@ -300,6 +300,8 @@ const undoExists = hasUndo;
 const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const hash = (s) => { let h = 7; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) | 0; return Math.abs(h); };
 const tilt = (id) => ((hash(id) % 60) / 10 - 3).toFixed(1); // da -3° a +3°, sempre uguale per la stessa carta
+const mondayOf = (k) => addDays(k, -((dateOf(k).getDay() + 6) % 7));
+const daysBetweenKeys = (a, b) => Math.round((dateOf(b) - dateOf(a)) / 864e5);
 const dateOf = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
@@ -487,8 +489,9 @@ function cardHtml(c, place, i) {
     return `<div class="${cls}" ${open} aria-label="${esc(label)}" style="${style}">${imgTag(c.image)}${check}
       <div class="ph-cap"><div class="pc-time">${time}</div><div class="pc-title">${title}</div></div></div>`;
   }
-  return `<div class="${cls}" ${open} aria-label="${esc(label)}" style="${style}">
-    <div class="pc-time">${time}</div>
+  const pause = c.pauseBefore ? `<span class="pc-pause" title="Pausa prima di iniziare">pausa ${c.pauseBefore}'</span>` : '';
+  return `<div class="${cls}" ${open} aria-label="${esc(label)}${c.pauseBefore ? `, dopo una pausa di ${c.pauseBefore} minuti` : ''}" style="${style}">
+    <div class="pc-time"><span>${time}</span>${pause}</div>
     <div class="pc-title">${title}</div>
     <div class="pc-foot"><span>${foot}</span>${check}</div>
   </div>`;
@@ -522,9 +525,10 @@ function renderDayView(animate) {
 
   let html = '';
   let i = 0, z = 1, side = 0;
+  // carte quadrate a zig-zag su due colonne; dopo una carta larga o una pausa si riparte da sinistra
   const next = (id, wide) => {
-    if (wide) return { x: 4, r: 0, z: z++ };
-    const pl = { x: side % 2 ? 38 : 0, r: tilt(id), z: z++ };
+    if (wide) { side = 0; return { x: 4, r: 0, z: z++ }; }
+    const pl = { x: side % 2 ? 51 : 2, r: tilt(id), z: z++ };
     side++;
     return pl;
   };
@@ -556,10 +560,13 @@ function renderDayView(animate) {
   }
 
   // 2. le carte della giornata
+  let pauseBefore = 0;
   for (const c of v.cards) {
-    if (c.type === 'pause') { html += `<div class="pause" style="--i:${i++}"><span>${c.at}</span>pausa ${c.minutes}'</div>`; continue; }
+    if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
+
     if (c.type === 'stop') { const pl = next('stop' + v.day, true); html += `<div class="pc stop wide" style="--z:${pl.z};--i:${i++}"><div class="pc-time">${c.at}</div><div class="stop-t">${esc(c.text)}</div></div>`; continue; }
-    html += cardHtml(c, next(c.type === 'missed' ? 'm' + c.id : c.type === 'unscheduled' ? 'u' + c.id : c.id), i++);
+    html += cardHtml({ ...c, pauseBefore }, next(c.type === 'missed' ? 'm' + c.id : c.type === 'unscheduled' ? 'u' + c.id : c.id), i++);
+    pauseBefore = 0;
   }
   if (v.emptyText) html += `<p class="empty-hint">${esc(v.emptyText)}</p>`;
 
@@ -571,27 +578,38 @@ function renderDayView(animate) {
 }
 
 // ---------------------------------------------------------------- tutti i giorni
-const HUES = [300, 330, 20, 280, 345, 250, 200];
-function renderOverview(animate) {
-  const spots = [{ x: '0%', y: '8px', r: -3 }, { x: '34.5%', y: '18px', r: 2.5 }, { x: '69%', y: '4px', r: -1.5 }];
-  $('#ov-scroll').innerHTML = vm.days({ state, plan, now: Date.now(), selected: selDay }).map((d, i) => {
-    const minis = d.minis.map((b, j) => {
-      const sp = spots[j];
-      const st = `--x:${sp.x};--y:${sp.y};--r:${sp.r}deg`;
-      return b.image ? `<div class="mini photo" style="${st}">${imgTag(b.image)}</div>` : `<div class="mini" style="${st}"><small>${b.time}</small>${esc(b.title)}</div>`;
+// ---- settimana: una carta per progetto (sessioni, scala dei 7 giorni, prossima sessione)
+let weekOff = 0;
+function weekModel() {
+  goalFits();
+  return vm.week({ state, plan, longPlan: fitCache?.long, planFor, now: Date.now(), offset: weekOff, anchor: today() });
+}
+function renderWeek(animate) {
+  const w = weekModel();
+  $('#ov-range').textContent = w.range;
+  $('#ov-title').textContent = w.title;
+  const cards = w.cards.map((c, i) => {
+    const ticks = c.ticks.map((tk) => {
+      const st = tk.done ? 'done' : tk.planned ? 'plan' : tk.off ? 'off' : '';
+      const n = tk.done + tk.planned;
+      return `<span class="tk ${st}${tk.today ? ' today' : ''}${tk.past ? ' past' : ''}">${tk.today ? '<em>Oggi</em>' : ''}<i></i><i></i><i></i>${n ? `<u>${n > 1 ? n : ''}</u>` : ''}<b>${tk.letter}</b></span>`;
     }).join('');
-    return `<button class="tile${d.selected ? ' sel' : ''}" data-day="${d.day}" style="--h:${HUES[d.weekday]};--i:${i}" aria-label="${esc(`${d.name} ${d.date}: ${d.sub}`)}">
-      <div class="t-head"><b>${esc(d.name)}</b><span>${esc(d.date)}</span></div>
-      <div class="t-sub">${d.sub}</div>
-      <div class="t-mini">${minis || `<div class="t-empty">${d.emptyText}</div>`}</div>
+    const label = `${c.tag}: ${c.value} ${c.unit}, ${c.label}. ${c.note}`;
+    return `<button class="wcard${c.kind === 'other' ? ' other' : ''}" data-day="${c.openDay}" style="${c.color ? `--pc:${c.color};` : ''}--i:${i}" aria-label="${esc(label)}">
+      <span class="blob" aria-hidden="true"><i></i><i></i><i></i>${c.total && c.ticks.every((x) => !x.planned) ? `<span class="blob-ok">${ICON_CHECK}</span>` : ''}</span>
+      <span class="w-side"><span class="w-tag">${esc(c.tag)}</span><span class="w-lbl">${esc(c.label)}</span><span class="w-val">${c.value}<small>${c.unit}</small></span></span>
+      <span class="w-scale" aria-hidden="true">${ticks}</span>
+      <span class="w-note">${esc(c.note)}</span>
     </button>`;
   }).join('');
-  fillImages($('#ov-scroll'));
+  $('#ov-scroll').innerHTML = cards || `<p class="empty-hint">${esc(w.emptyText)}</p>`;
+  $('#wk-prev').disabled = weekOff <= -2;
+  $('#wk-next').disabled = weekOff >= 8;
   if (animate) animateIn($('#ov-scroll'), 1400);
 }
 
 // ---- vista mese: una carta per ogni giorno con qualcosa in programma
-let ovMode = 'list';
+let ovMode = 'week';
 const MONTHS = 6;
 function renderCalendar(animate) {
   goalFits();
@@ -620,14 +638,20 @@ function renderCalendar(animate) {
 }
 
 function setOvMode(m, animate) {
+  if (m === 'day') { openDay(selDay); return; }
   ovMode = m;
-  const list = m === 'list';
-  $('#ov-scroll').hidden = !list;
-  $('#cal-scroll').hidden = list;
-  $('#months').hidden = list;
-  $('#ov-title').textContent = list ? 'I tuoi giorni' : 'Calendario';
-  document.querySelectorAll('[data-ovmode]').forEach((b) => b.classList.toggle('on', b.dataset.ovmode === m));
-  if (list) renderOverview(animate !== false); else renderCalendar(animate !== false);
+  const wk = m === 'week';
+  $('#ov-scroll').hidden = !wk;
+  $('#cal-scroll').hidden = wk;
+  $('#months').hidden = wk;
+  $('#ov-nav').hidden = !wk;
+  document.querySelectorAll('[data-ovmode]').forEach((b) => { const on = b.dataset.ovmode === m; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+  if (wk) renderWeek(animate !== false);
+  else {
+    $('#ov-title').textContent = 'Il tuo piano';
+    $('#ov-range').textContent = 'Calendario';
+    renderCalendar(animate !== false);
+  }
   if (mode === 'overview') requestAnimationFrame(() => scrollOverviewTo(selDay));
 }
 
@@ -635,9 +659,8 @@ function setOvMode(m, animate) {
 const monthTop = (sec) => Math.max(0, sec.offsetTop - parseFloat(getComputedStyle($('#cal-scroll')).paddingTop));
 
 function scrollOverviewTo(k) {
-  if (ovMode === 'list') {
-    const tile = document.querySelector(`.tile[data-day="${k}"]`);
-    $('#ov-scroll').scrollTop = tile ? Math.max(0, tile.offsetTop - 100) : 0;
+  if (ovMode === 'week') {
+    $('#ov-scroll').scrollTop = 0;
   } else {
     const cell = document.querySelector(`.cd[data-day="${k}"]`);
     const sec = cell?.closest('.month');
@@ -650,6 +673,8 @@ function openOverview() {
   setComposing(false);
   closePlus();
   mode = 'overview';
+  // la settimana parte da quella del giorno che stavi guardando
+  weekOff = Math.floor((daysBetweenKeys(mondayOf(today()), mondayOf(selDay))) / 7);
   setOvMode(ovMode, true);
   const ov = $('#overview');
   ov.hidden = false;
@@ -701,7 +726,7 @@ function bindPinch() {
     active = true;
     if (mode === 'overview') {
       const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2, my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      target = document.elementFromPoint(mx, my)?.closest('.tile, .cd') || null;
+      target = document.elementFromPoint(mx, my)?.closest('.wcard, .cd') || null;
     }
   }, { passive: true });
   app.addEventListener('touchmove', (e) => {
@@ -728,10 +753,10 @@ function bindPinch() {
       const tl = target;
       target = null;
       if (tl) { tl.style.transition = ''; tl.style.transform = ''; }
-      if (scale < 0.86 && ovMode === 'list') setOvMode('month');
+      if (scale < 0.86 && ovMode === 'week') setOvMode('month');
       else if (scale > 1.1) {
         const k = tl?.dataset.day || selDay;
-        openDay(k, tl || document.querySelector(`.tile[data-day="${k}"], .cd[data-day="${k}"]`));
+        openDay(k, tl || document.querySelector(`.cd[data-day="${k}"]`));
       }
     }
   };
@@ -1289,7 +1314,7 @@ function toast(text, action) {
 const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
 
 function renderAll() {
-  if (mode === 'day') renderDayView(false); else if (ovMode === 'list') renderOverview(false); else renderCalendar(false);
+  if (mode === 'day') renderDayView(false); else if (ovMode === 'week') renderWeek(false); else renderCalendar(false);
   $('#undo-btn').hidden = !canUndo();
   renderComposer();
   if (composing) renderMiniSummary();
@@ -1300,8 +1325,11 @@ function renderAll() {
 // ---------------------------------------------------------------- eventi
 function bind() {
   $('#to-overview').addEventListener('click', openOverview);
-  $('#ov-today').addEventListener('click', () => { const k = today(); openDay(k, document.querySelector(`.tile[data-day="${k}"]:not([hidden] *), .cd[data-day="${k}"]`)); });
-  $('#ov-scroll').addEventListener('click', (e) => { const t = e.target.closest('.tile'); if (t) openDay(t.dataset.day, t); });
+  $('#ov-today').addEventListener('click', () => { const k = today(); openDay(k, ovMode === 'month' ? document.querySelector(`.cd[data-day="${k}"]`) : null); });
+  $('#ov-back').addEventListener('click', () => openDay(selDay));
+  $('#ov-scroll').addEventListener('click', (e) => { const t = e.target.closest('.wcard'); if (t) openDay(t.dataset.day, t); });
+  $('#wk-prev').addEventListener('click', () => { weekOff--; renderWeek(true); });
+  $('#wk-next').addEventListener('click', () => { weekOff++; renderWeek(true); });
   $('#cal-scroll').addEventListener('click', (e) => { const c = e.target.closest('.cd'); if (c) openDay(c.dataset.day, c); });
   document.querySelectorAll('[data-ovmode]').forEach((b) => b.addEventListener('click', () => setOvMode(b.dataset.ovmode)));
   $('#months').addEventListener('click', (e) => {
@@ -1580,7 +1608,7 @@ function bind() {
     const after = positions(plan);
     if ([...after].some(([id, p]) => before.has(id) && (before.get(id).day !== p.day || before.get(id).start !== p.start))) countAutoReplan();
     save(state);
-    if (mode === 'day') renderDayView(false); else if (ovMode === 'list') renderOverview(false); else renderCalendar(false);
+    if (mode === 'day') renderDayView(false); else if (ovMode === 'week') renderWeek(false); else renderCalendar(false);
     renderComposer();
   };
   setInterval(tick, 30000);

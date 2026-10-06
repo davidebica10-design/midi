@@ -42,7 +42,7 @@ Il blocco in corso **non** compare anche fra le `cards`.
 | --- | --- |
 | `task` | `id, itemId, title, start, end, minutes, done, doneAt, pinned, important, project {id,name,color} \| null, goalId, habit, energy (1–3), estimated, resumed, part, image` |
 | `event` | `id, itemId (null se ricorrente), title, start, end, recurring, image` |
-| `rest` | `id, title` («Cena / decompressione»), `start, end, note` |
+| `rest` | `id, title` («Cena / decompressione»), `start, end, note` («Stacca dal lavoro») |
 | `pause` | `at, minutes` («20:00 · pausa 15'») |
 | `stop` | `at, text` («Stop. Hai fatto abbastanza.») |
 | `missed` | `id, title, start, minutes`: domanda «Hai fatto…?» con Sì / In parte / No |
@@ -88,15 +88,25 @@ Al massimo 2 al giorno; quelle già mostrate restano fino a sera.
 
 ---
 
-## 2. Tutti i giorni — `days({ state, plan, now, selected })`
+## 2. Settimana — `week({ state, plan, longPlan, planFor, now, offset, anchor })`
 
-Lista di 14 giorni: `{ day, selected, weekday (0 = domenica), name (Oggi/Domani/Lunedì…), date, sub, off, minis: [{ time, title, image, kind }] (max 3), emptyText }`.
+È la vista che si apre con il pizzico dal giorno, con i pulsanti Giorno · Settimana · Mese in alto. C'è una carta per progetto (più «Altro» per le attività senza progetto).
 
-`sub` ha già i plurali giusti, es. «2 attività · 1 impegno · 3 h libere».
+| Campo | Contenuto |
+| --- | --- |
+| `title` | «Questa settimana», «Settimana prossima», «Settimana» |
+| `range` | «5 – 11 ottobre» (o «28 set – 4 ott» a cavallo di due mesi) |
+| `monday`, `sunday`, `offset`, `isCurrent` | per le frecce ‹ › |
+| `days[]` | `{ day, letter (L M M G V S D), n, today, off }` |
+| `cards[]` | vedi sotto |
+| `sessions` | totale delle sessioni della settimana |
+| `emptyText` | se non c'è niente |
 
-Stati: giorno con carte · giorno libero (`minis` vuoto, `emptyText` «Giornata libera») · giorno di stacco (`off`, «Giorno di stacco») · giorno selezionato.
+Ogni carta: `{ key, kind ('project' \| 'other'), tag (nome del progetto, sull'etichetta lime), color (colore della macchia), label («1 di 4 fatte · 6 h»), value («4»), unit («sessioni»), ticks[7] { day, letter, off, done, planned, today, past }, note («Prossima: Beat 02, domani alle 19:15. Scadenza 30 novembre.»), openDay (giorno da aprire toccando la carta), total }`.
 
----
+Stati: settimana corrente (segno «Oggi» sulla scala) · settimana futura o passata · progetto con obiettivo e nessuna sessione («Nessuna sessione questa settimana.») · settimana chiusa (tutte fatte: spunta sulla macchia) · giorno di stacco (lettera barrata) · settimana vuota (`emptyText`).
+
+`days()` (l'elenco dei giorni della vista precedente) resta disponibile ma l'app non lo usa più.
 
 ## 3. Mese — `month({ state, longPlan, planFor, now, months, selected })`
 

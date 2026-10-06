@@ -215,7 +215,7 @@ export function structuredOps(sentence, ctx = {}) {
     const per = hb[2] ? 7 : numOf(hb[1]);
     const proj = findProject(sentence, ctx.projects);
     let title = cleanTitle(sentence.replace(HABIT_RE, ' '), null) || 'Allenamento';
-    if (proj && strip(title) === strip(proj.p.name)) title = proj.p.name;
+    if (proj && strip(title) === strip(proj.p.name)) title = cap(proj.p.name);
     const dur = parseDuration(sentence);
     ops.push(op({ action: 'add_habit', title, pref_value: String(per), duration_min: dur || 60, duration_is_estimate: !dur, project: proj?.p.name || null, window: whenOf(sentence).window }));
     said.push(`${title}: ${per === 7 ? 'ogni giorno' : `${per} volte a settimana`}, sparse nella settimana`);

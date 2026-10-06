@@ -56,3 +56,19 @@ test('days() e context(): plurali giusti e scadenze leggibili', () => {
   assert.equal(c.preferences.focusLabel, 'la sera');
   assert.equal(vm.onboarding().length, 5);
 });
+
+test('week(): una carta per progetto, scala dei 7 giorni, domenica di stacco', () => {
+  const { s, plan, long } = setup();
+  const w = vm.week({ state: s, plan, longPlan: long, now: NOW });
+  assert.equal(w.monday, '2026-10-05');
+  assert.equal(w.range, '5 – 11 ottobre');
+  const ep = w.cards.find((c) => c.tag === 'EP');
+  assert.ok(ep && +ep.value >= 4, JSON.stringify(ep));
+  assert.equal(ep.ticks.length, 7);
+  assert.ok(ep.ticks.find((x) => x.letter === 'D').off);
+  assert.equal(ep.ticks.find((x) => x.letter === 'D').planned, 0);
+  assert.match(ep.note, /^Prossima: Beat 01, oggi alle 19:15\. Scadenza 30 novembre\.$/);
+  const next = vm.week({ state: s, plan, longPlan: long, now: NOW, offset: 1 });
+  assert.equal(next.title, 'Settimana prossima');
+  assert.equal(next.range, '12 – 18 ottobre');
+});

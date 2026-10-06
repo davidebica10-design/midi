@@ -30,7 +30,7 @@ function cardOf(state, b) {
   const it = b.item;
   const id = String(b.id);
   const time = `${fmtMin(b.start)}`;
-  if (it.kind === 'rest') return { type: 'rest', id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), note: 'Stacca · niente schermi di lavoro' };
+  if (it.kind === 'rest') return { type: 'rest', id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), note: 'Stacca dal lavoro' };
   if (it.kind === 'event') return { type: 'event', id, itemId: id.startsWith('rec:') ? null : it.id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), recurring: !!it.recurring, image: it.image || null };
   const done = b.type === 'done';
   return {
@@ -222,4 +222,69 @@ export function onboarding() {
     { key: 'projects', kick: 'Progetti', q: 'Su cosa stai lavorando?', sub: 'Separali con una virgola.', placeholder: 'EP, portfolio, palestra, Spazio Desk', examples: ['EP', 'Portfolio', 'Palestra'] },
     { key: 'prefs', kick: 'Preferenze', q: 'Come lavori meglio?', sub: 'Quando rendi, quanto reggi di fila.', placeholder: 'La sera produco meglio. Non voglio più di 2h consecutive.', examples: ['La sera produco meglio', 'Max 2h di fila', 'Pause di 15 minuti'] },
   ];
+}
+
+/**
+ * Settimana (lunedì–domenica): una carta per progetto con le sessioni della settimana.
+ * ctx: { state, plan, longPlan?, planFor?, now, offset (settimane da quella di `anchor`), anchor? }
+ */
+export function week(ctx) {
+  const { state, now } = ctx;
+  const t = dateKey(new Date(now));
+  const base = ctx.anchor || t;
+  const monday = addDays(base, -((weekday(base) + 6) % 7) + 7 * (ctx.offset || 0));
+  const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+  const off = new Set(state.prefs.offDays || []);
+  const LETTER = ['D', 'L', 'M', 'M', 'G', 'V', 'S'];
+  const sessionsOf = (k) => {
+    if (k < t) return state.items.filter((x) => x.kind === 'task' && x.status === 'done' && x.doneAt && dateKey(new Date(x.doneAt)) === k).map((x) => ({ item: x, done: true, start: null }));
+    const p = ctx.plan?.[k] || ctx.longPlan?.[k] || ctx.planFor?.(k);
+    return p ? p.blocks.filter((b) => b.item.kind === 'task' && !isRecOrRest(b.id)).map((b) => ({ item: b.item, done: b.type === 'done', start: b.start })) : [];
+  };
+  const byDay = days.map(sessionsOf);
+  const groups = new Map();
+  byDay.forEach((list, i) => {
+    for (const s of list) {
+      const key = s.item.project || 'other';
+      if (!groups.has(key)) groups.set(key, { key, perDay: days.map(() => ({ done: 0, planned: 0 })), minutes: 0, next: null, done: 0, total: 0 });
+      const g = groups.get(key);
+      g.perDay[i][s.done ? 'done' : 'planned']++;
+      g.total++;
+      if (s.done) g.done++;
+      g.minutes += s.done ? s.item.actual || s.item.duration || 0 : s.item.duration || 0;
+      const nowMin = minOf(now);
+      if (!s.done && !g.next && (days[i] > t || (days[i] === t && s.start != null && s.start >= nowMin))) g.next = { day: days[i], start: s.start, title: s.item.title };
+    }
+  });
+  // anche i progetti con un obiettivo e nessuna sessione questa settimana: vanno visti
+  for (const g of state.goals || []) if (g.projectId && !groups.has(g.projectId) && (!g.due || g.due >= monday)) groups.set(g.projectId, { key: g.projectId, perDay: days.map(() => ({ done: 0, planned: 0 })), minutes: 0, next: null, done: 0, total: 0 });
+
+  const todayIndex = days.indexOf(t);
+  const cards = [...groups.values()].map((g) => {
+    const pr = g.key === 'other' ? null : projInfo(state, g.key);
+    const goal = pr ? (state.goals || []).find((x) => x.projectId === pr.id) : null;
+    const nextText = g.next ? `Prossima: ${g.next.title}, ${g.next.day === t ? 'oggi' : g.next.day === addDays(t, 1) ? 'domani' : weekdayName(g.next.day)}${g.next.start != null ? ` alle ${fmtMin(g.next.start)}` : ''}.` : g.total ? (g.done === g.total ? 'Settimana chiusa.' : '') : 'Nessuna sessione questa settimana.';
+    const goalText = goal?.due ? ` Scadenza ${dateLong(goal.due)}.` : '';
+    return {
+      key: g.key, kind: pr ? 'project' : 'other',
+      tag: pr ? pr.name : 'Altro', color: pr?.color || null,
+      label: g.total ? `${g.done} di ${g.total} fatte · ${durLabel(g.minutes)}` : 'Questa settimana',
+      value: String(g.total), unit: g.total === 1 ? 'sessione' : 'sessioni',
+      ticks: days.map((d, i) => ({ day: d, letter: LETTER[weekday(d)], off: off.has(weekday(d)), done: g.perDay[i].done, planned: g.perDay[i].planned, today: d === t, past: d < t })),
+      todayIndex, note: (nextText + goalText).trim(), openDay: g.next?.day || days.find((d, i) => g.perDay[i].planned || g.perDay[i].done) || (todayIndex >= 0 ? t : monday),
+      total: g.total,
+    };
+  }).sort((a, b) => (a.kind === 'other') - (b.kind === 'other') || b.total - a.total);
+
+  const d0 = new Date(monday + 'T12:00'), d6 = new Date(days[6] + 'T12:00');
+  const sameMonth = d0.getMonth() === d6.getMonth();
+  return {
+    monday, sunday: days[6], offset: ctx.offset || 0, isCurrent: todayIndex >= 0,
+    title: todayIndex >= 0 ? 'Questa settimana' : (ctx.offset || 0) === 1 ? 'Settimana prossima' : 'Settimana',
+    range: sameMonth ? `${d0.getDate()} – ${d6.getDate()} ${d6.toLocaleDateString('it-IT', { month: 'long' })}` : `${d0.getDate()} ${d0.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '')} – ${d6.getDate()} ${d6.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '')}`,
+    days: days.map((d) => ({ day: d, letter: LETTER[weekday(d)], n: +d.slice(8), today: d === t, off: off.has(weekday(d)) })),
+    cards,
+    sessions: cards.reduce((s, c) => s + c.total, 0),
+    emptyText: cards.length ? null : 'Niente in programma questa settimana. Dimmi cosa vuoi ottenere e preparo le sessioni.',
+  };
 }
