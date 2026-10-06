@@ -8,7 +8,7 @@ lui pianifica la giornata e la ripianifica quando qualcosa cambia.
 1. Apri in **Safari** l'indirizzo dell'app, ad esempio `https://<utente>.github.io/midi/tempo/`.
 2. Tocca **Condividi** → **Aggiungi alla schermata Home** → **Aggiungi**.
 3. Apri «Tempo» dalla Home: parte a schermo intero, senza barre del browser.
-4. In **Memoria → Assistente AI** scegli il motore:
+4. In **⋯ → Il tuo contesto → Assistente AI** scegli il motore:
    - **Sul telefono · gratis**: un modello open (Qwen 2.5 / Llama 3.2) gira sull'iPhone con WebGPU (iOS 26+). Il primo avvio scarica ~1 GB, poi funziona anche offline.
    - **Online · gratis** (consigliato): Google Gemini con una chiave gratuita da aistudio.google.com/apikey, senza carta di credito. In alternativa OpenRouter o Groq. Il pulsante «Prova» verifica chiave e modello; con «Automatico» l'app sceglie il modello e passa al successivo se uno non risponde.
    - **Claude · a pagamento**: chiave API da platform.claude.com (non inclusa negli abbonamenti Claude).
@@ -38,10 +38,17 @@ I dati restano sul telefono, dentro l'app installata (le foto in un archivio a p
 | File | Ruolo |
 |---|---|
 | `js/scheduler.js` | Motore di pianificazione deterministico: impegni fissi, priorità, scadenze, margine per imprevisti, niente attività pesanti una dopo l'altra, dipendenze, attività che slittano al giorno dopo. |
-| `js/store.js` | Stato, salvataggio locale, annullamento, validazione delle modifiche proposte dall'AI. |
-| `js/ai.js` | Conversazione con Claude tramite uno strumento con output strutturato (`update_plan`); modalità base senza AI. |
+| `js/store.js` | Stato (schema v2 con migrazione), salvataggio locale, annullamento, operazioni, abitudini, validazione di tutto ciò che arriva dall'AI (`sanitizeOps`). |
+| `js/parse.js` | Modalità base: capisce le frasi senza AI (attività, durate, scadenze, vincoli, preferenze, abitudini, obiettivi). |
+| `js/templates.js` | Da obiettivo a sessioni: modelli per categoria (uscita musicale, progetto creativo, allenamento, studio, generico) e validazione dei piani dell'AI. |
+| `js/goals.js` | Le sessioni di un obiettivo entrano prima della scadenza? Riepilogo del piano. |
+| `js/learn.js` | Cosa impara dal comportamento: durate reali e fasce orarie in cui fai davvero le cose. |
+| `js/companion.js` | «Adesso»: cosa fare, il perché, cosa non iniziare; osservazioni (massimo 2 al giorno). |
+| `js/viewmodel.js` | Dati delle schermate come funzioni pure (vedi `DESIGN-API.md`). |
+| `js/format.js` | Plurali, durate e fasce scritti bene. |
+| `js/ai.js` | Conversazione con Claude tramite uno strumento con output strutturato (`update_plan`); piano degli obiettivi con l'AI; tempo massimo e ripiego sulla modalità base. |
 | `js/ai-open.js` | Modelli gratuiti: in locale con WebLLM oppure su servizi compatibili OpenAI (Gemini, OpenRouter, Groq), con scelta automatica del modello; rispondono in JSON validato dal codice. |
-| `js/app.js` | Interfaccia: collage di carte del giorno, panoramica dei giorni con gesto di pizzico, conversazione, scheda di modifica, memoria e impostazioni. |
+| `js/app.js` | Disegno e interazione: collage di carte del giorno, panoramica con gesto di pizzico, mese, barra, scheda di modifica, contesto, presentazione. |
 | `js/images.js` | Foto delle carte: compresse e salvate in IndexedDB. |
 | `sw.js`, `manifest.webmanifest` | Installazione e funzionamento offline. |
 | `vendor/anthropic-sdk.mjs` | SDK ufficiale `@anthropic-ai/sdk` (0.131.0) impacchettato per il browser. |
@@ -50,4 +57,13 @@ I dati restano sul telefono, dentro l'app installata (le foto in un archivio a p
 L'AI non è la fonte di verità: propone operazioni strutturate, il codice le valida e il motore decide gli orari.
 Le modifiche importanti (cancellare impegni fissi, giornate più leggere…) chiedono conferma; tutte si possono annullare.
 
-Dopo ogni modifica ai file, aumenta `VERSION` in `sw.js` così l'app installata si aggiorna.
+Dopo ogni modifica ai file, aumenta `VERSION` in `sw.js` così l'app installata si aggiorna (e aggiungi a `SHELL` i file nuovi).
+
+## Test
+
+```
+cd tempo
+node --test tests/*.test.js
+```
+
+Nessuna dipendenza: `node:test` di Node 20 o successivo. I test coprono il parser senza AI, il piano degli obiettivi, l'apprendimento, le osservazioni, il viewmodel e il percorso AI con risposte simulate.

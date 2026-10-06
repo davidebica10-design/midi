@@ -1,8 +1,8 @@
 // Cache dell'app per l'uso offline. Aggiorna VERSION a ogni rilascio.
-const VERSION = 'tempo-v12';
+const VERSION = 'tempo-v13';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
-  'js/app.js', 'js/scheduler.js', 'js/store.js', 'js/ai.js', 'js/ai-open.js', 'js/images.js', 'js/companion.js',
+  'js/app.js', 'js/scheduler.js', 'js/store.js', 'js/ai.js', 'js/ai-open.js', 'js/images.js', 'js/companion.js', 'js/parse.js', 'js/templates.js', 'js/goals.js', 'js/learn.js', 'js/viewmodel.js', 'js/format.js',
   'vendor/anthropic-sdk.mjs',
   'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];

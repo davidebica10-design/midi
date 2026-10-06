@@ -116,13 +116,15 @@ async function send(text) {
     const itemsBefore = clone(state.items);
     let lastPaint = 0;
     try {
-      const out = await runOpenTurn({
-        state, plan, now: Date.now(), userText: aiText, chat: prior,
+      const run = (signal) => runOpenTurn({
+        state, plan, now: Date.now(), userText: aiText, chat: prior, signal,
         onProgress: (f) => {
           typing.progress = f;
           if (Date.now() - lastPaint > 400 || f >= 1) { lastPaint = Date.now(); renderChat(); }
         },
       });
+      // il modello sul telefono la prima volta si scarica: niente tempo massimo
+      const out = mode === 'local' ? await run() : await withTimeout(run, AI_TIMEOUT);
       removeMsg(typing.id);
       if (out.ops.length) {
         const draft = draftOf();
@@ -132,7 +134,7 @@ async function send(text) {
       } else addMsg({ role: 'assistant', text: out.text });
     } catch (e) {
       removeMsg(typing.id);
-      addMsg({ role: 'assistant', error: true, text: errorText(e) });
+      baseTurn(text, e);
     } finally {
       busy = false;
       renderComposer();
@@ -140,17 +142,7 @@ async function send(text) {
     return;
   }
 
-  if (mode === 'base') {
-    const before = plan;
-    const itemsBefore = JSON.parse(JSON.stringify(state.items));
-    const r = localParse(text, state, Date.now());
-    if (r.ops && selDay !== today()) for (const o of r.ops) if (o.action === 'add' && !o.date) o.date = selDay;
-    if (!r.ops) { addMsg({ role: 'assistant', text: r.reply }); return; }
-    const draft = draftOf();
-    const res = applyOps(draft, r.ops);
-    finishChange({ text: r.reply + (res.errors.length ? '\n' + res.errors.join('\n') : ''), draft, log: res.log, confirm: r.confirm, before, itemsBefore });
-    return;
-  }
+  if (mode === 'base') { baseTurn(text); return; }
 
   busy = true;
   renderComposer();
@@ -191,23 +183,41 @@ async function send(text) {
   };
 
   try {
-    const out = await runTurn({ state, plan, now: Date.now(), userText: aiText, hooks, chat: prior });
+    const out = await withTimeout((signal) => runTurn({ state, plan, now: Date.now(), userText: aiText, hooks, chat: prior, signal }), AI_TIMEOUT * 2);
     removeMsg(typing.id);
     if (draft) finishChange({ text: out.text, draft, log, confirm, before, itemsBefore });
     else addMsg({ role: 'assistant', text: out.text });
   } catch (e) {
     removeMsg(typing.id);
-    addMsg({ role: 'assistant', error: true, text: errorText(e) });
+    baseTurn(text, e);
   } finally {
     busy = false;
     renderComposer();
   }
 }
 
+const AI_TIMEOUT = 25000;
+/**
+ * Modalità base. Con `aiError` è il ripiego quando l'AI sbaglia o non risponde in tempo:
+ * la frase viene capita senza AI, con una nota chiara.
+ */
+function baseTurn(text, aiError = null) {
+  const before = plan;
+  const itemsBefore = clone(state.items);
+  const r = localParse(text, state, Date.now());
+  if (r.ops && selDay !== today()) for (const o of r.ops) if (o.action === 'add' && !o.date) o.date = selDay;
+  if (!r.ops) { addMsg(aiError ? { role: 'assistant', error: true, text: errorText(aiError) } : { role: 'assistant', text: r.reply }); return; }
+  const note = aiError ? `${aiError.code === 'timeout' ? 'L\'AI non risponde' : 'L\'AI ha avuto un problema'}: ho usato la modalità base. ` : '';
+  const draft = draftOf();
+  const res = applyOps(draft, r.ops);
+  finishChange({ text: note + r.reply + (res.errors.length ? '\n' + res.errors.join('\n') : ''), draft, log: res.log, confirm: r.confirm, before, itemsBefore });
+}
+
 const title = (s, id) => (s.items.find((x) => x.id === id) || {}).title || (String(id).startsWith('rec:') ? 'ricorrente' : id);
 
 function errorText(e) {
   const st = e?.status;
+  if (e?.code === 'timeout') return 'L\'AI non risponde e senza AI non ho capito la frase. Riprova tra poco, o scrivila più semplice.';
   if (e?.code === 'webgpu') return 'Questo iPhone non può far girare modelli in locale: serve Safari con WebGPU (iOS 26 o successivo). Aggiorna iOS oppure scegli «Online · gratis» in Impostazioni (⋯ in alto) → Assistente AI.';
   if (aiMode() === 'local' && /memory|out of memory|device lost|allocation/i.test(e?.message || '')) return 'Il modello è troppo pesante per la memoria del telefono. Scegli un modello più piccolo in Impostazioni (⋯ in alto) → Assistente AI.';
   if (aiMode() === 'local' && /fetch|network|load/i.test(e?.message || '')) return 'Non riesco a scaricare il modello: controlla la connessione (meglio il Wi-Fi) e riprova. Dopo il primo download funziona anche offline.';
@@ -353,7 +363,7 @@ function renderMiniSummary() {
   const lines = [];
   if (cur) lines.push(`Adesso <b>${esc(cur.item.title)}</b> fino alle ${fmtMin(cur.end)}`);
   if (nxt) lines.push(`${cur ? 'Poi' : isToday ? 'Prossimo' : 'Si parte con'} <b>${esc(nxt.item.title)}</b> alle ${fmtMin(nxt.start)}`);
-  if (p.unscheduled.length) lines.push(`<span class="warn">${p.unscheduled.length} ${p.unscheduled.length === 1 ? 'attività non entra' : 'attività non entrano'}</span>`);
+  if (p.unscheduled.length) lines.push(`<span class="warn">${plural(p.unscheduled.length, 'attività non entra', 'attività non entrano')}</span>`);
   $('#mini-sum').innerHTML = `
     <div class="ms-top"><b>${esc(name)}</b><span>${d.getDate()} ${esc(d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', ''))}${isToday ? ' · ' + fmtMin(n) : ''}</span></div>
     <div class="ms-bar"><i style="width:${total ? Math.round((doneN / total) * 100) : 0}%"></i></div>
@@ -970,8 +980,13 @@ function briefAction(act, arg) {
 const ONB = vm.onboarding().map((x) => ({ k: x.key, kick: x.kick, q: x.q, sub: x.sub, ph: x.placeholder, ex: x.examples }));
 let onbStep = 0;
 const onbAns = {};
+/** Mentre la presentazione è aperta, il resto dell'app non si raggiunge (né col tocco né con lo screen reader). */
+function setBackgroundInert(on) {
+  for (const sel of ['#day', '#overview', '#composer', '.glow', '#panel']) { const el = $(sel); if (el) el.inert = on; }
+}
 function openOnboarding() {
   onbStep = 0;
+  setBackgroundInert(true);
   for (const k in onbAns) delete onbAns[k];
   const o = $('#onb');
   o.hidden = false; o.classList.remove('closing');
@@ -984,7 +999,7 @@ function renderOnb() {
   $('#onb-skip').textContent = onbStep === 0 ? 'Salta' : 'Dopo';
   const body = $('#onb-body');
   body.innerHTML = `<div class="onb-k">${esc(st.kick)}</div><h2 class="onb-q">${esc(st.q)}</h2><p class="onb-sub">${esc(st.sub)}</p>
-    ${st.k ? `<div><textarea class="onb-in" id="onb-in" rows="4" placeholder="${esc(st.ph)}">${esc(onbAns[st.k] || '')}</textarea><div class="onb-ex">${st.ex.map((x) => `<button type="button" data-ex="${esc(x)}">${esc(x)}</button>`).join('')}</div></div>` : ''}`;
+    ${st.k ? `<div><textarea class="onb-in" id="onb-in" rows="4" aria-label="${esc(st.q)}" placeholder="${esc(st.ph)}">${esc(onbAns[st.k] || '')}</textarea><div class="onb-ex">${st.ex.map((x) => `<button type="button" data-ex="${esc(x)}" aria-label="Aggiungi: ${esc(x)}">${esc(x)}</button>`).join('')}</div></div>` : ''}`;
   animateIn(body, 900);
   $('#onb-next').textContent = onbStep === 0 ? 'Iniziamo' : onbStep === ONB.length - 1 ? 'Costruisci le mie giornate' : 'Avanti';
 }
@@ -996,6 +1011,7 @@ function onbSave() {
 function closeOnboarding() {
   const o = $('#onb');
   o.classList.add('closing');
+  setBackgroundInert(false);
   setTimeout(() => { o.hidden = true; o.classList.remove('closing'); }, 360);
   state.onboarded = true;
   save(state);
@@ -1346,7 +1362,21 @@ function bind() {
     const c = e.target.closest('[data-item]');
     if (c && !/^rest:/.test(c.dataset.item)) openSheet(c.dataset.item);
   });
-  col.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.dataset.item) openSheet(e.target.dataset.item); });
+  col.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.item && !/^rest:/.test(e.target.dataset.item)) { e.preventDefault(); openSheet(e.target.dataset.item); }
+  });
+
+  // Esc chiude quello che è aperto, dal più in alto
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!$('#onb').hidden) { $('#onb-skip').click(); return; }
+    if (!$('#sheet').hidden) { closeSheet(); return; }
+    if (settingsOpen) { closeSettings(); return; }
+    if (!$('#plus-menu').hidden) { closePlus(); return; }
+    if (mode === 'overview') { openDay(selDay); return; }
+    if (composing) { $('#input').blur(); setComposing(false); return; }
+    if (!$('#reply').hidden && !pending) hideReply();
+  });
 
   // il saluto sfuma mentre le carte ci scorrono sopra
   const ds = $('#day-scroll');
@@ -1588,7 +1618,12 @@ bind();
 renderAll();
 renderDayView(true);
 if (!state.onboarded) openOnboarding();
-navigator.storage?.persist?.().catch(() => {});
+// i dati non devono essere cancellati dal browser quando lo spazio scarseggia: lo si chiede una volta
+if (!state.settings.persistAsked) {
+  state.settings.persistAsked = true;
+  save(state);
+  navigator.storage?.persist?.().catch(() => {});
+}
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   // quando arriva una versione nuova dell'app, ricarica una volta per usarla subito
   const hadController = !!navigator.serviceWorker.controller;
