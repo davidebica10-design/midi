@@ -43,6 +43,48 @@ export function load() {
   }
 }
 
+// ---- Sicurezza: uno stato che arriva da fuori (backup importato) non deve poter iniettare codice nella pagina
+const SAFE_ID = /^[A-Za-z0-9_:-]{1,64}$/;
+const SAFE_COLOR = /^#[0-9a-fA-F]{3,8}$/;
+export const safeId = (v) => (typeof v === 'string' && SAFE_ID.test(v) ? v : null);
+export const safeColor = (v) => (typeof v === 'string' && SAFE_COLOR.test(v) ? v : null);
+const str = (v, max = 200) => (typeof v === 'string' ? v.slice(0, max) : v == null ? '' : String(v).slice(0, max));
+const num = (v, lo, hi, dflt = null) => (Number.isFinite(+v) && v !== null && v !== '' ? Math.min(hi, Math.max(lo, +v)) : dflt);
+const arr = (v) => (Array.isArray(v) ? v : []);
+const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+
+/**
+ * Tiene solo voci ben formate: identificativi sicuri, colori #rrggbb, date e orari validi, testi come testo.
+ * Le voci con un identificativo non valido vengono scartate (in uso normale non succede mai).
+ */
+export function sanitizeState(s) {
+  const ids = (list) => arr(list).filter((x) => x && typeof x === 'object' && safeId(x.id));
+  s.items = ids(s.items).map((x) => ({
+    ...x, title: str(x.title, 80), notes: str(x.notes, 500), kind: x.kind === 'event' ? 'event' : 'task',
+    date: validDate(x.date), deadline: validDate(x.deadline), earliest: validDate(x.earliest),
+    start: num(x.start, 0, 1440), duration: num(x.duration, 1, 1440, 30), status: ['todo', 'doing', 'done'].includes(x.status) ? x.status : 'todo',
+    dependsOn: arr(x.dependsOn).filter(safeId), project: safeId(x.project), goalId: safeId(x.goalId), habitId: safeId(x.habitId), image: safeId(x.image),
+    window: WINDOWS[x.window] ? x.window : null,
+  }));
+  s.projects = ids(s.projects).map((p, i) => ({ ...p, name: str(p.name, 40) || 'Progetto', color: safeColor(p.color) || COLORS[i % COLORS.length], due: validDate(p.due), aliases: arr(p.aliases).map((a) => str(a, 40)) }));
+  s.goals = ids(s.goals).map((g) => ({ ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId) }));
+  s.habits = ids(s.habits).map((h) => ({ ...h, title: str(h.title, 60), perWeek: num(h.perWeek, 1, 7, 1), duration: num(h.duration, 10, 240, 60), project: safeId(h.project), goalId: safeId(h.goalId), window: WINDOWS[h.window] ? h.window : null }));
+  s.memory = ids(s.memory).map((m) => ({ ...m, text: str(m.text, 200), category: ['vincolo', 'preferenza', 'obiettivo', 'nota'].includes(m.category) ? m.category : 'nota' }));
+  s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate) }));
+  s.chat = arr(s.chat).filter((m) => m && typeof m === 'object' && safeId(m.id)).map((m) => ({ ...m, text: str(m.text, 4000), changes: arr(m.changes).map((c) => str(c, 300)), undoId: safeId(m.undoId) }));
+  s.anchors = Object.fromEntries(Object.entries(obj(s.anchors)).filter(([k]) => safeId(k)));
+  s.log = arr(s.log).filter((e) => e && typeof e === 'object').map((e) => ({ ...e, id: safeId(e.id), project: safeId(e.project) }));
+  const L = obj(s.learned);
+  s.learned = { ...L, durations: Object.fromEntries(Object.entries(obj(L.durations)).filter(([k]) => safeId(k))), slots: obj(L.slots), ignoreBefore: obj(L.ignoreBefore) };
+  const P = obj(s.prefs);
+  s.prefs = { ...P, offDays: arr(P.offDays).map(Number).filter((d) => d >= 0 && d <= 6), freeDays: arr(P.freeDays).map(Number).filter((d) => d >= 0 && d <= 6),
+    focusWindow: WINDOWS[P.focusWindow] ? P.focusWindow : null,
+    dayStart: num(P.dayStart, 0, 1440, DEFAULT_PREFS.dayStart), dayEnd: num(P.dayEnd, 0, 1440, DEFAULT_PREFS.dayEnd), buffer: num(P.buffer, 0, 120, DEFAULT_PREFS.buffer),
+    slack: num(P.slack, 0, 0.9, DEFAULT_PREFS.slack), maxBlock: num(P.maxBlock, 20, 600, DEFAULT_PREFS.maxBlock), decompress: num(P.decompress, 0, 180, DEFAULT_PREFS.decompress), heavyRest: num(P.heavyRest, 0, 120, 0),
+    availability: Object.fromEntries(Object.entries(obj(P.availability)).filter(([k]) => validDate(k))) };
+  return s;
+}
+
 /** Porta uno stato salvato (di qualsiasi versione) allo schema attuale, senza perdere niente. */
 export function migrate(s, now = Date.now()) {
   const e = emptyState();
@@ -50,6 +92,7 @@ export function migrate(s, now = Date.now()) {
   if (s.onboarded === undefined) s.onboarded = (s.items || []).length > 0;
   const out = { ...e, ...s, prefs: { ...e.prefs, ...s.prefs }, settings: { ...e.settings, ...s.settings }, stats: { ...e.stats, ...s.stats },
     learned: { ...e.learned, ...s.learned } };
+  sanitizeState(out);
   if ((s.schema || 1) < 2) {
     // v1 → v2: le note di memoria che si possono strutturare diventano preferenze vere
     const ctx = { offDays: [...(out.prefs.offDays || [])], projects: out.projects };

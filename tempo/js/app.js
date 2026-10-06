@@ -1,5 +1,5 @@
 import { planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate } from './store.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor } from './store.js';
 import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from './companion.js';
 import { goalFit, planSummary, horizonFor } from './goals.js';
 import { validatePlan } from './templates.js';
@@ -396,7 +396,7 @@ function renderReply() {
       if (m.applied === null && pending?.msgId === m.id) body += `<div class="r-actions"><button class="btn primary" data-act="apply">Applica</button><button class="btn" data-act="discard">Lascia com'è</button></div>`;
       else if (m.applied === false) body += `<div class="r-note">Non applicate.</div>`;
       else if (m.undone) body += `<div class="r-note">Annullate.</div>`;
-      else if (m.undoId && undoExists(m.undoId)) body += `<div class="r-actions"><button class="btn" data-act="undo" data-id="${m.undoId}">Annulla</button></div>`;
+      else if (m.undoId && undoExists(m.undoId)) body += `<div class="r-actions"><button class="btn" data-act="undo" data-id="${esc(m.undoId)}">Annulla</button></div>`;
     }
   }
   el.innerHTML = `<div class="reply-card${m.error ? ' error' : ''}${isNew ? ' anim' : ''}">${m.pending ? '' : '<button type="button" class="r-x" data-act="dismiss" aria-label="Chiudi">×</button>'}${body}</div>`;
@@ -479,7 +479,7 @@ function cardHtml(c, place, i) {
   const done = !!c.done;
   const time = done ? `Fatto alle ${c.doneAt}` : isEvent ? `${c.start} – ${c.end}` : `${c.start}${c.pinned ? ' · orario fissato' : ''}`;
   const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso')
-    : `${c.project ? `<i class="proj" style="--pc:${c.project.color}"></i>${esc(c.project.name)}` : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività'} · ${durLabel(c.minutes)}${c.part ? ' · parte' : c.resumed ? ' · ripresa' : c.estimated ? ' (stima)' : ''}`;
+    : `${c.project ? `<i class="proj" style="--pc:${safeColor(c.project.color) || 'var(--accent)'}"></i>${esc(c.project.name)}` : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività'} · ${durLabel(c.minutes)}${c.part ? ' · parte' : c.resumed ? ' · ripresa' : c.estimated ? ' (stima)' : ''}`;
   const cls = ['pc', isEvent ? 'event' : 'task', done ? 'done' : '', c.image ? 'photo' : '', changedIds.has(c.itemId) ? 'flash' : ''].join(' ');
   const label = `${c.title}, ${time}${isTask ? ', ' + durLabel(c.minutes) : ''}${c.project ? ', ' + c.project.name : ''}`;
   const open = `role="button" tabindex="0" data-item="${esc(c.id)}"`;
@@ -595,7 +595,7 @@ function renderWeek(animate) {
       return `<span class="tk ${st}${tk.today ? ' today' : ''}${tk.past ? ' past' : ''}">${tk.today ? '<em>Oggi</em>' : ''}<i></i><i></i><i></i>${n ? `<u>${n > 1 ? n : ''}</u>` : ''}<b>${tk.letter}</b></span>`;
     }).join('');
     const label = `${c.tag}: ${c.value} ${c.unit}, ${c.label}. ${c.note}`;
-    return `<button class="wcard${c.kind === 'other' ? ' other' : ''}" data-day="${c.openDay}" style="${c.color ? `--pc:${c.color};` : ''}--i:${i}" aria-label="${esc(label)}">
+    return `<button class="wcard${c.kind === 'other' ? ' other' : ''}" data-day="${esc(c.openDay)}" style="${safeColor(c.color) ? `--pc:${c.color};` : ''}--i:${i}" aria-label="${esc(label)}">
       <span class="blob" aria-hidden="true"><i></i><i></i><i></i>${c.total && c.ticks.every((x) => !x.planned) ? `<span class="blob-ok">${ICON_CHECK}</span>` : ''}</span>
       <span class="w-side"><span class="w-tag">${esc(c.tag)}</span><span class="w-lbl">${esc(c.label)}</span><span class="w-val">${c.value}<small>${c.unit}</small></span></span>
       <span class="w-scale" aria-hidden="true">${ticks}</span>
@@ -621,9 +621,9 @@ function renderCalendar(animate) {
     for (const c of mo.cells) {
       const cls = ['cd', c.past ? 'past' : '', c.today ? 'today' : '', c.selected ? 'sel' : ''].join(' ');
       if (c.pick) {
-        cells += `<button class="${cls} has${c.pick.image ? ' ph' : ''}${c.allDone ? ' done' : ''}" data-day="${c.day}" style="--r:${tilt(c.day)}deg" aria-label="${esc(c.label)}">
+        cells += `<button class="${cls} has${c.pick.image ? ' ph' : ''}${c.allDone ? ' done' : ''}" data-day="${esc(c.day)}" style="--r:${tilt(c.day)}deg" aria-label="${esc(c.label)}">
           <span class="cd-card">${c.pick.image ? imgTag(c.pick.image) : `<span class="cd-t">${esc(c.pick.title)}</span>`}</span><b>${c.n}</b></button>`;
-      } else cells += `<button class="${cls}" data-day="${c.day}" aria-label="${esc(c.label)}"><b>${c.n}</b></button>`;
+      } else cells += `<button class="${cls}" data-day="${esc(c.day)}" aria-label="${esc(c.label)}"><b>${c.n}</b></button>`;
     }
     html += `<section class="month" data-mi="${mo.index}" style="--i:${mo.index}">
       <h3>${esc(mo.title)}</h3>
@@ -662,7 +662,7 @@ function scrollOverviewTo(k) {
   if (ovMode === 'week') {
     $('#ov-scroll').scrollTop = 0;
   } else {
-    const cell = document.querySelector(`.cd[data-day="${k}"]`);
+    const cell = document.querySelector(`.cd[data-day="${esc(k)}"]`);
     const sec = cell?.closest('.month');
     $('#cal-scroll').scrollTop = sec ? monthTop(sec) : 0;
   }
@@ -756,7 +756,7 @@ function bindPinch() {
       if (scale < 0.86 && ovMode === 'week') setOvMode('month');
       else if (scale > 1.1) {
         const k = tl?.dataset.day || selDay;
-        openDay(k, tl || document.querySelector(`.cd[data-day="${k}"]`));
+        openDay(k, tl || document.querySelector(`.cd[data-day="${esc(k)}"]`));
       }
     }
   };
@@ -817,8 +817,8 @@ function openSheet(id, preset = {}, keepPhoto = false) {
       <div class="card"><div class="row"><span class="lbl">Orario</span><span>${fmtMin(r.start)}–${fmtMin(r.end)}</span></div>
       <div class="row"><span class="lbl">Giorni</span><span>${r.weekdays.map((d) => ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'][d]).join(' ')}</span></div></div>
       <div class="sheet-actions">
-        <button type="button" class="btn" data-sheet="skip" data-rec="${r.id}" data-day="${day}">Salta solo ${esc(dayLabel(day, today()))}</button>
-        <button type="button" class="btn danger" data-sheet="delrec" data-rec="${r.id}">Elimina ricorrenza</button>
+        <button type="button" class="btn" data-sheet="skip" data-rec="${esc(r.id)}" data-day="${esc(day)}">Salta solo ${esc(dayLabel(day, today()))}</button>
+        <button type="button" class="btn danger" data-sheet="delrec" data-rec="${esc(r.id)}">Elimina ricorrenza</button>
         <button type="button" class="btn full" data-sheet="close">Chiudi</button>
       </div>`;
     showSheet();
@@ -1110,25 +1110,25 @@ function renderSettings() {
     <p class="ctx-intro">Quello che so di te. Da qui costruisco ogni giornata: cambialo quando vuoi, oppure dimmelo nella barra.</p>
 
     <div class="group"><h2>Obiettivi</h2>
-      ${ctxv.goals.map((g) => `<div class="goal" style="--pc:${g.project?.color || 'var(--accent)'}">
+      ${ctxv.goals.map((g) => `<div class="goal" style="--pc:${safeColor(g.project?.color) || 'var(--accent)'}">
         <div class="goal-t">${esc(g.title)}</div>
         <div class="goal-m">${g.project ? `<span><i class="proj"></i>${esc(g.project.name)}</span>` : ''}<span>${g.dueText}${g.dueDate ? ' · ' + esc(g.dueDate) : ''}</span>${g.sessions.total ? `<span>${g.sessions.done} di ${plural(g.sessions.total, 'sessione', 'sessioni')}</span>` : ''}${g.late ? `<span>${plural(g.late, 'sessione non entra', 'sessioni non entrano')}</span>` : ''}</div>
-        <button class="x" data-delgoal="${g.id}" aria-label="Rimuovi l'obiettivo ${esc(g.title)}">×</button></div>`).join('')}
-      ${ctxv.habits.map((h) => `<div class="card"><div class="row"><span class="lbl">${esc(h.text)}</span><button class="x" data-delhabit="${h.id}" aria-label="Rimuovi l'abitudine ${esc(h.title)}">×</button></div></div>`).join('')}
+        <button class="x" data-delgoal="${esc(g.id)}" aria-label="Rimuovi l'obiettivo ${esc(g.title)}">×</button></div>`).join('')}
+      ${ctxv.habits.map((h) => `<div class="card"><div class="row"><span class="lbl">${esc(h.text)}</span><button class="x" data-delhabit="${esc(h.id)}" aria-label="Rimuovi l'abitudine ${esc(h.title)}">×</button></div></div>`).join('')}
       <div class="card"><div class="row"><input type="text" class="wide" id="goal-new" placeholder="Es. far uscire l'EP tra 6 settimane" enterkeyhint="done"><button class="btn" id="goal-add">Aggiungi</button></div></div>
     </div>
 
     <div class="group"><h2>Progetti</h2>
-      <div class="chips">${(state.projects || []).map((p) => `<span class="chip" style="--pc:${p.color}"><i class="proj"></i>${esc(p.name)}<button class="x" data-delproj="${p.id}" aria-label="Rimuovi">×</button></span>`).join('')}
+      <div class="chips">${(state.projects || []).map((p) => `<span class="chip" style="--pc:${safeColor(p.color) || 'var(--accent)'}"><i class="proj"></i>${esc(p.name)}<button class="x" data-delproj="${esc(p.id)}" aria-label="Rimuovi">×</button></span>`).join('')}
         <span class="chip add"><input type="text" id="proj-new" placeholder="+ progetto" enterkeyhint="done"></span></div>
     </div>
 
     <div class="group"><h2>Vincoli</h2>
       <div class="card">
-        ${state.recurring.map((r) => `<div class="row"><span class="lbl">${esc(r.title)}<small>${fmtMin(r.start)}–${fmtMin(r.end)} · ${r.weekdays.map((d) => wd[d]).join(' ')}</small></span><button class="x" data-delrec="${r.id}" aria-label="Elimina">×</button></div>`).join('')}
+        ${state.recurring.map((r) => `<div class="row"><span class="lbl">${esc(r.title)}<small>${fmtMin(r.start)}–${fmtMin(r.end)} · ${r.weekdays.map((d) => wd[d]).join(' ')}</small></span><button class="x" data-delrec="${esc(r.id)}" aria-label="Elimina">×</button></div>`).join('')}
         <div class="row"><span class="lbl">Giorni in cui stacchi<small>niente lavoro sui progetti</small></span></div>
         <div class="row days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button class="dchip${(P.offDays || []).includes(d) ? ' on' : ''}" data-offday="${d}" aria-pressed="${(P.offDays || []).includes(d)}" aria-label="${['Domenica', 'Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato'][d]}">${wd[d]}</button>`).join('')}</div>
-        ${state.memory.filter((m) => m.category === 'vincolo').map((m) => `<div class="row"><div class="mem-item"><span>${esc(m.text)}</span></div><button class="x" data-forget="${m.id}" aria-label="Dimentica">×</button></div>`).join('')}
+        ${state.memory.filter((m) => m.category === 'vincolo').map((m) => `<div class="row"><div class="mem-item"><span>${esc(m.text)}</span></div><button class="x" data-forget="${esc(m.id)}" aria-label="Dimentica">×</button></div>`).join('')}
         <div class="row"><input type="text" class="wide" id="vin-new" placeholder="Es. lavoro 9–18:30" enterkeyhint="done"><button class="btn" id="vin-add">Aggiungi</button></div>
       </div>
     </div>
@@ -1142,7 +1142,7 @@ function renderSettings() {
         <div class="row"><label for="p-ds">Inizio giornata</label><input type="time" id="p-ds" data-pref="dayStart" value="${fmtMin(P.dayStart)}"></div>
         <div class="row"><label for="p-de">Fine giornata</label><input type="time" id="p-de" data-pref="dayEnd" value="${fmtMin(Math.min(P.dayEnd, 1439))}"></div>
         <div class="row"><label for="p-sl">Margine per imprevisti<small>% di tempo da lasciare libero</small></label><input type="number" id="p-sl" data-pref="slack" min="0" max="50" step="5" value="${Math.round(P.slack * 100)}" inputmode="numeric"></div>
-        ${state.memory.filter((m) => m.category !== 'vincolo').map((m) => `<div class="row"><div class="mem-item"><span>${esc(m.text)}</span></div><button class="x" data-forget="${m.id}" aria-label="Dimentica">×</button></div>`).join('')}
+        ${state.memory.filter((m) => m.category !== 'vincolo').map((m) => `<div class="row"><div class="mem-item"><span>${esc(m.text)}</span></div><button class="x" data-forget="${esc(m.id)}" aria-label="Dimentica">×</button></div>`).join('')}
         <div class="row"><input type="text" class="wide" id="mem-new" placeholder="Es. la sera produco meglio" enterkeyhint="done"><button class="btn" id="mem-add">Aggiungi</button></div>
       </div>
       <p class="note">Niente scatole nere: tutto quello che uso per decidere è qui.</p>
@@ -1325,7 +1325,7 @@ function renderAll() {
 // ---------------------------------------------------------------- eventi
 function bind() {
   $('#to-overview').addEventListener('click', openOverview);
-  $('#ov-today').addEventListener('click', () => { const k = today(); openDay(k, ovMode === 'month' ? document.querySelector(`.cd[data-day="${k}"]`) : null); });
+  $('#ov-today').addEventListener('click', () => { const k = today(); openDay(k, ovMode === 'month' ? document.querySelector(`.cd[data-day="${esc(k)}"]`) : null); });
   $('#ov-back').addEventListener('click', () => openDay(selDay));
   $('#ov-scroll').addEventListener('click', (e) => { const t = e.target.closest('.wcard'); if (t) openDay(t.dataset.day, t); });
   $('#wk-prev').addEventListener('click', () => { weekOff--; renderWeek(true); });
