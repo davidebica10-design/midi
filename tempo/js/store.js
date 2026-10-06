@@ -13,6 +13,10 @@ export function emptyState() {
     prefs: { ...DEFAULT_PREFS },
     recurring: [],
     memory: [],
+    goals: [],      // obiettivi: { id, title, due, projectId, note }
+    projects: [],   // progetti: { id, name, color }
+    log: [],        // cosa è successo: sessioni saltate, completate…
+    onboarded: false,
     anchors: {},
     chat: [],
     settings: { apiKey: '', model: 'claude-opus-5-5', name: '' },
@@ -26,6 +30,8 @@ export function load() {
     if (!raw) return emptyState();
     const s = JSON.parse(raw);
     const e = emptyState();
+    // chi usava già l'app ha già un contesto: niente presentazione iniziale
+    if (s.onboarded === undefined) s.onboarded = (s.items || []).length > 0;
     return { ...e, ...s, prefs: { ...e.prefs, ...s.prefs }, settings: { ...e.settings, ...s.settings }, stats: { ...e.stats, ...s.stats } };
   } catch {
     return emptyState();
@@ -44,7 +50,7 @@ let undo = [];
 try { undo = JSON.parse(localStorage.getItem(UNDO_KEY) || '[]'); } catch { undo = []; }
 const persistUndo = () => { try { localStorage.setItem(UNDO_KEY, JSON.stringify(undo.slice(-30))); } catch {} };
 
-const snapshotOf = (s) => JSON.stringify({ items: s.items, prefs: s.prefs, recurring: s.recurring, memory: s.memory, anchors: s.anchors });
+const snapshotOf = (s) => JSON.stringify({ items: s.items, prefs: s.prefs, recurring: s.recurring, memory: s.memory, anchors: s.anchors, goals: s.goals, projects: s.projects });
 
 export function pushUndo(state, label) {
   const id = uid();
@@ -67,6 +73,39 @@ export function popUndo(state, id) {
   undo = undo.slice(0, idx);
   persistUndo();
   return entry;
+}
+
+// ---- Progetti ----
+const COLORS = ['#E0457B', '#8466C8', '#E0894A', '#3E9C6B', '#3D7FD6', '#C9821B', '#D4567F', '#5B9AA8'];
+/** Trova un progetto per nome (o id); se non esiste lo crea. */
+export function projectId(state, name) {
+  if (!name) return null;
+  state.projects ||= [];
+  const n = String(name).trim();
+  const low = n.toLowerCase();
+  const found = state.projects.find((p) => p.id === n || p.name.toLowerCase() === low)
+    || state.projects.find((p) => low.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(low));
+  if (found) return found.id;
+  const p = { id: 'p_' + uid(), name: n.charAt(0).toUpperCase() + n.slice(1, 40), color: COLORS[state.projects.length % COLORS.length] };
+  state.projects.push(p);
+  return p.id;
+}
+export const projectOf = (state, id) => (state.projects || []).find((p) => p.id === id) || null;
+
+/** Scadenza dell'obiettivo collegato a ogni progetto (serve al motore per dare priorità). */
+export function projectDue(state) {
+  const out = {};
+  for (const g of state.goals || []) if (g.projectId && g.due && (!out[g.projectId] || g.due < out[g.projectId])) out[g.projectId] = g.due;
+  return out;
+}
+
+/** "tra 6 settimane", "tra 2 mesi", "entro 3 settimane" → data. */
+export function dueFromText(text, today) {
+  const NUMS = { una: 1, un: 1, due: 2, tre: 3, quattro: 4, cinque: 5, sei: 6, sette: 7, otto: 8, nove: 9, dieci: 10, dodici: 12 };
+  const m = String(text || '').toLowerCase().match(/(?:tra|fra|entro)\s+(\d+|una|un|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|dodici)\s+(giorn|settiman|mes)/);
+  if (!m) return null;
+  const n = +m[1] || NUMS[m[1]] || 1;
+  return addDays(today, m[2] === 'giorn' ? n : m[2] === 'settiman' ? n * 7 : n * 30);
 }
 
 // ---- Operazioni ----
@@ -124,6 +163,8 @@ export function applyOps(state, ops, now = Date.now()) {
             status: 'todo', startedAt: null, doneAt: null, actual: null,
             dependsOn: resolveDeps(op.depends_on),
             notes: op.note || '',
+            project: op.project ? projectId(state, op.project) : null,
+            spent: 0,
             createdAt: now, updatedAt: now,
           };
           state.items.push(item);
@@ -150,6 +191,7 @@ export function applyOps(state, ops, now = Date.now()) {
           if (op.kind && op.kind !== it.kind) { it.kind = op.kind === 'event' ? 'event' : 'task'; if (it.kind === 'event' && it.start == null) it.kind = 'task'; }
           if (op.depends_on) it.dependsOn = resolveDeps(op.depends_on);
           if (op.note) it.notes = op.note;
+          if (op.project) { it.project = projectId(state, op.project); ch.push(projectOf(state, it.project)?.name || ''); }
           if (it.status === 'doing' && (date || start != null)) { it.status = 'todo'; it.startedAt = null; }
           it.updatedAt = now;
           log.push(`~ ${it.title}: ${ch.join(', ') || 'aggiornata'}`);
@@ -183,9 +225,64 @@ export function applyOps(state, ops, now = Date.now()) {
           log.push(`− ${it.title} rimossa`);
           break;
         }
+        case 'progress': {
+          // lavoro fatto in parte: si ricorda quanto manca, non si riparte da zero
+          if (!it) { errors.push(`Non trovo «${op.id}»`); break; }
+          const mins = clampInt(op.actual_min, 1, 960) || (it.startedAt ? Math.max(1, Math.round((now - it.startedAt) / 60000)) : 0);
+          it.spent = (it.spent || 0) + mins;
+          it.status = 'todo'; it.startedAt = null; it.updatedAt = now;
+          if (it.spent >= it.duration) {
+            it.status = 'done'; it.doneAt = now; it.actual = it.spent;
+            log.push(`✓ ${it.title} (${it.spent} min in tutto)`);
+          } else log.push(`◐ ${it.title}: fatti ${it.spent} min, ne mancano ${it.duration - it.spent}`);
+          (state.log ||= []).push({ type: 'progress', id: it.id, project: it.project, minutes: mins, at: now });
+          break;
+        }
+        case 'skip': {
+          // sessione saltata: resta da fare, ma il companion se ne ricorda
+          if (!it) { errors.push(`Non trovo «${op.id}»`); break; }
+          state.log ||= [];
+          state.log.push({ type: 'skip', id: it.id, project: it.project, at: now });
+          if (state.log.length > 300) state.log = state.log.slice(-300);
+          log.push(`↷ ${it.title}: la rimetto più avanti`);
+          break;
+        }
+        case 'set_goal': {
+          if (!op.title) { errors.push('Obiettivo senza titolo'); break; }
+          state.goals ||= [];
+          const due = validDate(op.deadline) || dueFromText(op.note || op.title, today);
+          const pid = op.project ? projectId(state, op.project) : null;
+          const g = state.goals.find((x) => x.id === op.id || x.title.toLowerCase() === String(op.title).toLowerCase());
+          if (g) { Object.assign(g, { title: op.title, due: due || g.due, projectId: pid || g.projectId, note: op.note || g.note }); log.push(`◎ Obiettivo aggiornato: ${g.title}`); }
+          else { state.goals.push({ id: 'g_' + uid(), title: String(op.title).slice(0, 120), due, projectId: pid, note: op.note || '', at: now }); log.push(`◎ Nuovo obiettivo: ${op.title}${due ? ' · entro ' + niceDay(due, today) : ''}`); }
+          break;
+        }
+        case 'remove_goal': {
+          const before = (state.goals || []).length;
+          state.goals = (state.goals || []).filter((g) => g.id !== op.id && g.title.toLowerCase() !== String(op.title || '').toLowerCase());
+          if (state.goals.length < before) log.push('◎ Obiettivo rimosso');
+          break;
+        }
+        case 'add_project': {
+          if (!op.title) break;
+          const had = (state.projects || []).length;
+          const pid = projectId(state, op.title);
+          if (state.projects.length > had) log.push(`▣ Nuovo progetto: ${projectOf(state, pid).name}`);
+          break;
+        }
+        case 'set_availability': {
+          // "stasera ho 2 ore", "domani sono libero dalle 15"
+          const d = date || today;
+          const st = parseHM(op.start_time), en = parseHM(op.end_time);
+          state.prefs.availability ||= {};
+          if (st == null && en == null) { delete state.prefs.availability[d]; log.push(`◷ ${niceDay(d, today)}: orari normali`); break; }
+          state.prefs.availability[d] = { start: st, end: en };
+          log.push(`◷ ${niceDay(d, today)}: disponibile${st != null ? ' dalle ' + fmtMin(st) : ''}${en != null ? ' fino alle ' + fmtMin(en) : ''}`);
+          break;
+        }
         case 'remember': {
           if (!op.note) break;
-          state.memory.push({ id: uid(), text: String(op.note).slice(0, 200), at: now });
+          state.memory.push({ id: uid(), text: String(op.note).slice(0, 200), at: now, category: ['vincolo', 'preferenza', 'obiettivo', 'nota'].includes(op.category) ? op.category : 'nota' });
           log.push(`☆ Ricorderò: ${op.note}`);
           break;
         }
@@ -203,6 +300,9 @@ export function applyOps(state, ops, now = Date.now()) {
           else if (k === 'buffer_min' && !isNaN(+v)) P.buffer = clampInt(v, 0, 60);
           else if (k === 'slack_percent' && !isNaN(+v)) P.slack = clampInt(v, 0, 50) / 100;
           else if (k === 'focus_window') P.focusWindow = WINDOWS[v] ? v : null;
+          else if (k === 'max_block_min' && !isNaN(+v)) P.maxBlock = clampInt(v, 20, 600);
+          else if (k === 'decompress_min' && !isNaN(+v)) P.decompress = clampInt(v, 0, 120);
+          else if (k === 'off_days') P.offDays = parseWeekdays(v);
           else { errors.push(`Preferenza non valida: ${k}`); break; }
           log.push(`⚙ ${prefLabel(k)}: ${v}`);
           break;
@@ -246,9 +346,20 @@ function atToday(now, min) {
   return d.getTime();
 }
 
+const WD_NAMES = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+/** "0,6" oppure "sabato e domenica" → [6, 0] */
+export function parseWeekdays(v) {
+  const t = String(v ?? '').toLowerCase();
+  const out = new Set();
+  for (const m of t.matchAll(/\d/g)) if (+m[0] <= 6) out.add(+m[0]);
+  WD_NAMES.forEach((n, i) => { if (t.includes(n.slice(0, 3))) out.add(i); });
+  return [...out];
+}
+
 export const prefLabel = (k) => ({
   day_start: 'Inizio giornata', day_end: 'Fine giornata', buffer_min: 'Pausa tra attività',
   slack_percent: 'Margine per imprevisti', focus_window: 'Fascia di concentrazione',
+  max_block_min: 'Sessione massima (min)', decompress_min: 'Decompressione dopo il lavoro (min)', off_days: 'Giorni di riposo',
 }[k] || k);
 
 /** Statistiche semplici per capire se l'app funziona. */

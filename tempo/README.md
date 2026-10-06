@@ -14,6 +14,16 @@ lui pianifica la giornata e la ripianifica quando qualcosa cambia.
    - **Claude · a pagamento**: chiave API da platform.claude.com (non inclusa negli abbonamenti Claude).
    - **Base**: nessuna AI, capisce solo frasi semplici.
 
+## Il companion
+
+Tempo non è un'agenda: costruisce la giornata in base a ciò che stai cercando di ottenere.
+
+- **Presentazione** (al primo avvio, o da ⋯ → «Raccontami di nuovo di te»): obiettivi, vincoli, progetti, preferenze. Funziona anche senza AI; con un'AI attiva gli obiettivi diventano subito sessioni concrete.
+- **Carta «Adesso»**: una sola cosa da fare, il perché e cosa *non* iniziare. Scrivi «che faccio?» per chiederlo in qualsiasi momento.
+- **Memoria**: le sessioni lasciate a metà ripartono da dove eri rimasto; le sessioni saltate vengono notate («recuperi sabato o alleggerisco l'obiettivo?»).
+- **Sessioni vere**: decompressione dopo il lavoro, pause tra le sessioni, durata massima di fila, giorni in cui stacchi, e uno stop esplicito a fine serata.
+- **Il tuo contesto** (⋯): tutto quello che l'app usa per decidere, modificabile.
+
 ## Come si usa
 
 - **La giornata** è un collage di carte: riepilogo, attività in corso, impegni e attività in ordine di orario. Tocca il cerchio per segnare una cosa come fatta, tocca la carta per modificarla.

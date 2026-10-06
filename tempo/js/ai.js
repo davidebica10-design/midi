@@ -2,6 +2,7 @@
 // L'AI trasforma ciò che dice l'utente in operazioni strutturate; il motore di
 // pianificazione (scheduler.js) e la validazione (store.js) decidono il resto.
 import { fmtMin, dateKey, addDays, dayLabel } from './scheduler.js';
+import { COMPANION_RULES, companionContext } from './companion.js';
 
 let sdkPromise = null;
 const loadSdk = () => (sdkPromise ||= import('../vendor/anthropic-sdk.mjs').then((m) => m.default));
@@ -12,7 +13,9 @@ export const MODELS = [
   { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — il più economico' },
 ];
 
-const SYSTEM = `Sei il gestore del tempo personale dell'utente: un assistente con cui parla durante tutta la giornata. Rispondi sempre in italiano, in modo breve e concreto (1–4 frasi), come una persona di fiducia, non come un software aziendale.
+const SYSTEM = `Rispondi sempre in italiano, in modo breve e concreto (1–4 frasi), come una persona di fiducia, non come un software.
+
+${COMPANION_RULES}
 
 Come lavori
 - L'utente ti dice cosa deve fare, cosa è cambiato, cosa vuole ottenere. Tu traduci tutto in operazioni con lo strumento update_plan. Un motore di pianificazione deterministico decide poi gli orari esatti delle attività flessibili: non devi calcolarli tu.
@@ -51,7 +54,7 @@ const OP_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'forget', 'set_pref', 'add_recurring', 'remove_recurring'] },
+    action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'remember', 'forget', 'set_pref', 'add_recurring', 'remove_recurring', 'set_goal', 'remove_goal', 'add_project', 'set_availability'] },
     id: { ...N('string'), description: 'id dell\'elemento esistente (per update/move/start/complete/reopen/delete/forget/remove_recurring)' },
     title: N('string'),
     kind: { type: ['string', 'null'], enum: ['task', 'event', null] },
@@ -68,17 +71,19 @@ const OP_SCHEMA = {
     depends_on: { type: ['array', 'null'], items: { type: 'string' }, description: 'id o titoli delle attività da completare prima' },
     actual_min: N('integer'),
     note: { ...N('string'), description: 'per remember: la nota; per add/update: una nota sull\'attività' },
-    pref_key: { type: ['string', 'null'], enum: ['day_start', 'day_end', 'buffer_min', 'slack_percent', 'focus_window', null] },
+    project: { ...N('string'), description: 'nome del progetto a cui appartiene l\'attività o l\'obiettivo' },
+    category: { type: ['string', 'null'], enum: ['vincolo', 'preferenza', 'obiettivo', 'nota', null], description: 'per remember' },
+    pref_key: { type: ['string', 'null'], enum: ['day_start', 'day_end', 'buffer_min', 'slack_percent', 'focus_window', 'max_block_min', 'decompress_min', 'off_days', null] },
     pref_value: N('string'),
     weekdays: { type: ['array', 'null'], items: { type: 'integer' } },
     unpin: { ...N('boolean'), description: 'true per togliere l\'orario fisso a un task' },
   },
-  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'pref_key', 'pref_value', 'weekdays', 'unpin'],
+  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'project', 'category', 'pref_key', 'pref_value', 'weekdays', 'unpin'],
 };
 
 const TOOL = {
   name: 'update_plan',
-  description: 'Crea, modifica, completa, sposta o elimina attività e impegni; salva preferenze e note di memoria. Il motore ricalcola poi la pianificazione e restituisce il risultato.',
+  description: 'Crea, modifica, completa, sposta o elimina attività e impegni; gestisce obiettivi, progetti, disponibilità, preferenze e memoria. Il motore ricalcola poi la pianificazione e restituisce il risultato.',
   strict: true,
   input_schema: {
     type: 'object',
@@ -107,6 +112,8 @@ export function stateForModel(state, plan, now) {
     deadline: x.deadline || undefined, window: x.window || undefined,
     depends_on: x.dependsOn?.length ? x.dependsOn : undefined,
     actual_min: x.actual || undefined, notes: x.notes || undefined,
+    project: x.project ? state.projects?.find((p) => p.id === x.project)?.name : undefined,
+    gia_fatti_min: x.spent || undefined,
   }));
   const dayPlan = (day) => {
     const p = plan[day];
@@ -131,7 +138,8 @@ export function stateForModel(state, plan, now) {
       fascia_concentrazione: state.prefs.focusWindow,
     },
     impegni_ricorrenti: state.recurring.map((r) => `${r.id}: ${r.title} ${fmtMin(r.start)}-${fmtMin(r.end)} giorni ${r.weekdays.join(',')}`),
-    memoria: state.memory.map((m) => `${m.id}: ${m.text}`),
+    memoria: state.memory.map((m) => `${m.id}: ${m.category ? '[' + m.category + '] ' : ''}${m.text}`),
+    ...companionContext(state, plan, now),
     durate_reali_passate: ratios,
     elementi: items,
     piano_oggi: dayPlan(today),
@@ -243,6 +251,14 @@ export function localParse(text, state, now) {
   const base = { id: null, title: null, kind: null, date: null, start_time: null, end_time: null, duration_min: null, duration_is_estimate: null, priority: null, deadline: null, earliest_date: null, window: null, energy: null, depends_on: null, actual_min: null, note: null, pref_key: null, pref_value: null, weekdays: null, unpin: null };
 
   let m;
+  if ((m = low.match(/^ho fatto\s+(.+?)\s+(?:di|del|della|dello|sul|sulla|al|alla)\s+(.+)/)) && parseDuration(m[1])) {
+    const it = find(m[2]);
+    return it ? { ops: [{ ...base, action: 'progress', id: it.id, actual_min: parseDuration(m[1]) }], reply: `Segnati ${parseDuration(m[1])} minuti su «${it.title}». Il resto lo rimetto in programma.` } : { reply: 'Non trovo quell\'attività.' };
+  }
+  if (/(?:tra|fra|entro)\s+\S+\s+(?:giorni|settiman|mes)/.test(low) && /^(voglio|vorrei|devo|obiettivo)/.test(low)) {
+    const pr = (state.projects || []).find((p) => low.includes(p.name.toLowerCase()));
+    return { ops: [{ ...base, action: 'set_goal', title: t.replace(/^(voglio|vorrei|devo|obiettivo:?)\s+/i, '').replace(/\s*(tra|fra|entro)\s+\S+\s+\S+\s*\.?$/i, ''), note: t, project: pr?.name || null }], reply: 'Segnato come obiettivo. Ora dimmi il primo passo concreto e lo metto al posto giusto.' };
+  }
   if ((m = low.match(/^(?:ho finito|fatto|finito|completat[oa])\s+(.+)/))) {
     const it = find(m[1]);
     return it ? { ops: [{ ...base, action: 'complete', id: it.id }], reply: `Segnato «${it.title}» come fatto.` } : { reply: 'Non trovo quell\'attività.' };
@@ -294,6 +310,11 @@ export function localParse(text, state, now) {
     } else {
       ops.push({ ...base, action: 'add', kind: 'task', title: cap, date: date, duration_min: dur || 45, duration_is_estimate: !dur, priority: prio, window: /stasera|sera/.test(pl) ? 'sera' : /mattina/.test(pl) ? 'mattina' : null });
     }
+  }
+  // le attività che nominano un progetto ci finiscono dentro
+  for (const o of ops) {
+    const pr = (state.projects || []).find((p) => o.title.toLowerCase().includes(p.name.toLowerCase()));
+    if (pr) { o.project = pr.name; if (o.kind === 'task') o.energy = 3; }
   }
   if (!ops.length) return { reply: 'In modalità base capisco frasi semplici come «Domani alle 16 call», «Beat 90 min», «Ho finito spesa», «Sposta portfolio a domani». Aggiungi una chiave API nelle impostazioni per la conversazione completa.' };
   return { ops, reply: `Aggiunto: ${ops.map((o) => o.title).join(', ')}.` };

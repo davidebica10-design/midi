@@ -38,11 +38,17 @@ const ceil5 = (m) => Math.ceil(m / 5) * 5;
 export const DEFAULT_PREFS = {
   dayStart: 8 * 60,
   dayEnd: 23 * 60,
-  buffer: 10,        // minuti tra un blocco e l'altro
+  buffer: 15,        // pausa tra un blocco e l'altro
   slack: 0.15,       // quota di tempo libero da NON riempire
   focusWindow: null, // 'mattina' | 'pomeriggio' | 'sera'
-  heavyRest: 15,     // pausa extra tra due attività pesanti
+  heavyRest: 0,      // pausa extra tra due attività pesanti
+  maxBlock: 120,     // sessione più lunga di fila: oltre, il resto va al giorno dopo
+  offDays: [],       // giorni di riposo (0 = domenica): niente attività flessibili
+  decompress: 45,    // minuti di "cena / decompressione" dopo una lunga giornata di lavoro
+  availability: {},  // finestre speciali per giorno: { 'YYYY-MM-DD': { start, end } }
+  projectDue: {},    // progetto → scadenza dell'obiettivo collegato
 };
+const remaining = (t) => Math.max(5, (t.duration || 30) - (t.spent || 0));
 
 // Sottrae intervalli occupati da un intervallo [a,b]
 function subtract(gaps, busy) {
@@ -59,6 +65,7 @@ function subtract(gaps, busy) {
   return out.filter(([a, b]) => b - a >= 5);
 }
 
+let prefsRef = {};
 function score(t, day) {
   let s = (t.priority || 2) * 100;
   if (t.deadline) {
@@ -67,6 +74,11 @@ function score(t, day) {
   }
   if (t.date === day) s += 30;
   if (t.date && t.date < day) s += 60; // in ritardo
+  if (t.spent > 0) s += 50; // finire ciò che è iniziato prima di aprire altro
+  if (t.project && prefsRef.projectDue?.[t.project]) {
+    const d = daysBetween(day, prefsRef.projectDue[t.project]);
+    s += d <= 7 ? 60 : d <= 21 ? 30 : 10; // obiettivi vicini contano di più
+  }
   return s;
 }
 
@@ -95,6 +107,9 @@ export function recurringFor(day, recurring = []) {
  */
 export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
   const P = { ...DEFAULT_PREFS, ...prefs };
+  prefsRef = P;
+  const win = (P.availability || {})[day];
+  const dayStart = win?.start ?? P.dayStart, dayEnd = win?.end ?? P.dayEnd;
   const today = dateKey(new Date(now));
   const isToday = day === today;
   const nowMin = minOfTs(now);
@@ -118,7 +133,7 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
     if (it.status === 'done') continue;
     if (it.status === 'doing' && it.startedAt && isToday) {
       const s = minOfTs(it.startedAt);
-      fixed.push({ id: it.id, item: it, start: s, end: Math.max(s + it.duration, ceil5(nowMin + 5)), type: 'doing' });
+      fixed.push({ id: it.id, item: it, start: s, end: Math.max(s + remaining(it), ceil5(nowMin + 5)), type: 'doing' });
       continue;
     }
     const a = anchors[it.id];
@@ -137,14 +152,21 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
   for (let i = 0; i < fixed.length; i++)
     for (let j = i + 1; j < fixed.length; j++)
       if (fixed[j].start < fixed[i].end) conflicts.push([fixed[i].id, fixed[j].id]);
+  // dopo una lunga giornata di lavoro: cena / decompressione prima di ripartire
+  const work = fixed.find((b) => b.item.kind === 'event' && b.end - b.start >= 240 && b.end >= 15 * 60 && b.end <= 21 * 60);
+  if (P.decompress > 0 && work && !win?.start && work.end + P.decompress + 30 < dayEnd && (!isToday || nowMin < work.end + P.decompress)
+    && !fixed.some((b) => b !== work && b.start < work.end + P.decompress && b.end > work.end)) {
+    fixed.push({ id: 'rest:' + day, item: { id: 'rest:' + day, title: 'Cena / decompressione', kind: 'rest', energy: 1, priority: 2, duration: P.decompress }, start: work.end, end: work.end + P.decompress, type: 'rest' });
+  }
   blocks.push(...fixed);
 
   // 3. Spazi liberi
-  const from = isToday ? Math.max(P.dayStart, ceil5(nowMin)) : P.dayStart;
-  const busy = fixed.map((b) => [b.start - P.buffer, b.end + P.buffer]);
-  let gaps = from < P.dayEnd ? subtract([[from, P.dayEnd]], busy) : [];
+  const from = isToday ? Math.max(dayStart, ceil5(nowMin)) : dayStart;
+  const busy = fixed.map((b) => (b.type === 'rest' ? [b.start, b.end] : [b.start - P.buffer, b.end + P.buffer]));
+  let gaps = from < dayEnd ? subtract([[from, dayEnd]], busy) : [];
   const totalFree = gaps.reduce((s, [a, b]) => s + b - a, 0);
-  let budget = Math.round(totalFree * (1 - P.slack));
+  // se hai detto tu quanto tempo hai, si usa tutto; altrimenti resta un margine per gli imprevisti
+  let budget = Math.round(totalFree * (1 - (win ? 0 : P.slack)));
   let reserve = totalFree - budget; // usabile solo da attività ad alta priorità
 
   // 4. Candidati
@@ -155,16 +177,21 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
     // giornate passate: nessuna pianificazione
     return { day, blocks: blocks.sort((a, b) => a.start - b.start), conflicts, unscheduled: [], deferred: [], missed: [], gaps: [], free: 0, totalFree: 0 };
   }
-  const fromPool = pool.filter((t) => !t.earliest || t.earliest <= day);
+  const off = (P.offDays || []).includes(weekday(day));
+  const fromPool = off ? [] : pool.filter((t) => !t.earliest || t.earliest <= day);
   const cands = [...dated, ...fromPool].sort((a, b) => score(b, day) - score(a, day) || (a.createdAt || 0) - (b.createdAt || 0));
 
   const placedEnd = new Map(); // id → fine, per le dipendenze
+  const placedBefore = (pool.placed ||= new Set()); // attività già messe nei giorni precedenti
   for (const b of blocks) placedEnd.set(b.id, b.end);
   const placedFlex = [];
   const used = new Set();
 
   for (const t of cands) {
-    const dur = Math.max(5, t.duration || 30);
+    let dur = remaining(t);
+    // niente sessioni troppo lunghe: il resto continua il giorno dopo
+    let left = 0;
+    if (P.maxBlock > 0 && dur > P.maxBlock) { left = dur - P.maxBlock; dur = P.maxBlock; }
     const heavy = (t.energy || 2) >= 3;
     // dipendenze
     let minStart = 0;
@@ -173,7 +200,7 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
       const dep = items.find((x) => x.id === depId);
       if (!dep || dep.status === 'done') continue;
       if (placedEnd.has(depId)) minStart = Math.max(minStart, placedEnd.get(depId) + P.buffer);
-      else { blockedBy = dep; break; }
+      else if (!placedBefore.has(depId)) { blockedBy = dep; break; }
     }
     if (blockedBy) { unscheduled.push({ item: t, reason: `dipende da «${blockedBy.title}»` }); continue; }
 
@@ -212,17 +239,23 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
     const consumed = Math.min(ge, end + P.buffer) - slot.s;
     if (consumed <= budget) budget -= consumed;
     else { reserve -= consumed - budget; budget = 0; }
-    const b = { id: t.id, item: t, start: slot.s, end, type: 'flex', carried: !!(t.date && t.date < day) || (!t.date && day !== today && pool.includes(t)) };
+    if (left > 0) {
+      const i = pool.indexOf(t);
+      const cont = { ...t, spent: (t.spent || 0) + dur, earliest: addDays(day, 1), date: null };
+      if (i >= 0) pool.splice(i, 1, cont); else pool.push(cont);
+    }
+    const b = { id: t.id, item: t, start: slot.s, end, type: 'flex', part: left > 0 ? left : 0, carried: !!(t.date && t.date < day) || (!t.date && day !== today && pool.includes(t)) };
     blocks.push(b);
     placedFlex.push(b);
     placedEnd.set(t.id, end);
+    if (!left) placedBefore.add(t.id);
     used.add(t.id);
   }
 
   // Le attività del pool non collocate passano al giorno dopo
   const overflow = unscheduled.filter((u) => pool.includes(u.item)).map((u) => u.item);
   for (const t of used) {
-    const i = pool.findIndex((p) => p.id === t);
+    const i = pool.findIndex((p) => p.id === t && !(p.earliest > day));
     if (i >= 0) pool.splice(i, 1);
   }
   const unsched = unscheduled.filter((u) => !pool.includes(u.item));
@@ -251,9 +284,13 @@ export function planDays(state, now = Date.now(), nDays = 7) {
   const pool = items.filter((t) => t.kind === 'task' && t.status === 'todo' && t.start == null && (!t.date || t.date < today));
   // le attività in ritardo vengono pianificate da oggi
   const days = {};
+  // scadenze degli obiettivi per progetto: i progetti vicini al traguardo vengono prima
+  const projectDue = {};
+  for (const g of state.goals || []) if (g.projectId && g.due && (!projectDue[g.projectId] || g.due < projectDue[g.projectId])) projectDue[g.projectId] = g.due;
+  const prefs = { ...state.prefs, projectDue };
   for (let i = 0; i < nDays; i++) {
     const day = addDays(today, i);
-    days[day] = planDay(day, items, state.prefs, now, pool, state.recurring, state.anchors || {});
+    days[day] = planDay(day, items, prefs, now, pool, state.recurring, state.anchors || {});
   }
   // ciò che non entra in nessun giorno
   const lastDay = addDays(today, nDays - 1);
@@ -265,7 +302,7 @@ export function planDays(state, now = Date.now(), nDays = 7) {
 export function positions(plan) {
   const map = new Map();
   for (const [day, p] of Object.entries(plan)) {
-    for (const b of p.blocks) if (b.type !== 'done' && !String(b.id).startsWith('rec:')) map.set(b.id, { day, start: b.start });
+    for (const b of p.blocks) if (b.type !== 'done' && !/^(rec|rest):/.test(String(b.id)) && !map.has(b.id)) map.set(b.id, { day, start: b.start });
     for (const u of p.unscheduled) if (!map.has(u.item.id)) map.set(u.item.id, { day: null, start: null });
   }
   return map;

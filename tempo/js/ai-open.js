@@ -3,6 +3,7 @@
 // I modelli piccoli non usano strumenti: rispondono con un JSON che il codice valida.
 import { fmtMin, dateKey, addDays } from './scheduler.js';
 import { localParse } from './ai.js';
+import { COMPANION_RULES, companionContext } from './companion.js';
 
 export const LOCAL_MODELS = [
   { id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', label: 'Qwen 2.5 1.5B · consigliato' },
@@ -73,10 +74,10 @@ export const listFreeModels = (base) => listModels('openrouter', base);
 
 const WD = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
 
-function systemPrompt(now) {
+function systemPrompt(now, full) {
   const d = new Date(now);
   const today = dateKey(d);
-  return `Sei un assistente che gestisce la giornata dell'utente. Rispondi SOLO con un oggetto JSON, senza altro testo:
+  return `Sei il companion personale dell'utente: costruisci le sue giornate in base ai suoi obiettivi. Rispondi SOLO con un oggetto JSON, senza altro testo:
 {"reply": "risposta breve in italiano", "ops": [ ... ], "requires_confirmation": false}
 
 Adesso è ${WD[d.getDay()]} ${today}, ore ${fmtMin(d.getHours() * 60 + d.getMinutes())}. Domani è ${addDays(today, 1)}.
@@ -90,7 +91,13 @@ Operazioni possibili in "ops" (metti solo i campi che servono):
 - Modificare: {"action":"update","id":"ID","duration_min":120} oppure "priority":3, "start_time":"HH:MM"
 - Non ancora iniziata: {"action":"reopen","id":"ID"}
 - Eliminare: {"action":"delete","id":"ID"}
-- Ricordare una preferenza: {"action":"remember","note":"testo"}
+- Ricordare una preferenza o un vincolo: {"action":"remember","note":"testo","category":"preferenza"|"vincolo"}
+- Lavoro fatto a metà: {"action":"progress","id":"ID","actual_min":30}  · Sessione saltata: {"action":"skip","id":"ID"}
+- Obiettivo: {"action":"set_goal","title":"Far uscire l'EP","deadline":"YYYY-MM-DD","project":"EP"}
+- Progetto: {"action":"add_project","title":"Portfolio"}. Le attività di un progetto hanno "project":"EP".
+- Disponibilità di un giorno: {"action":"set_availability","date":"YYYY-MM-DD","start_time":"19:00","end_time":"21:00"}
+- Preferenze: {"action":"set_pref","pref_key":"max_block_min"|"focus_window"|"off_days"|"decompress_min","pref_value":"120"}
+- Impegno ricorrente: {"action":"add_recurring","title":"Lavoro","start_time":"09:00","end_time":"18:30","weekdays":[1,2,3,4,5]}
 
 Regole:
 - priority: 1 bassa, 2 normale, 3 alta. energy: 1 leggera, 2 media, 3 pesante (attività creative o di concentrazione).
@@ -98,16 +105,16 @@ Regole:
 - Usa gli ID dell'elenco attività. Non inventare impegni. Se manca un orario necessario, chiedilo in "reply" con "ops": [].
 - "Lavoro fino alle 18:30" = impegno fisso da adesso alle 18:30. "Sono in ritardo di un'ora" = impegno fisso "Ritardo" di 60 minuti da adesso.
 - Per eliminare cose o spostare impegni fissi metti "requires_confirmation": true.
-- Per domande ("cosa faccio oggi?") rispondi leggendo il piano, con "ops": [].`;
+- Per domande ("che faccio?") rispondi con UNA azione concreta adatta al tempo che resta e cosa non iniziare, con "ops": [].${full ? '\n\n' + COMPANION_RULES : ''}`;
 }
 
 function compactState(state, plan, now) {
   const today = dateKey(new Date(now));
   const lines = [];
   const active = state.items.filter((x) => x.status !== 'done' || (x.doneAt && now - x.doneAt < 864e5));
-  lines.push('ATTIVITÀ (id | titolo | tipo | stato | giorno | ora | minuti | priorità):');
+  lines.push('ATTIVITÀ (id | titolo | tipo | stato | giorno | ora | minuti | priorità | progetto | già fatti):');
   for (const x of active.slice(-40)) {
-    lines.push(`${x.id} | ${x.title} | ${x.kind === 'event' ? 'fisso' : 'flessibile'} | ${x.status} | ${x.date || '-'} | ${x.start != null ? fmtMin(x.start) : '-'} | ${x.duration} | ${x.priority}`);
+    lines.push(`${x.id} | ${x.title} | ${x.kind === 'event' ? 'fisso' : 'flessibile'} | ${x.status} | ${x.date || '-'} | ${x.start != null ? fmtMin(x.start) : '-'} | ${x.duration} | ${x.priority} | ${(x.project && state.projects?.find((p) => p.id === x.project)?.name) || '-'} | ${x.spent || 0}`);
   }
   if (!active.length) lines.push('(nessuna)');
   for (const [label, day] of [['OGGI', today], ['DOMANI', addDays(today, 1)]]) {
@@ -118,7 +125,13 @@ function compactState(state, plan, now) {
     if (p.deferred?.length) lines.push(`SLITTA: ${p.deferred.map((t) => t.title).join(', ')}`);
     lines.push(`Tempo libero ${label.toLowerCase()}: ${p.free} min`);
   }
-  if (state.memory.length) lines.push('PREFERENZE: ' + state.memory.map((m) => m.text).join('; '));
+  if (state.memory.length) lines.push('MEMORIA: ' + state.memory.map((m) => (m.category ? `[${m.category}] ` : '') + m.text).join('; '));
+  const c = companionContext(state, plan, now);
+  if (c.obiettivi.length) lines.push('OBIETTIVI: ' + c.obiettivi.join('; '));
+  if (c.progetti.length) lines.push('PROGETTI: ' + c.progetti.join(', '));
+  lines.push(`SESSIONE MASSIMA: ${c.sessione_massima_min} min${c.giorni_di_riposo.length ? ' · GIORNI DI RIPOSO: ' + c.giorni_di_riposo.join(', ') : ''}`);
+  if (c.sessioni_saltate_questa_settimana.length) lines.push('SESSIONI SALTATE QUESTA SETTIMANA: ' + c.sessioni_saltate_questa_settimana.join(', '));
+  if (c.consiglio_adesso) lines.push('CONSIGLIO PER ADESSO (calcolato): ' + c.consiglio_adesso);
   return lines.join('\n');
 }
 
@@ -144,7 +157,7 @@ const REPLY_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember'] },
+          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'progress', 'skip', 'set_goal', 'add_project', 'set_availability', 'set_pref', 'add_recurring'] },
           id: { type: 'string' },
           title: { type: 'string' },
           kind: { type: 'string', enum: ['task', 'event'] },
@@ -156,6 +169,14 @@ const REPLY_SCHEMA = {
           energy: { type: 'integer' },
           window: { type: 'string', enum: ['mattina', 'pomeriggio', 'sera'] },
           note: { type: 'string' },
+          project: { type: 'string' },
+          category: { type: 'string' },
+          deadline: { type: 'string' },
+          actual_min: { type: 'integer' },
+          depends_on: { type: 'array', items: { type: 'string' } },
+          pref_key: { type: 'string' },
+          pref_value: { type: 'string' },
+          weekdays: { type: 'array', items: { type: 'integer' } },
         },
         required: ['action'],
       },
@@ -209,14 +230,14 @@ export const preloadLocal = (model, onProgress) => getEngine(model, onProgress);
 export async function runOpenTurn({ state, plan, now, userText, onProgress, signal, chat = [] }) {
   // comandi semplici: li gestisce il codice, più veloce e affidabile di un modello piccolo
   const quick = localParse(userText, state, now);
-  if (quick.ops?.length && quick.ops.every((o) => o.action !== 'add' || o.title === 'Ritardo')) {
+  if (quick.ops?.length && quick.ops.every((o) => (o.action !== 'add' || o.title === 'Ritardo') && o.action !== 'set_goal')) {
     return { text: quick.reply, ops: quick.ops, confirm: !!quick.confirm };
   }
 
   const S = state.settings;
   const isLocal = S.provider === 'local';
   const messages = [
-    { role: 'system', content: systemPrompt(now) },
+    { role: 'system', content: systemPrompt(now, !isLocal) },
     ...history(chat, isLocal ? 4 : 10),
     { role: 'user', content: `${compactState(state, plan, now)}\n\nMESSAGGIO DELL'UTENTE: ${userText}` },
   ];
@@ -274,7 +295,7 @@ export async function onlineComplete(S, messages, signal) {
       body: JSON.stringify({
         model, messages, temperature: 0.2,
         // i modelli Gemini "pensano" prima di rispondere: serve spazio anche per quello
-        max_tokens: preset === 'gemini' ? 8192 : 1200,
+        max_tokens: preset === 'gemini' ? 8192 : 2000,
         ...(json ? { response_format: { type: 'json_object' } } : {}),
       }),
     });
