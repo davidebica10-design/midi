@@ -693,6 +693,7 @@ function openOverview() {
   void ov.offsetWidth;
   scrollOverviewTo(selDay);
   $('#app').classList.add('mode-overview');
+  $('#sum-fab').inert = false;
   glowSoon();
 }
 
@@ -722,6 +723,7 @@ function openDay(day, fromEl) {
     $('#app').classList.remove('mode-overview');
   }
   mode = 'day';
+  $('#sum-fab').inert = true; // il riepilogo sta solo nel calendario
   glowSoon();
   setTimeout(() => { if (mode === 'day') $('#overview').hidden = true; }, 600);
 }
@@ -803,7 +805,8 @@ function closeSummary() {
   const el = $('#summary');
   el.classList.add('closing');
   $('#app').classList.remove('sum-open');
-  $('#day').inert = $('#overview').inert = $('#composer').inert = $('#sum-fab').inert = false;
+  $('#day').inert = $('#overview').inert = $('#composer').inert = false;
+  $('#sum-fab').inert = mode !== 'overview';
   $('#ask-input').blur();
   glowSoon();
   setTimeout(() => { if (!summaryOpen) { el.hidden = true; el.classList.remove('closing'); } }, 320);
@@ -1789,6 +1792,7 @@ function bind() {
     b.remove();
   });
 
+  $('#sum-fab').inert = true;
   bindPinch();
   bindSwipes();
   bindCards($('#collage'), { canStart: () => mode === 'day' && !composing, scroller: $('#day-scroll') });
@@ -1810,8 +1814,15 @@ function bind() {
       root.removeProperty('--vvh');
       root.removeProperty('--vvt');
     }
+    // iOS, app sulla schermata Home: a volte l'altezza della pagina resta più corta dello schermo
+    // e in fondo compare una fascia vuota; in quel caso si usa l'altezza dello schermo
+    const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+    const gap = screen.height - window.innerHeight;
+    if (standalone && !editing && gap > 0 && gap < 120 && screen.height > screen.width) root.setProperty('--full-h', screen.height + 'px');
+    else root.removeProperty('--full-h');
     if (vv.offsetTop === 0) window.scrollTo(0, 0);
   };
+  addEventListener('resize', fit);
   document.addEventListener('focusin', () => setTimeout(fit, 60));
   document.addEventListener('focusout', () => setTimeout(fit, 350));
   vv?.addEventListener('resize', fit);

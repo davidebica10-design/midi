@@ -828,7 +828,7 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
   transform: translateX(-50%); transition: transform 0.55s var(--spring-soft), opacity 0.3s var(--ease); }
 .sum-fab .ic { width: 19px; height: 19px; }
 .sum-fab:active { transform: translateX(-50%) scale(0.92); transition-duration: 0.2s; }
-#app.bar-open .sum-fab, #app.sum-open .sum-fab { opacity: 0; transform: translateX(-50%) translateY(18px) scale(0.9); pointer-events: none; }
+#app:not(.mode-overview) .sum-fab, #app.bar-open .sum-fab, #app.sum-open .sum-fab { opacity: 0; transform: translateX(-50%) translateY(18px) scale(0.9); pointer-events: none; }
 #app.sum-open .bar { opacity: 0; pointer-events: none; transform: translateY(30px); }
 #app.sum-open > #day, #app.sum-open > #overview { opacity: 0 !important; transition: opacity 0.35s var(--ease); }
 #summary { background: transparent; background-image: none; }
@@ -844,3 +844,8 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 /* le carte entrano con una molla morbida */
 .collage.enter .pc { animation: dealSoft 0.9s var(--spring-soft) both; animation-delay: calc(var(--i, 0) * 60ms + 100ms); }
 @keyframes dealSoft { from { opacity: 0; transform: translateY(46px) scale(0.92) rotate(calc(var(--r, 0deg) * 3)); } }
+
+/* iOS: niente fascia vuota in fondo quando l'altezza della pagina è più corta dello schermo */
+html { height: var(--full-h, 100%); }
+body { bottom: auto; height: var(--full-h, 100%); }
+.bg { bottom: auto; height: var(--full-h, 100%); }

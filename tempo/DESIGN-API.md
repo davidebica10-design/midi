@@ -2,7 +2,7 @@
 
 Ogni schermata è disegnata a partire da una funzione pura in `js/viewmodel.js`: stato + piano + ora → dati. Questo file elenca, per ogni schermata, i campi disponibili e tutti gli stati da disegnare. I testi sono già pronti in italiano. Orari `HH:MM`, date `YYYY-MM-DD`.
 
-La barra per parlare con Tempo sta chiusa nel «+» laterale in basso a destra e si apre toccandolo; si richiude da sola quando non serve più. In basso al centro, alla stessa altezza, c'è il pulsante «Riepilogo» (nel giorno e nel calendario); sparisce quando la barra è aperta.
+La barra per parlare con Tempo sta chiusa nel «+» laterale in basso a destra e si apre toccandolo; si richiude da sola quando non serve più. Nel calendario, in basso al centro, c'è il pulsante «Riepilogo»; in alto a sinistra il riquadro di oggi riporta alla giornata.
 
 Nel giorno, sopra il saluto c'è una sola riga: l'ora (o la data, per gli altri giorni) e l'andamento, es. «15:37 · 0 di 3 fatte». Non c'è più una carta che ripete il giorno.
 
@@ -94,7 +94,7 @@ Al massimo 2 al giorno; quelle già mostrate restano fino a sera.
 
 ## 2. Riepilogo — `summary({ state, plan, longPlan, planFor, now, fits })`
 
-Si apre dal pulsante «Riepilogo» in basso al centro, dal giorno o dal calendario; la freccia in alto lo chiude e torna dove eri. È una chat: in cima i punti chiave, poi le domande dell'utente e le risposte.
+Si apre dal pulsante «Riepilogo» in basso al centro del calendario; la freccia in alto lo chiude. È una chat: in cima i punti chiave, poi le domande dell'utente e le risposte.
 
 | Campo | Contenuto |
 | --- | --- |
@@ -109,7 +109,7 @@ Con un'AI attiva i punti chiave li scrive l'AI (salvati in `state.askIntro`, rif
 
 Stati: senza AI · AI che scrive (puntini) · AI in errore o in timeout (risposta senza AI con una nota) · nessuna sessione in programma · nessun progetto.
 
-`week()` resta disponibile (fornisce i dati delle carte dei progetti), ma la vista Settimana non c'è più: il pizzico porta solo al calendario, e al giorno si torna toccando un giorno o il riquadro di oggi in alto a destra.
+`week()` resta disponibile (fornisce i dati delle carte dei progetti), ma la vista Settimana non c'è più: il pizzico porta solo al calendario, e al giorno si torna toccando un giorno o il riquadro di oggi in alto a sinistra.
 
 ## 3. Mese — `month({ state, longPlan, planFor, now, months, selected })`
 
@@ -167,7 +167,7 @@ L'editor (si apre toccando una carta) mostra la carta stessa in anteprima dal vi
 | Trascina giù | editor (maniglia o anteprima) | chiude senza salvare |
 | Dal bordo sinistro verso destra | riepilogo | torna al calendario |
 | Tocco sul «+» | giorno | apre la barra per parlare con Tempo |
-| Tocco su «Riepilogo» | giorno, calendario | apre il riepilogo |
-| Tocco su oggi (in alto a destra) | calendario | torna alla giornata di oggi |
+| Tocco su «Riepilogo» | calendario | apre il riepilogo |
+| Tocco su oggi (in alto a sinistra) | calendario | torna alla giornata di oggi |
 | Pressione su una carta | giorno | la carta si inclina verso il dito, con un riflesso |
 | Tieni premuto e trascina | giorno | la carta si solleva e si sposta; lasciata, torna al suo posto con una molla (non cambia il piano) |
