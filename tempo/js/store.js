@@ -3,6 +3,7 @@
 import { DEFAULT_PREFS, parseHM, fmtMin, dateKey, addDays, WINDOWS, weekday, daysBetween } from './scheduler.js';
 import { parseDue, weekdaysIn, structureMemory } from './parse.js';
 import { sessionsFor, validatePlan, MAX_SESSIONS } from './templates.js';
+import { estimate, updateDurations } from './learn.js';
 
 const KEY = 'tempo.v1';
 const UNDO_KEY = 'tempo.undo.v1';
@@ -190,6 +191,7 @@ export function applyOps(state, ops, now = Date.now()) {
             createdAt: now, updatedAt: now,
           };
           item.goalId = item.project ? goalOfProject(state, item.project)?.id || null : null;
+          if (kind === 'task' && item.durationEstimated) { item.baseDuration = item.duration; item.duration = estimateFor(state, item.title, item.project, item.duration); }
           state.items.push(item);
           created[item.title.toLowerCase()] = item.id;
           const when = item.start != null ? ` ${niceDay(item.date, today)} ${fmtMin(item.start)}` : item.date ? ` (${niceDay(item.date, today)})` : '';
@@ -204,7 +206,7 @@ export function applyOps(state, ops, now = Date.now()) {
           if (date) { it.date = date; ch.push(niceDay(date, today)); }
           if (start != null) { it.start = start; ch.push(`ore ${fmtMin(start)}`); }
           if (op.unpin && it.kind === 'task') { it.start = null; ch.push('orario libero'); }
-          if (op.duration_min != null) { it.duration = clampInt(op.duration_min, 5, 960); it.durationEstimated = !!op.duration_is_estimate; ch.push(`${it.duration} min`); }
+          if (op.duration_min != null) { it.duration = clampInt(op.duration_min, 5, 960); it.durationEstimated = !!op.duration_is_estimate; it.baseDuration = it.durationEstimated ? it.duration : null; ch.push(`${it.duration} min`); }
           if (op.end_time && it.start != null) { const e = parseHM(op.end_time); if (e > it.start) { it.duration = e - it.start; ch.push(`fino alle ${fmtMin(e)}`); } }
           if (op.priority != null) { it.priority = clampInt(op.priority, 1, 3); ch.push(['', 'priorità bassa', 'priorità media', 'priorità alta'][it.priority]); }
           if (op.deadline !== undefined && op.deadline !== null) { it.deadline = validDate(op.deadline); ch.push(`scadenza ${it.deadline || 'nessuna'}`); }
@@ -309,7 +311,7 @@ export function applyOps(state, ops, now = Date.now()) {
             if (dup) { ids[ses.key] = dup.id; continue; }
             const item = {
               id: uid(), title: ses.title, kind: 'task', date: null, start: null,
-              duration: estimateFor(state, ses.title, g.projectId, ses.duration), durationEstimated: true,
+              duration: estimateFor(state, ses.title, g.projectId, ses.duration), baseDuration: ses.duration, durationEstimated: true,
               priority: ses.optional ? 1 : 2, deadline: validDate(ses.deadline) || g.due || null, earliest: null, window: null,
               energy: ses.energy || 2, status: 'todo', startedAt: null, doneAt: null, actual: null,
               dependsOn: (ses.after || []).map((k) => ids[k]).filter(Boolean), notes: '', project: g.projectId, goalId: g.id,
@@ -419,6 +421,7 @@ export function applyOps(state, ops, now = Date.now()) {
     }
   }
   if ((state.habits || []).length || state.items.some((x) => x.habitId)) refreshHabits(state, today);
+  if ((ops || []).some((o) => ['complete', 'progress', 'add', 'plan_goal', 'update'].includes(o.action))) updateDurations(state);
   return { log, errors, touchedFixed };
 }
 
@@ -430,9 +433,7 @@ function logEvent(state, e) {
 }
 
 /** Stima di durata corretta da ciò che il companion ha imparato (vedi learn.js). */
-let estimator = (state, title, project, minutes) => minutes;
-export const setEstimator = (fn) => { estimator = fn; };
-const estimateFor = (state, title, project, minutes) => estimator(state, title, project, minutes);
+const estimateFor = (state, title, project, minutes) => estimate(state, title, project, minutes);
 
 /**
  * Le abitudini diventano sessioni vere nelle prossime 4 settimane:

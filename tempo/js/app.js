@@ -1,8 +1,9 @@
-import { planDays, planDay, updateAnchors, diffPlans, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
+import { planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate } from './store.js';
 import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from './companion.js';
 import { goalFit, planSummary, horizonFor } from './goals.js';
 import { validatePlan } from './templates.js';
+import { learnedObservations, learnedList, forgetLearned, updateDurations } from './learn.js';
 import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout } from './ai.js';
 import { runOpenTurn, openGoalPlan, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
@@ -45,11 +46,16 @@ function replan() {
 }
 const today = () => dateKey(new Date());
 
-function commit(label, mutate) {
-  const undoId = pushUndo(state, label);
-  mutate();
+/** Una ripianificazione fatta dal companion, non chiesta da te (per la statistica). */
+function countAutoReplan() {
   const t = today();
   state.stats.replans[t] = (state.stats.replans[t] || 0) + 1;
+}
+
+function commit(label, mutate, { auto = false } = {}) {
+  const undoId = pushUndo(state, label);
+  mutate();
+  if (auto) countAutoReplan();
   replan();
   save(state);
   renderAll();
@@ -501,10 +507,14 @@ function renderDayView(animate) {
   const capTxt = [total ? `${doneN} di ${total} fatte` : 'Nessuna attività', p.free > 0 ? `${durLabel(p.free)} libere` : null].filter(Boolean).join(' · ');
   if (isToday) {
     const adv = nowAdvice(state, plan, Date.now());
-    const { shown: brief, seen } = pickObservations(briefing(state, plan, Date.now(), { fits: goalFits(), backupDue: backupDue() }), state.seenObs, t);
+    const { shown: brief, seen } = pickObservations(briefing(state, plan, Date.now(), { fits: goalFits(), backupDue: backupDue(), learned: learnedObservations(state, Date.now()) }), state.seenObs, t);
     if (JSON.stringify(seen) !== JSON.stringify(state.seenObs)) {
       state.seenObs = seen;
-      for (const o of brief) if (o.goalId && o.id.startsWith('due-')) { const g = state.goals.find((x) => x.id === o.goalId); if (g && !g.askedDueOn) g.askedDueOn = t; }
+      for (const o of brief) {
+        if (o.goalId && o.id.startsWith('due-')) { const g = state.goals.find((x) => x.id === o.goalId); if (g && !g.askedDueOn) g.askedDueOn = t; }
+        // "ho aggiornato le stime": detto una volta
+        if (o.learnKey) { const d = state.learned.durations[o.learnKey]; if (d) d.announced = d.ratio; }
+      }
       save(state);
     }
     const hasCur = !!currentBlock();
@@ -556,7 +566,7 @@ function renderDayView(animate) {
     html += `<div class="pc note-card" style="--x:${pl.x}%;--r:${pl.r}deg;--z:${pl.z};--i:${i++}">
       <div class="pc-time">Era previsto alle ${fmtMin(m.start)}</div>
       <div class="pc-title">Hai fatto «${esc(m.item.title)}»?</div>
-      <div class="pc-actions"><button class="mini-btn primary" data-act2="done" data-id="${esc(m.item.id)}">Sì</button><button class="mini-btn" data-act2="part" data-id="${esc(m.item.id)}" data-min="${m.end - m.start}">In parte</button><button class="mini-btn" data-act2="notyet" data-id="${esc(m.item.id)}">No</button></div>
+      <div class="pc-actions"><button class="mini-btn primary" data-act2="done" data-id="${esc(m.item.id)}">Sì</button><button class="mini-btn" data-act2="part" data-id="${esc(m.item.id)}" data-min="${m.end - m.start}">In parte</button><button class="mini-btn" data-act2="notyet" data-id="${esc(m.item.id)}" data-start="${fmtMin(m.start)}">No</button></div>
     </div>`;
   }
 
@@ -946,11 +956,11 @@ async function sheetSave() {
   toastUndo(id ? 'Salvato' : 'Aggiunto');
 }
 
-function quickOp(action, id, extra = {}) {
+function quickOp(action, id, extra = {}, opts = {}) {
   const it = state.items.find((x) => x.id === id);
   if (!it) return;
   const label = { complete: 'Fatto', start: 'Iniziata', reopen: 'Riaperta', delete: 'Eliminata', move: 'Spostata', progress: 'Segnato in parte', skip: 'Rimandata' }[action];
-  commit(`${label}: ${it.title}`, () => applyOps(state, [{ action, id, ...extra }]));
+  commit(`${label}: ${it.title}`, () => applyOps(state, [{ action, id, ...extra }]), opts);
   closeSheet();
   toastUndo(`${label}: ${it.title}`);
 }
@@ -999,6 +1009,28 @@ function briefAction(act, arg) {
   }
   if (act === 'goal-more') { $('#input').focus(); toast('Dimmi il prossimo passo: lo metto al posto giusto.'); }
   if (act === 'backup') exportData();
+  if (act === 'learn-off') {
+    commit('Stime come prima', () => { const d = state.learned.durations[arg]; if (d) d.disabled = true; updateDurations(state); });
+    toastUndo('Ok, tengo le stime come prima');
+  }
+  if (act === 'slot-move') {
+    const [from, to] = arg.split('|');
+    commit('Fascia spostata', () => {
+      state.prefs.focusWindow = to;
+      for (const x of state.items) if (x.window === from && x.status !== 'done' && x.kind === 'task') x.window = to;
+      (state.learned.slots ||= {})[from] = Date.now();
+    });
+    toastUndo(`Le sessioni vanno ${to === 'pomeriggio' ? 'al pomeriggio' : `alla ${to}`}`);
+  }
+  if (act === 'slot-keep') { commit('Fascia confermata', () => { (state.learned.slots ||= {})[arg] = Date.now(); }); toast('Ok, lascio così'); }
+  if (act === 'day-off') {
+    const wd = +arg;
+    commit('Giorno libero dai progetti', () => {
+      applyOps(state, [{ action: 'set_pref', pref_key: 'off_days', pref_value: [...new Set([...(state.prefs.offDays || []), wd])].join(',') }]);
+      (state.learned.slots ||= {})['d' + wd] = Date.now();
+    });
+    toastUndo('Fatto: quel giorno niente progetti');
+  }
   if (act === 'reduce') {
     const g = (state.goals || []).find((x) => x.id === arg);
     if (!g) return;
@@ -1194,11 +1226,19 @@ function renderSettings() {
       }[prov]}</p>
     </div>
 
+    <div class="group"><h2>Cosa ho imparato</h2>
+      <div class="card">
+        ${(() => { const rows = learnedList(state, Date.now()); return rows.length ? rows.map((r) => `<div class="row"><span class="lbl">${esc(r.text)}</span>${r.toggle ? `<button class="btn" data-learn-toggle="${esc(r.key)}" aria-pressed="${r.active}">${r.disabled ? 'Usa' : 'Non usare'}</button>` : ''}${r.info ? '' : `<button class="x" data-learn-forget="${esc(r.key)}" aria-label="Dimentica">×</button>`}</div>`).join('')
+          : '<div class="row"><span class="lbl" style="color:var(--ink-3)">Ancora niente. Quando segni le attività come fatte imparo quanto durano davvero e quando le fai.</span></div>'; })()}
+      </div>
+      <p class="note">Le stime cambiano solo con almeno 3 sessioni misurate. Gli orari non li sposto mai senza chiedertelo.</p>
+    </div>
+
     <div class="group"><h2>Come stai andando</h2>
       <div class="card stat-grid">
         <div class="stat"><b>${st.pct}%</b><span>attività completate (${st.done}/${st.total})</span></div>
         <div class="stat"><b>${st.ratio ? (st.ratio > 1 ? '+' : '') + Math.round((st.ratio - 1) * 100) + '%' : '—'}</b><span>durata reale vs stimata${st.samples ? ` (${st.samples})` : ''}</span></div>
-        <div class="stat"><b>${st.replansPerDay}</b><span>ripianificazioni al giorno</span></div>
+        <div class="stat"><b>${st.replansPerDay}</b><span>ripianificazioni automatiche al giorno</span></div>
         <div class="stat"><b>${state.memory.length}</b><span>preferenze ricordate</span></div>
       </div>
     </div>
@@ -1376,7 +1416,7 @@ function bind() {
       const id = a2.dataset.id;
       if (a2.dataset.act2 === 'done') quickOp('complete', id);
       if (a2.dataset.act2 === 'part') quickOp('progress', id, { actual_min: Math.max(10, Math.round(+a2.dataset.min / 2 / 5) * 5) });
-      if (a2.dataset.act2 === 'notyet') { delete state.anchors[id]; quickOp('skip', id); }
+      if (a2.dataset.act2 === 'notyet') { delete state.anchors[id]; quickOp('skip', id, { start_time: a2.dataset.start }, { auto: true }); }
       if (a2.dataset.act2 === 'move') quickOp('move', id, { date: addDays(selDay, 1) });
       return;
     }
@@ -1490,6 +1530,8 @@ function bind() {
     if (t.dataset.delrec && confirm('Eliminare l\'impegno ricorrente?')) commit('Elimina ricorrenza', () => { state.recurring = state.recurring.filter((x) => x.id !== t.dataset.delrec); });
     if (t.id === 'mem-add') addMemory();
     const tt = t.closest('button');
+    if (tt?.dataset.learnToggle) commit('Cosa ho imparato', () => { const d = state.learned.durations[tt.dataset.learnToggle]; if (d) d.disabled = !d.disabled; updateDurations(state); });
+    if (tt?.dataset.learnForget) commit('Dimentica', () => forgetLearned(state, tt.dataset.learnForget, Date.now()));
     if (tt?.dataset.delgoal) commit('Obiettivo rimosso', () => { state.goals = state.goals.filter((g) => g.id !== tt.dataset.delgoal); });
     if (tt?.dataset.delproj) commit('Progetto rimosso', () => {
       state.projects = state.projects.filter((p) => p.id !== tt.dataset.delproj);
@@ -1570,7 +1612,10 @@ function bind() {
 
   // il tempo passa: aggiorna piano e carte
   const tick = () => {
+    const before = positions(plan);
     replan();
+    const after = positions(plan);
+    if ([...after].some(([id, p]) => before.has(id) && (before.get(id).day !== p.day || before.get(id).start !== p.start))) countAutoReplan();
     save(state);
     if (mode === 'day') renderDayView(false); else if (ovMode === 'list') renderOverview(false); else renderCalendar(false);
     renderComposer();
