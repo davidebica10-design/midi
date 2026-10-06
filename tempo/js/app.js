@@ -1814,15 +1814,8 @@ function bind() {
       root.removeProperty('--vvh');
       root.removeProperty('--vvt');
     }
-    // iOS, app sulla schermata Home: a volte l'altezza della pagina resta più corta dello schermo
-    // e in fondo compare una fascia vuota; in quel caso si usa l'altezza dello schermo
-    const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
-    const gap = screen.height - window.innerHeight;
-    if (standalone && !editing && gap > 0 && gap < 120 && screen.height > screen.width) root.setProperty('--full-h', screen.height + 'px');
-    else root.removeProperty('--full-h');
     if (vv.offsetTop === 0) window.scrollTo(0, 0);
   };
-  addEventListener('resize', fit);
   document.addEventListener('focusin', () => setTimeout(fit, 60));
   document.addEventListener('focusout', () => setTimeout(fit, 350));
   vv?.addEventListener('resize', fit);
