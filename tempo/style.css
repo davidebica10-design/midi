@@ -656,7 +656,7 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .sl-row b, .sl-row small { font-weight: 400; font-size: 16px; }
 .sl-row.done { color: var(--muted); }
 .sl-row:active { background: var(--line); }
-.sm-cards { display: flex; gap: 12px; overflow-x: auto; margin: 0 -31px 18px; padding: 10px 31px 26px; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.sm-cards { display: flex; gap: 12px; overflow-x: auto; margin: -10px -31px 0; padding: 20px 31px 52px; scroll-snap-type: x mandatory; scrollbar-width: none; }
 .sm-cards::-webkit-scrollbar { display: none; }
 .sm-card { flex: none; width: 202px; min-height: 250px; display: flex; flex-direction: column; justify-content: space-between; text-align: left; border-radius: 19px; background: var(--paper); box-shadow: var(--shadow);
   transform: rotate(var(--r)); scroll-snap-align: start; overflow: hidden; transition: transform 0.35s var(--spring); }
@@ -760,3 +760,87 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .ed-quick button.danger { color: #C0305A; }
 .ed-quick button:active { transform: scale(0.95); }
 .ed-save { width: 100%; height: 52px; border-radius: 18px; font-size: 16.5px; }
+
+/* =====================================================================
+   Carte vive (come Inviti di Apple, ma squadrate): colori pieni a sfumatura,
+   sfondo che prende i colori delle carte davanti a te, carte che reagiscono al dito.
+   ===================================================================== */
+@property --c { syntax: '<color>'; inherits: false; initial-value: transparent; }
+.bg i { transition: --c 1.6s cubic-bezier(.22, 1, .36, 1); }
+.bg .b1 { opacity: 0.9; } .bg .b2 { opacity: 0.8; }
+
+/* tavolozza: tinta della carta, tinta più profonda per la sfumatura, colore per lo sfondo */
+:root {
+  --cc-rose: #FBE3EE; --cd-rose: #F3C3DA; --gl-rose: #E9A2C5;
+  --cc-lilac: #ECE5FA; --cd-lilac: #D3C5F2; --gl-lilac: #B7A1EA;
+  --cc-sage: #E3F1E4; --cd-sage: #C2E0C6; --gl-sage: #9FD0A7;
+  --cc-sand: #F8ECD8; --cd-sand: #EFD3A6; --gl-sand: #EDC386;
+  --cc-sky: #E1EDF9; --cd-sky: #BED6F1; --gl-sky: #9CC3EC;
+  --spring-soft: cubic-bezier(.3, 1.45, .5, 1);
+}
+@supports (transition-timing-function: linear(0, 1)) {
+  :root { --spring-soft: linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 12.9%, 0.938 16.7%, 1.017 19.4%, 1.067, 1.099 24.3%, 1.108 26%, 1.1, 1.083 30.6%, 1.026 38.2%, 1.003 42.5%, 0.989 47.9%, 0.993 61.4%, 1.001 76.5%, 1); }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --cc-rose: #4A2E3D; --cd-rose: #3A2230; --gl-rose: #7B3A5E;
+    --cc-lilac: #3A3150; --cd-lilac: #2C2540; --gl-lilac: #4F3F8A;
+    --cc-sage: #2E4033; --cd-sage: #233227; --gl-sage: #2F5C3E;
+    --cc-sand: #46392A; --cd-sand: #362B1F; --gl-sand: #6E5530;
+    --cc-sky: #2D3B4D; --cd-sky: #222D3B; --gl-sky: #2F4F7A;
+  }
+}
+[data-proj] { --card: color-mix(in srgb, var(--pc) 9%, var(--paper)); --card2: color-mix(in srgb, var(--pc) 24%, var(--paper)); --glow: color-mix(in srgb, var(--pc) 55%, var(--bg)); }
+[data-c="rose"] { --card: var(--cc-rose); --card2: var(--cd-rose); --glow: var(--gl-rose); }
+[data-c="lilac"] { --card: var(--cc-lilac); --card2: var(--cd-lilac); --glow: var(--gl-lilac); }
+[data-c="sage"] { --card: var(--cc-sage); --card2: var(--cd-sage); --glow: var(--gl-sage); }
+[data-c="sand"] { --card: var(--cc-sand); --card2: var(--cd-sand); --glow: var(--gl-sand); }
+[data-c="sky"] { --card: var(--cc-sky); --card2: var(--cd-sky); --glow: var(--gl-sky); }
+.pc[data-c]:not([data-c=""]), .pc[data-proj], .ed-card[data-c]:not([data-c=""]), .cd-card[data-c]:not([data-c=""]), .cd-card[data-proj]:not([data-c]), .cd-card[data-proj][data-c=""] {
+  background: linear-gradient(160deg, var(--card) 8%, var(--card2) 100%); }
+.sw { background: linear-gradient(160deg, var(--card, var(--paper)), var(--card2, var(--card, var(--paper)))); }
+.pc[data-c]:not([data-c=""]) .pc-desc, .pc[data-proj] .pc-desc { color: color-mix(in srgb, var(--paper-ink) 66%, transparent); }
+.pc[data-proj] .pc-foot, .pc[data-c]:not([data-c=""]) .pc-foot { border-top-color: color-mix(in srgb, var(--paper-ink) 8%, transparent); }
+.sm-card { --glow: color-mix(in srgb, var(--pc) 55%, var(--bg)); background: linear-gradient(160deg, color-mix(in srgb, var(--pc) 8%, var(--paper)) 8%, color-mix(in srgb, var(--pc) 22%, var(--paper))); }
+
+/* il saluto si vede di più: le carte partono un po' più in basso */
+.collage { margin-top: -6px; }
+.collage > .col + .col { padding-top: 56px; }
+
+/* carte che reagiscono: inclinazione verso il dito, riflesso, sollevamento e ritorno a molla */
+.pc { --s: 1; transform: translate3d(var(--dx, 0px), var(--dy, 0px), 0) perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) rotate(calc(var(--r, 0deg) + var(--rz, 0deg))) scale(var(--s));
+  transition: transform 0.7s var(--spring-soft), box-shadow 0.4s var(--ease), opacity 0.3s;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; isolation: isolate; }
+.pc:active, .pc.pressing { --s: 0.975; transform: translate3d(var(--dx, 0px), var(--dy, 0px), 0) perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) rotate(calc(var(--r, 0deg) + var(--rz, 0deg))) scale(var(--s));
+  transition: transform 0.35s var(--ease), box-shadow 0.3s var(--ease); }
+.pc.adv:active, .pc.stop:active, .pc.rest:active { --s: 1; }
+.pc::after { content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none; border-radius: inherit; opacity: 0; transition: opacity 0.5s var(--ease);
+  background: radial-gradient(circle at var(--mx, 50%) var(--my, 0%), rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.12) 38%, transparent 64%); mix-blend-mode: soft-light; }
+.pc.pressing::after, .pc.lifted::after { opacity: 1; transition-duration: 0.2s; }
+.pc.lifted { --s: 1.06; z-index: 30; box-shadow: 0 34px 60px -14px rgba(60, 30, 50, 0.38), 0 8px 18px rgba(60, 30, 50, 0.1); transition: transform 0.45s var(--spring-soft), box-shadow 0.4s var(--ease); }
+.pc.lifted.dragging { transition: box-shadow 0.4s var(--ease); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pc.lifted { box-shadow: 0 34px 60px -14px rgba(0, 0, 0, 0.7); } }
+.collage, .collage > .col { overflow: visible; }
+
+/* il riepilogo: in basso al centro, all'altezza della barra */
+.sum-fab { position: absolute; left: 50%; bottom: calc(var(--safe-b) + 10px); z-index: 8; height: 48px; padding: 0 18px 0 15px; border-radius: 24px; display: flex; align-items: center; gap: 8px;
+  font-size: 15px; font-weight: 600; color: var(--ink); background: var(--field); -webkit-backdrop-filter: blur(22px) saturate(140%); backdrop-filter: blur(22px) saturate(140%);
+  transform: translateX(-50%); transition: transform 0.55s var(--spring-soft), opacity 0.3s var(--ease); }
+.sum-fab .ic { width: 19px; height: 19px; }
+.sum-fab:active { transform: translateX(-50%) scale(0.92); transition-duration: 0.2s; }
+#app.bar-open .sum-fab, #app.sum-open .sum-fab { opacity: 0; transform: translateX(-50%) translateY(18px) scale(0.9); pointer-events: none; }
+#app.sum-open .bar { opacity: 0; pointer-events: none; transform: translateY(30px); }
+#app.sum-open > #day, #app.sum-open > #overview { opacity: 0 !important; transition: opacity 0.35s var(--ease); }
+#summary { background: transparent; background-image: none; }
+
+/* calendario: in alto a destra oggi, per tornare alla giornata */
+.today-btn { width: 44px; height: 44px; border-radius: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; line-height: 1; }
+.today-btn small { font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); }
+.today-btn b { font-size: 19px; font-weight: 600; margin-top: 1px; }
+.ov-spacer { width: 44px; }
+.cd-card { transition: transform 0.5s var(--spring-soft); }
+.cd:active .cd-card { transform: scale(0.94); transition-duration: 0.2s; }
+
+/* le carte entrano con una molla morbida */
+.collage.enter .pc { animation: dealSoft 0.9s var(--spring-soft) both; animation-delay: calc(var(--i, 0) * 60ms + 100ms); }
+@keyframes dealSoft { from { opacity: 0; transform: translateY(46px) scale(0.92) rotate(calc(var(--r, 0deg) * 3)); } }

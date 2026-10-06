@@ -370,7 +370,16 @@ export function answerLocally(question, sum, state) {
   const q = String(question || '').toLowerCase();
   const pr = (state.projects || []).find((p) => q.includes(p.name.toLowerCase()));
   if (pr) { const c = sum.projects.find((x) => x.key === pr.id); return c ? `${c.name}: ${c.text}` : `Su ${pr.name} non c'è niente in programma: dimmi il prossimo passo nella barra del giorno.`; }
-  if (/(come (sto andando|va|procede)|com'è andata|a che punto|riassum|riepilog|in generale)/.test(q)) return sum.points.map((p) => `• ${p}`).join('\n');
+  if (/(riassum|riepilog|in generale|punti chiave)/.test(q)) return sum.points.map((p) => `• ${p}`).join('\n');
+  // "come sto andando": un giudizio, non la ripetizione dei punti chiave che sono già sopra
+  if (/(come (sto andando|va|procede)|com'è andata|a che punto)/.test(q)) {
+    const late = sum.points.filter((p) => / oltre il /.test(p));
+    const next = sum.list.rows.find((r) => !r.done);
+    const goals = (state.goals || []).filter((g) => g.due && g.status !== 'done').length;
+    const out = [late.length ? `Sei indietro su ${plural(late.length, 'obiettivo', 'obiettivi')}:` : goals ? 'Sei in linea con le scadenze.' : null, ...late, sum.points[0]];
+    if (next) out.push(`La prossima: ${next.title}, ${next.sub.charAt(0).toLowerCase() + next.sub.slice(1)}.`);
+    return out.filter(Boolean).join('\n');
+  }
   if (/(settiman|prossimi giorni|cosa (faccio|ho)|cosa mi aspetta)/.test(q)) return sum.list.rows.length ? sum.list.rows.map((r) => `${r.done ? '✓' : '•'} ${r.title} — ${r.sub}`).join('\n') : 'Nei prossimi 7 giorni non hai sessioni.';
   if (/(mese|mensile)/.test(q)) return sum.points.find((p) => p.startsWith('Da qui a fine mese')) || 'Da qui a fine mese non ci sono sessioni.';
   if (/(scadenz|quando finisc|ce la faccio|in tempo|in ritardo)/.test(q)) return sum.points.filter((p) => /scadenza|oltre il|finisci il/.test(p)).join('\n') || 'Non hai obiettivi con una scadenza.';

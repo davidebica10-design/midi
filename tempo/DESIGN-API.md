@@ -2,7 +2,9 @@
 
 Ogni schermata è disegnata a partire da una funzione pura in `js/viewmodel.js`: stato + piano + ora → dati. Questo file elenca, per ogni schermata, i campi disponibili e tutti gli stati da disegnare. I testi sono già pronti in italiano. Orari `HH:MM`, date `YYYY-MM-DD`.
 
-La barra per parlare con Tempo sta chiusa nel «+» laterale in basso a destra e si apre toccandolo; si richiude da sola quando non serve più.
+La barra per parlare con Tempo sta chiusa nel «+» laterale in basso a destra e si apre toccandolo; si richiude da sola quando non serve più. In basso al centro, alla stessa altezza, c'è il pulsante «Riepilogo» (nel giorno e nel calendario); sparisce quando la barra è aperta.
+
+Nel giorno, sopra il saluto c'è una sola riga: l'ora (o la data, per gli altri giorni) e l'andamento, es. «15:37 · 0 di 3 fatte». Non c'è più una carta che ripete il giorno.
 
 Ambiente comune (`env`, dentro `today()`): `online` (bool) e `ai` (`'base' | 'online' | 'local' | 'claude'`).
 
@@ -92,7 +94,7 @@ Al massimo 2 al giorno; quelle già mostrate restano fino a sera.
 
 ## 2. Riepilogo — `summary({ state, plan, longPlan, planFor, now, fits })`
 
-Si apre dall'icona «riassumi» in alto a sinistra del calendario. È una chat: in cima i punti chiave, poi le domande dell'utente e le risposte.
+Si apre dal pulsante «Riepilogo» in basso al centro, dal giorno o dal calendario; la freccia in alto lo chiude e torna dove eri. È una chat: in cima i punti chiave, poi le domande dell'utente e le risposte.
 
 | Campo | Contenuto |
 | --- | --- |
@@ -107,7 +109,7 @@ Con un'AI attiva i punti chiave li scrive l'AI (salvati in `state.askIntro`, rif
 
 Stati: senza AI · AI che scrive (puntini) · AI in errore o in timeout (risposta senza AI con una nota) · nessuna sessione in programma · nessun progetto.
 
-`week()` resta disponibile (fornisce i dati delle carte dei progetti), ma la vista Settimana non c'è più: il pizzico porta solo al calendario, e al giorno si torna toccando un giorno.
+`week()` resta disponibile (fornisce i dati delle carte dei progetti), ma la vista Settimana non c'è più: il pizzico porta solo al calendario, e al giorno si torna toccando un giorno o il riquadro di oggi in alto a destra.
 
 ## 3. Mese — `month({ state, longPlan, planFor, now, months, selected })`
 
@@ -148,6 +150,8 @@ Alla fine viene mostrata una sola nota di riepilogo, con Annulla: «Ho messo 22 
 
 ## Colori delle carte e editor
 
+Le carte colorate hanno una sfumatura (tinta chiara → tinta più profonda); senza colore scelto, un'attività di un progetto prende una tinta leggera del colore del progetto. Lo sfondo prende i colori delle carte più vicine al centro dello schermo e cambia mentre scorri (giorno, calendario, riepilogo).
+
 Ogni attività o impegno può avere `color`: `rose`, `lilac`, `sage`, `sand`, `sky` oppure `null` (carta normale). Il colore vale per la carta del giorno, per l'anteprima nell'editor e per il quadrante del calendario (`month().cells[].pick.color`); il quadrante ha anche una riga sotto nel colore del progetto. Si sceglie toccando la carta oppure scrivendo nella barra «colora la call di rosa».
 
 L'editor (si apre toccando una carta) mostra la carta stessa in anteprima dal vivo, con il titolo modificabile dentro. Sotto ci sono il colore (e la foto), Quando, Ora, Durata e Progetto come scelte da toccare; Tipo, Importanza, Energia, Fascia e Scadenza stanno in «Altro». In fondo ci sono Fatto, Inizia, Domani, Elimina e il pulsante Salva fisso.
@@ -163,3 +167,7 @@ L'editor (si apre toccando una carta) mostra la carta stessa in anteprima dal vi
 | Trascina giù | editor (maniglia o anteprima) | chiude senza salvare |
 | Dal bordo sinistro verso destra | riepilogo | torna al calendario |
 | Tocco sul «+» | giorno | apre la barra per parlare con Tempo |
+| Tocco su «Riepilogo» | giorno, calendario | apre il riepilogo |
+| Tocco su oggi (in alto a destra) | calendario | torna alla giornata di oggi |
+| Pressione su una carta | giorno | la carta si inclina verso il dito, con un riflesso |
+| Tieni premuto e trascina | giorno | la carta si solleva e si sposta; lasciata, torna al suo posto con una molla (non cambia il piano) |

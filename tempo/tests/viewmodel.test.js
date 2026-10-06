@@ -82,7 +82,8 @@ test('summary(): punti chiave, prossimi 7 giorni, progetti; risposte senza AI', 
   assert.ok(sum.list.rows.length > 0 && sum.list.rows.length <= 6);
   assert.equal(sum.list.rows[0].title, 'Beat 01');
   assert.ok(sum.projects.some((p) => p.name === 'EP' && /Scadenza 30 novembre/.test(p.footer)));
-  assert.match(vm.answerLocally('come sto andando?', sum, s), /^• Questa settimana/);
+  assert.match(vm.answerLocally('riassumimi tutto', sum, s), /^• Questa settimana/);
+  assert.match(vm.answerLocally('come sto andando?', sum, s), /Questa settimana[\s\S]*La prossima: /);
   assert.match(vm.answerLocally('e l\'EP?', sum, s), /^EP: /);
   assert.equal(vm.answerLocally('che tempo fa a Milano?', sum, s), null);
 });

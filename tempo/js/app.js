@@ -1,4 +1,5 @@
 import { planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
+import { glowSoon, bindCards, dragging } from './motion.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor } from './store.js';
 import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from './companion.js';
 import { goalFit, planSummary, horizonFor } from './goals.js';
@@ -504,14 +505,15 @@ function cardHtml(c, i) {
   const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : c.project ? c.project.name : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività';
   const cls = ['pc', isEvent ? 'event' : 'task', done ? 'done' : '', c.image ? 'photo' : '', changedIds.has(c.itemId) ? 'flash' : ''].join(' ');
   const label = `${c.title}, ${when}${c.project ? ', ' + c.project.name : ''}`;
-  const open = `role="button" tabindex="0" data-item="${esc(c.id)}" data-c="${c.color || ''}" aria-label="${esc(label)}"`;
+  const tint = !c.color && c.project ? ` data-proj style="--pc:${safeColor(c.project.color) || 'var(--accent)'};${st}"` : ` style="${st}"`;
+  const open = `role="button" tabindex="0" data-item="${esc(c.id)}" data-c="${c.color || ''}" aria-label="${esc(label)}"${tint}`;
   const check = isTask ? `<button class="pc-check" data-check="${esc(c.id)}" aria-label="${done ? 'Riapri' : 'Segna come fatta'}: ${esc(c.title)}" aria-pressed="${done}">${ICON_CHECK}</button>` : '';
   const title = `${c.important ? '<i class="imp" title="Importante"></i>' : ''}${esc(c.title)}`;
   if (c.image) {
-    return `<div class="${cls}" ${open} style="${st}">${imgTag(c.image)}${check}
+    return `<div class="${cls}" ${open}>${imgTag(c.image)}${check}
       <div class="ph-cap"><b>${title}</b><span>${esc(desc)}</span></div></div>`;
   }
-  return `<div class="${cls}" ${open} style="${st}">
+  return `<div class="${cls}" ${open}>
     <div class="pc-body"><div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div></div>
     <div class="pc-foot">${isTask ? projMark(c.project) : ''}<span>${esc(foot)}</span>${check}</div>
   </div>`;
@@ -534,7 +536,10 @@ function renderDayView(animate) {
     save(state);
   }
 
-  $('#hero-time').textContent = v.header.time;
+  const sum = v.summary;
+  const evN = v.cards.filter((c) => c.type === 'event').length + (v.now?.block?.kind === 'event' ? 1 : 0);
+  const prog = sum.total ? `${sum.done} di ${sum.total} fatte` : evN ? plural(evN, 'impegno', 'impegni') : 'giornata libera';
+  $('#hero-time').textContent = `${v.header.time} · ${prog}`;
   const g = v.header.greeting;
   const ht = $('#hero-title');
   if (ht.dataset.g !== g || animate) {
@@ -549,8 +554,7 @@ function renderDayView(animate) {
   const put = (html) => { cols[i % 2].push(html); i++; };
   const rot = (id) => (+tilt(id) * 0.8).toFixed(1);
 
-  // 1. "adesso" (oggi) come la carta-affermazione, poi il riepilogo del giorno
-  const sum = v.summary;
+  // 1. "adesso" (oggi) come la carta-affermazione
   if (v.now) {
     const a = v.now;
     const act = a.action ? `<button class="adv-go" data-adv="${a.action.type}" data-id="${esc(a.action.id)}">${a.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(a.action.label)}</span></button>` : '';
@@ -559,11 +563,6 @@ function renderDayView(animate) {
       <div class="pc-body"><div class="pc-quote">${esc(a.title)}</div>${a.why ? `<div class="pc-desc">${esc(a.why)}</div>` : ''}${blk}${act}</div>
       <div class="pc-label">Adesso</div></div>`);
   }
-  const d = dateOf(v.day);
-  const evN = v.cards.filter((c) => c.type === 'event').length + (v.now?.block?.kind === 'event' ? 1 : 0);
-  put(`<div class="pc daily" role="button" tabindex="0" data-goto="overview" aria-label="${esc(`${v.header.weekday} ${v.header.date}: ${sum.caption}. Apri il calendario`)}" style="--r:2deg;--i:${i}">
-    <div class="pc-body"><div class="dl-day">${esc(v.header.weekday)}</div><div class="dl-date">${d.getDate()} ${esc(d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', ''))}</div></div>
-    <div class="pc-label">${v.isToday ? 'Il tuo giorno' : 'Giorno'} · ${sum.total ? `${sum.done} di ${sum.total}` : evN ? plural(evN, 'impegno', 'impegni') : 'libero'}</div></div>`);
 
   // 2. osservazioni (massimo 2) come carte
   for (const o of v.observations) put(cardHtml({ ...o, type: 'obs', r: rot(o.id) }, i));
@@ -582,6 +581,7 @@ function renderDayView(animate) {
   fillImages(col);
   if (animate) animateIn(col, 300 + i * 70 + 800);
   $('#undo-btn').hidden = !canUndo();
+  glowSoon();
 }
 
 // ---------------------------------------------------------------- tutti i giorni
@@ -610,6 +610,11 @@ function renderCalendar(animate) {
   }
   $('#cal-scroll').innerHTML = html;
   $('#months').innerHTML = chips;
+  const td = dateOf(today());
+  $('#ov-today-wd').textContent = td.toLocaleDateString('it-IT', { weekday: 'short' }).replace('.', '');
+  $('#ov-today-n').textContent = td.getDate();
+  $('#ov-today').setAttribute('aria-label', `Torna a oggi, ${td.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })}`);
+  glowSoon();
   fillImages($('#cal-scroll'));
   if (animate) animateIn($('#cal-scroll'), 1200);
 }
@@ -648,10 +653,10 @@ function bindSwipes() {
   const col = $('#collage');
   track($('#day-scroll'), {
     start: (e) => mode === 'day' && !composing && !e.target.closest('textarea, input, .plus-menu'),
-    move: (e, dx, dy, dir) => { if (dir === 'h') { col.style.transition = 'none'; col.style.transform = `translateX(${dx * 0.35}px)`; col.style.opacity = String(1 - Math.min(0.5, Math.abs(dx) / 600)); } },
+    move: (e, dx, dy, dir) => { if (dragging()) return; if (dir === 'h') { col.style.transition = 'none'; col.style.transform = `translateX(${dx * 0.35}px)`; col.style.opacity = String(1 - Math.min(0.5, Math.abs(dx) / 600)); } },
     end: (dx, dy, dir) => {
       col.style.transition = ''; col.style.transform = ''; col.style.opacity = '';
-      if (dir !== 'h' || Math.abs(dx) < 70) return;
+      if (dragging() || dir !== 'h' || Math.abs(dx) < 70) return;
       selDay = addDays(selDay, dx < 0 ? 1 : -1);
       col.classList.remove('slide-l', 'slide-r'); void col.offsetWidth;
       renderDayView(false);
@@ -688,6 +693,7 @@ function openOverview() {
   void ov.offsetWidth;
   scrollOverviewTo(selDay);
   $('#app').classList.add('mode-overview');
+  glowSoon();
 }
 
 /** Apre un giorno; se arriva da una carta della panoramica, la carta si espande a tutto schermo. */
@@ -716,6 +722,7 @@ function openDay(day, fromEl) {
     $('#app').classList.remove('mode-overview');
   }
   mode = 'day';
+  glowSoon();
   setTimeout(() => { if (mode === 'day') $('#overview').hidden = true; }, 600);
 }
 
@@ -783,7 +790,11 @@ function openSummary() {
   const el = $('#summary');
   el.hidden = false;
   el.classList.remove('closing');
-  $('#overview').inert = true;
+  setComposing(false);
+  closePlus();
+  $('#input').blur();
+  $('#app').classList.add('sum-open');
+  $('#day').inert = $('#overview').inert = $('#composer').inert = $('#sum-fab').inert = true;
   renderSummary(true);
   aiIntro();
 }
@@ -791,7 +802,10 @@ function closeSummary() {
   summaryOpen = false;
   const el = $('#summary');
   el.classList.add('closing');
-  $('#overview').inert = false;
+  $('#app').classList.remove('sum-open');
+  $('#day').inert = $('#overview').inert = $('#composer').inert = $('#sum-fab').inert = false;
+  $('#ask-input').blur();
+  glowSoon();
   setTimeout(() => { if (!summaryOpen) { el.hidden = true; el.classList.remove('closing'); } }, 320);
 }
 const introKey = (sum) => today() + '|' + sum.points.join('|');
@@ -824,6 +838,7 @@ function renderSummary(animate) {
   sc.innerHTML = html;
   if (animate) { animateIn(sc, 1200); sc.scrollTop = 0; } else if (atEnd) sc.scrollTop = sc.scrollHeight;
   $('#ask-send').disabled = asking;
+  glowSoon();
 }
 
 /** Con un'AI attiva, i punti chiave li scrive l'AI (una volta, finché il piano non cambia). */
@@ -1171,7 +1186,7 @@ let onbStep = 0;
 const onbAns = {};
 /** Mentre la presentazione è aperta, il resto dell'app non si raggiunge (né col tocco né con lo screen reader). */
 function setBackgroundInert(on) {
-  for (const sel of ['#day', '#overview', '#composer', '.glow', '#panel']) { const el = $(sel); if (el) el.inert = on; }
+  for (const sel of ['#day', '#overview', '#composer', '#sum-fab', '.glow', '#panel']) { const el = $(sel); if (el) el.inert = on; }
 }
 function openOnboarding() {
   onbStep = 0;
@@ -1489,12 +1504,13 @@ function renderAll() {
 // ---------------------------------------------------------------- eventi
 function bind() {
   $('#to-overview').addEventListener('click', openOverview);
-  $('#ov-sum').addEventListener('click', openSummary);
+  $('#sum-fab').addEventListener('click', openSummary);
+  $('#ov-today').addEventListener('click', () => openDay(today(), document.querySelector(`.cd[data-day="${today()}"]`)));
   $('#sum-close').addEventListener('click', closeSummary);
   $('#sum-scroll').addEventListener('click', (e) => {
     const d = e.target.closest('[data-day]');
     if (d) { closeSummary(); openDay(d.dataset.day); return; }
-    if (e.target.closest('#sm-more')) closeSummary();
+    if (e.target.closest('#sm-more')) { closeSummary(); openOverview(); }
   });
   const askIn = $('#ask-input');
   const askGrow = () => { askIn.style.height = 'auto'; askIn.style.height = Math.min(askIn.scrollHeight, 120) + 'px'; };
@@ -1775,6 +1791,9 @@ function bind() {
 
   bindPinch();
   bindSwipes();
+  bindCards($('#collage'), { canStart: () => mode === 'day' && !composing, scroller: $('#day-scroll') });
+  for (const sc of ['#day-scroll', '#cal-scroll', '#sum-scroll']) $(sc).addEventListener('scroll', glowSoon, { passive: true });
+  addEventListener('resize', glowSoon);
 
   // tastiera iOS: adatta l'altezza all'area visibile
   const vv = window.visualViewport;
