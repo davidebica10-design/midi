@@ -101,6 +101,7 @@ Operazioni possibili in "ops" (metti solo i campi che servono):
 - Impegno ricorrente: {"action":"add_recurring","title":"Lavoro","start_time":"09:00","end_time":"18:30","weekdays":[1,2,3,4,5]}
 - Piano di un obiettivo (subito dopo set_goal): {"action":"plan_goal","title":"Far uscire l'EP","sessions":[{"key":"s1","title":"Beat 01","duration_min":120,"energy":3,"after":[]}]} (massimo 30 sessioni; senza "sessions" uso un modello)
 - Abitudine: {"action":"add_habit","title":"Palestra","pref_value":"3","duration_min":60}
+- Colore di una carta: {"action":"update","id":"ID","color":"rose"|"lilac"|"sage"|"sand"|"sky"} (null = colore normale)
 
 Regole:
 - priority: 1 bassa, 2 normale, 3 alta. energy: 1 leggera, 2 media, 3 pesante (attività creative o di concentrazione).
@@ -179,6 +180,7 @@ const REPLY_SCHEMA = {
           depends_on: { type: 'array', items: { type: 'string' } },
           pref_key: { type: 'string' },
           pref_value: { type: 'string' },
+          color: { type: 'string', enum: ['rose', 'lilac', 'sage', 'sand', 'sky'] },
           weekdays: { type: 'array', items: { type: 'integer' } },
           sessions: { type: 'array', items: { type: 'object' } },
         },

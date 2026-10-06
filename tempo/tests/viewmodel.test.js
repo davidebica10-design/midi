@@ -86,3 +86,26 @@ test('summary(): punti chiave, prossimi 7 giorni, progetti; risposte senza AI', 
   assert.match(vm.answerLocally('e l\'EP?', sum, s), /^EP: /);
   assert.equal(vm.answerLocally('che tempo fa a Milano?', sum, s), null);
 });
+
+test('calendario e riepilogo con un impegno singolo e un progetto senza obiettivo (caso reale)', async () => {
+  const { applyOps, migrate } = await import('../js/store.js');
+  const s = freshState();
+  applyOps(s, [
+    { action: 'add_project', title: 'Mix e Master EP' },
+    { action: 'add', kind: 'event', title: 'Call con Nicola Boy', date: '2026-10-08', start_time: '18:30', duration_min: 60 },
+  ], NOW);
+  const plan = planDays(s, NOW, 14);
+  const months = vm.month({ state: s, longPlan: plan, planFor: pf(s), now: NOW, months: 1 });
+  const c8 = months[0].cells.find((c) => c.day === '2026-10-08');
+  assert.ok(c8.pick, 'la call compare nel calendario');
+  assert.match(c8.pick.title, /Call con Nicola Boy/);
+  const sum = vm.summary({ state: s, plan, now: NOW, fits: {} });
+  assert.ok(sum.points.some((p) => /^Impegni: Call con Nicola Boy giovedì 8 alle 18:30\.$/.test(p)), sum.points.join(' | '));
+  assert.ok(sum.projects.some((p) => p.name === 'Mix e Master EP'), 'anche i progetti senza sessioni');
+  // colore della carta: solo valori ammessi
+  const id = s.items[0].id;
+  applyOps(s, [{ action: 'update', id, color: 'rose' }], NOW);
+  assert.equal(s.items[0].color, 'rose');
+  const m = migrate({ ...s, items: [{ ...s.items[0], color: 'url(javascript:alert(1))' }] }, NOW);
+  assert.equal(m.items[0].color, null);
+});

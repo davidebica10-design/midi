@@ -365,6 +365,12 @@ function commandOps(text, state, today, now) {
     const d = parseDuration(m[1]);
     return it ? { ops: [op({ action: 'progress', id: it.id, actual_min: d })], reply: `Segnati ${d} minuti su «${it.title}». Il resto lo rimetto in programma.` } : nf;
   }
+  if ((m = low.match(/^(?:colora|coloro|metti|fai)\s+(.+?)\s+(?:di|in|color[ae]?)\s+(rosa|lilla|viola|salvia|verde|sabbia|beige|crema|cielo|azzurro|blu|bianc[oa]|normale)$/))) {
+    const it = find(m[1].replace(/^(?:la\s+carta\s+(?:di|del|della)?\s*)/, ''));
+    const COLOR = { rosa: 'rose', lilla: 'lilac', viola: 'lilac', salvia: 'sage', verde: 'sage', sabbia: 'sand', beige: 'sand', crema: 'sand', cielo: 'sky', azzurro: 'sky', blu: 'sky' };
+    const c = COLOR[m[2]] || null;
+    return it ? { ops: [op({ action: 'update', id: it.id, color: c })], reply: c ? `«${it.title}» ora è ${m[2]}. Anche il suo quadrante nel calendario.` : `«${it.title}» torna al colore normale.` } : nf;
+  }
   if ((m = low.match(/^(?:ho\s+finito|fatto|finito|completat[oa])\s+(.+)/))) {
     const it = find(m[1]);
     return it ? { ops: [op({ action: 'complete', id: it.id })], reply: `Segnato «${it.title}» come fatto.` } : nf;

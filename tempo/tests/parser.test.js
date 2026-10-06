@@ -166,3 +166,12 @@ test('il punto dopo un orario chiude la frase («18:30. Sabato…»)', () => {
   assert.ok(!s.prefs.offDays.includes(6));
   assert.equal(s.memory.length, 3);
 });
+
+test('«colora la call di rosa» cambia il colore della carta', () => {
+  const s = freshState();
+  say(s, 'Domani alle 16 call con il cliente');
+  say(s, 'colora la call di rosa');
+  assert.equal(s.items[0].color, 'rose');
+  say(s, 'colora la call di normale');
+  assert.equal(s.items[0].color, null);
+});

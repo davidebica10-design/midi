@@ -49,6 +49,8 @@ export function load() {
 const SAFE_ID = /^[A-Za-z0-9_:-]{1,64}$/;
 const SAFE_COLOR = /^#[0-9a-fA-F]{3,8}$/;
 export const safeId = (v) => (typeof v === 'string' && SAFE_ID.test(v) ? v : null);
+export const CARD_COLORS = ['rose', 'lilac', 'sage', 'sand', 'sky'];
+export const cardColor = (v) => (CARD_COLORS.includes(v) ? v : null);
 export const safeColor = (v) => (typeof v === 'string' && SAFE_COLOR.test(v) ? v : null);
 const str = (v, max = 200) => (typeof v === 'string' ? v.slice(0, max) : v == null ? '' : String(v).slice(0, max));
 const num = (v, lo, hi, dflt = null) => (Number.isFinite(+v) && v !== null && v !== '' ? Math.min(hi, Math.max(lo, +v)) : dflt);
@@ -66,7 +68,7 @@ export function sanitizeState(s) {
     date: validDate(x.date), deadline: validDate(x.deadline), earliest: validDate(x.earliest),
     start: num(x.start, 0, 1440), duration: num(x.duration, 1, 1440, 30), status: ['todo', 'doing', 'done'].includes(x.status) ? x.status : 'todo',
     dependsOn: arr(x.dependsOn).filter(safeId), project: safeId(x.project), goalId: safeId(x.goalId), habitId: safeId(x.habitId), image: safeId(x.image),
-    window: WINDOWS[x.window] ? x.window : null,
+    window: WINDOWS[x.window] ? x.window : null, color: cardColor(x.color),
   }));
   s.projects = ids(s.projects).map((p, i) => ({ ...p, name: str(p.name, 40) || 'Progetto', color: safeColor(p.color) || COLORS[i % COLORS.length], due: validDate(p.due), aliases: arr(p.aliases).map((a) => str(a, 40)) }));
   s.goals = ids(s.goals).map((g) => ({ ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId) }));
@@ -263,6 +265,7 @@ export function applyOps(state, ops, now = Date.now()) {
           if (op.kind && op.kind !== it.kind) { it.kind = op.kind === 'event' ? 'event' : 'task'; if (it.kind === 'event' && it.start == null) it.kind = 'task'; }
           if (op.depends_on) it.dependsOn = resolveDeps(op.depends_on);
           if (op.note) it.notes = op.note;
+          if (op.color !== undefined) { it.color = cardColor(op.color); ch.push(it.color ? 'colore' : 'colore normale'); }
           if (op.project) { it.project = projectId(state, op.project); it.goalId = goalOfProject(state, it.project)?.id || it.goalId || null; ch.push(projectOf(state, it.project)?.name || ''); }
           if (it.status === 'doing' && (date || start != null)) { it.status = 'todo'; it.startedAt = null; }
           it.updatedAt = now;
@@ -527,7 +530,7 @@ const ACTIONS = ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete
 const FIELD = {
   id: 'str', title: 'str', kind: ['task', 'event'], date: 'date', start_time: 'time', end_time: 'time', duration_min: 'int', duration_is_estimate: 'bool',
   priority: 'int', deadline: 'date', earliest_date: 'date', window: ['mattina', 'pomeriggio', 'sera'], energy: 'int', depends_on: 'strs', actual_min: 'int',
-  note: 'str', project: 'str', category: ['vincolo', 'preferenza', 'obiettivo', 'nota'], pref_key: 'str', pref_value: 'str', weekdays: 'ints', unpin: 'bool', sessions: 'sessions',
+  note: 'str', project: 'str', color: ['rose', 'lilac', 'sage', 'sand', 'sky'], category: ['vincolo', 'preferenza', 'obiettivo', 'nota'], pref_key: 'str', pref_value: 'str', weekdays: 'ints', unpin: 'bool', sessions: 'sessions',
 };
 /** Tiene solo operazioni e campi validi; restituisce { ops, dropped }. */
 export function sanitizeOps(raw) {

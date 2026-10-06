@@ -42,8 +42,8 @@ Il blocco in corso **non** compare anche fra le `cards`.
 
 | type | Campi |
 | --- | --- |
-| `task` | `id, itemId, title, start, end, minutes, done, doneAt, pinned, important, project {id,name,color} \| null, goalId, habit, energy (1–3), estimated, resumed, part, image` |
-| `event` | `id, itemId (null se ricorrente), title, start, end, recurring, image` |
+| `task` | `id, itemId, title, start, end, minutes, done, doneAt, pinned, important, project {id,name,color} \| null, goalId, habit, energy (1–3), estimated, resumed, part, image, color` |
+| `event` | `id, itemId (null se ricorrente), title, start, end, recurring, image, color, project` |
 | `rest` | `id, title` («Cena / decompressione»), `start, end, note` («Stacca dal lavoro») |
 | `pause` | `at, minutes` («20:00 · pausa 15'») |
 | `stop` | `at, text` («Stop. Hai fatto abbastanza.») |
@@ -143,3 +143,23 @@ Stati: nessun obiettivo · obiettivo senza scadenza · obiettivo in ritardo (`la
 Cinque passi: `{ key (null | goals | constraints | projects | prefs), kick, q, sub, placeholder, examples[] }`.
 
 Alla fine viene mostrata una sola nota di riepilogo, con Annulla: «Ho messo 22 sessioni per l'EP da qui al 30 novembre. Si parte stasera alle 19:15 con beat 01.»
+
+---
+
+## Colori delle carte e editor
+
+Ogni attività o impegno può avere `color`: `rose`, `lilac`, `sage`, `sand`, `sky` oppure `null` (carta normale). Il colore vale per la carta del giorno, per l'anteprima nell'editor e per il quadrante del calendario (`month().cells[].pick.color`); il quadrante ha anche una riga sotto nel colore del progetto. Si sceglie toccando la carta oppure scrivendo nella barra «colora la call di rosa».
+
+L'editor (si apre toccando una carta) mostra la carta stessa in anteprima dal vivo, con il titolo modificabile dentro. Sotto ci sono il colore (e la foto), Quando, Ora, Durata e Progetto come scelte da toccare; Tipo, Importanza, Energia, Fascia e Scadenza stanno in «Altro». In fondo ci sono Fatto, Inizia, Domani, Elimina e il pulsante Salva fisso.
+
+## Gesti
+
+| Gesto | Dove | Effetto |
+| --- | --- | --- |
+| Pizzico verso l'interno | giorno | calendario |
+| Pizzico verso l'esterno | calendario | il giorno sotto le dita (o quello di prima) |
+| Tocco su un giorno | calendario | apre quel giorno |
+| Scorri a sinistra / destra | giorno | giorno dopo / giorno prima |
+| Trascina giù | editor (maniglia o anteprima) | chiude senza salvare |
+| Dal bordo sinistro verso destra | riepilogo | torna al calendario |
+| Tocco sul «+» | giorno | apre la barra per parlare con Tempo |

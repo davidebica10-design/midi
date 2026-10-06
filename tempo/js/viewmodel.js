@@ -31,14 +31,14 @@ function cardOf(state, b) {
   const id = String(b.id);
   const time = `${fmtMin(b.start)}`;
   if (it.kind === 'rest') return { type: 'rest', id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), note: 'Stacca dal lavoro' };
-  if (it.kind === 'event') return { type: 'event', id, itemId: id.startsWith('rec:') ? null : it.id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), recurring: !!it.recurring, image: it.image || null };
+  if (it.kind === 'event') return { type: 'event', id, itemId: id.startsWith('rec:') ? null : it.id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), recurring: !!it.recurring, image: it.image || null, color: it.color || null, project: projInfo(state, it.project) };
   const done = b.type === 'done';
   return {
     type: 'task', id, itemId: it.id, title: it.title, start: time, end: fmtMin(b.end), minutes: b.end - b.start,
     done, doneAt: done ? fmtMin(b.end) : null, pinned: b.type === 'pinned', important: it.priority === 3 && !done,
     project: projInfo(state, it.project), goalId: it.goalId || null, habit: !!it.habitId,
     energy: it.energy || 2, estimated: !!it.durationEstimated && !done, resumed: it.spent > 0 && !done, part: !!b.part,
-    image: it.image || null,
+    image: it.image || null, color: it.color || null,
   };
 }
 
@@ -159,10 +159,10 @@ export function month({ state, longPlan, planFor, now, months = 6, selected }) {
     for (let dd = 1; dd <= len; dd++) {
       const k = dateKey(new Date(y, m, dd));
       let sessions = [];
-      if (k < t) sessions = state.items.filter((x) => x.kind === 'task' && x.status === 'done' && x.doneAt && dateKey(new Date(x.doneAt)) === k);
+      if (k < t) sessions = state.items.filter((x) => (x.kind === 'task' && x.status === 'done' && x.doneAt && dateKey(new Date(x.doneAt)) === k) || (x.kind === 'event' && x.date === k));
       else {
         const p = longPlan?.[k] || planFor?.(k);
-        sessions = p ? p.blocks.filter((b) => b.item.kind === 'task' && !isRecOrRest(b.id)).map((b) => b.item) : [];
+        sessions = p ? p.blocks.filter((b) => (b.item.kind === 'task' || b.item.kind === 'event') && !isRecOrRest(b.id)).map((b) => b.item) : [];
       }
       const dl = deadlines[k] || [];
       const pickItem = sessions.find((x) => x.image) || sessions[0] || null;
@@ -170,8 +170,9 @@ export function month({ state, longPlan, planFor, now, months = 6, selected }) {
         day: k, n: dd, past: k < t, today: k === t, selected: k === selected, off: (state.prefs.offDays || []).includes(weekday(k)),
         sessions: sessions.length, density: Math.min(3, sessions.length), deadlines: dl,
         allDone: k < t && sessions.length > 0,
-        pick: dl.length ? { title: `◎ ${dl[0].title}`, image: null, deadline: true } : pickItem ? { title: sessions.length > 1 ? `${pickItem.title} +${sessions.length - 1}` : pickItem.title, image: pickItem.image || null } : null,
-        label: [`${dd}`, dl.length ? `scadenza: ${dl.map((x) => x.title).join(', ')}` : null, sessions.length ? plural(sessions.length, 'sessione', 'sessioni') : 'libero'].filter(Boolean).join(', '),
+        pick: dl.length ? { title: `◎ ${dl[0].title}`, image: null, deadline: true, color: null, project: dl[0].project }
+          : pickItem ? { title: sessions.length > 1 ? `${pickItem.title} +${sessions.length - 1}` : pickItem.title, image: pickItem.image || null, color: pickItem.color || null, project: projInfo(state, pickItem.project), event: pickItem.kind === 'event' } : null,
+        label: [`${dd}`, dl.length ? `scadenza: ${dl.map((x) => x.title).join(', ')}` : null, sessions.length ? sessions.map((x) => x.title).slice(0, 3).join(', ') : 'libero'].filter(Boolean).join(', '),
       });
     }
     out.push({ index: mi, title: cap(first.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })), short: cap(first.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '')), lead: (first.getDay() + 6) % 7, cells });
@@ -342,7 +343,17 @@ export function summary(ctx) {
     }
   }
 
-  const projects = w.cards.filter((c) => c.kind === 'project').map((c) => {
+  // gli impegni fissi dei prossimi 7 giorni (non ricorrenti): contano anche se non sono sessioni
+  const events = [];
+  for (let i = 0; i < 7; i++) {
+    const k = addDays(t, i);
+    const p = ctx.plan?.[k] || ctx.longPlan?.[k] || ctx.planFor?.(k);
+    for (const b of p?.blocks || []) if (b.item.kind === 'event' && !isRecOrRest(b.id) && b.type !== 'done') events.push(`${b.item.title} ${k === t ? 'oggi' : k === addDays(t, 1) ? 'domani' : weekdayName(k) + ' ' + +k.slice(8)} alle ${fmtMin(b.start)}`);
+  }
+  if (events.length) points.splice(1, 0, `Impegni: ${events.slice(0, 3).join('; ')}${events.length > 3 ? ` e altri ${events.length - 3}` : ''}.`);
+  const cardsByKey = new Map(w.cards.map((c) => [c.key, c]));
+  for (const pr of state.projects || []) if (!cardsByKey.has(pr.id)) cardsByKey.set(pr.id, { key: pr.id, kind: 'project', tag: pr.name, color: pr.color, label: 'Questa settimana', note: 'Niente in programma: dimmi il prossimo passo nella barra del giorno.', openDay: t, total: 0 });
+  const projects = [...cardsByKey.values()].filter((c) => c.kind === 'project').map((c) => {
     const goal = (state.goals || []).find((g) => g.projectId === c.key);
     return { key: c.key, name: c.tag, color: c.color, text: `${c.label === 'Questa settimana' ? 'Nessuna sessione questa settimana.' : `${c.label} questa settimana.`} ${c.note}`.replace(/\s+/g, ' ').trim(), footer: goal?.due ? `Scadenza ${dateLong(goal.due)}` : goal ? goal.title : 'Progetto', day: c.openDay };
   });

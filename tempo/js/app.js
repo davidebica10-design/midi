@@ -504,7 +504,7 @@ function cardHtml(c, i) {
   const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : c.project ? c.project.name : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività';
   const cls = ['pc', isEvent ? 'event' : 'task', done ? 'done' : '', c.image ? 'photo' : '', changedIds.has(c.itemId) ? 'flash' : ''].join(' ');
   const label = `${c.title}, ${when}${c.project ? ', ' + c.project.name : ''}`;
-  const open = `role="button" tabindex="0" data-item="${esc(c.id)}" aria-label="${esc(label)}"`;
+  const open = `role="button" tabindex="0" data-item="${esc(c.id)}" data-c="${c.color || ''}" aria-label="${esc(label)}"`;
   const check = isTask ? `<button class="pc-check" data-check="${esc(c.id)}" aria-label="${done ? 'Riapri' : 'Segna come fatta'}: ${esc(c.title)}" aria-pressed="${done}">${ICON_CHECK}</button>` : '';
   const title = `${c.important ? '<i class="imp" title="Importante"></i>' : ''}${esc(c.title)}`;
   if (c.image) {
@@ -560,9 +560,10 @@ function renderDayView(animate) {
       <div class="pc-label">Adesso</div></div>`);
   }
   const d = dateOf(v.day);
+  const evN = v.cards.filter((c) => c.type === 'event').length + (v.now?.block?.kind === 'event' ? 1 : 0);
   put(`<div class="pc daily" role="button" tabindex="0" data-goto="overview" aria-label="${esc(`${v.header.weekday} ${v.header.date}: ${sum.caption}. Apri il calendario`)}" style="--r:2deg;--i:${i}">
     <div class="pc-body"><div class="dl-day">${esc(v.header.weekday)}</div><div class="dl-date">${d.getDate()} ${esc(d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', ''))}</div></div>
-    <div class="pc-label">${v.isToday ? 'Il tuo giorno' : 'Giorno'} · ${sum.total ? `${sum.done} di ${sum.total}` : 'libero'}</div></div>`);
+    <div class="pc-label">${v.isToday ? 'Il tuo giorno' : 'Giorno'} · ${sum.total ? `${sum.done} di ${sum.total}` : evN ? plural(evN, 'impegno', 'impegni') : 'libero'}</div></div>`);
 
   // 2. osservazioni (massimo 2) come carte
   for (const o of v.observations) put(cardHtml({ ...o, type: 'obs', r: rot(o.id) }, i));
@@ -598,7 +599,7 @@ function renderCalendar(animate) {
       const cls = ['cd', c.past ? 'past' : '', c.today ? 'today' : '', c.selected ? 'sel' : ''].join(' ');
       if (c.pick) {
         cells += `<button class="${cls} has${c.pick.image ? ' ph' : ''}${c.allDone ? ' done' : ''}" data-day="${esc(c.day)}" style="--r:${tilt(c.day)}deg" aria-label="${esc(c.label)}">
-          <span class="cd-card">${c.pick.image ? imgTag(c.pick.image) : `<span class="cd-t">${esc(c.pick.title)}</span>`}</span><b>${c.n}</b></button>`;
+          <span class="cd-card" data-c="${c.pick.color || ''}"${c.pick.project ? ` data-proj style="--pc:${safeColor(c.pick.project.color) || 'var(--accent)'}"` : ''}>${c.pick.image ? imgTag(c.pick.image) : `<span class="cd-t">${esc(c.pick.title)}</span>`}</span><b>${c.n}</b></button>`;
       } else cells += `<button class="${cls}" data-day="${esc(c.day)}" aria-label="${esc(c.label)}"><b>${c.n}</b></button>`;
     }
     html += `<section class="month" data-mi="${mo.index}" style="--i:${mo.index}">
@@ -625,6 +626,55 @@ function scrollOverviewTo(k) {
   const cell = document.querySelector(`.cd[data-day="${esc(k)}"]`);
   const sec = cell?.closest('.month');
   $('#cal-scroll').scrollTop = sec ? monthTop(sec) : 0;
+}
+
+/** Gesti con un dito: giorno precedente/successivo, chiudere la scheda trascinandola, uscire dal riepilogo dal bordo. */
+function bindSwipes() {
+  const track = (el, { start, move, end }) => {
+    let s0 = null;
+    el.addEventListener('touchstart', (e) => { if (e.touches.length !== 1) { s0 = null; return; } const t = e.touches[0]; s0 = start(e, t) ? { x: t.clientX, y: t.clientY, t: Date.now(), dir: null } : null; }, { passive: true });
+    el.addEventListener('touchmove', (e) => {
+      if (!s0 || e.touches.length !== 1) return;
+      const t = e.touches[0], dx = t.clientX - s0.x, dy = t.clientY - s0.y;
+      if (!s0.dir && Math.hypot(dx, dy) > 10) s0.dir = Math.abs(dx) > Math.abs(dy) * 1.4 ? 'h' : 'v';
+      if (s0.dir) move?.(e, dx, dy, s0.dir);
+    }, { passive: false });
+    const fin = (e) => { if (!s0) return; const t = e.changedTouches[0]; end(t.clientX - s0.x, t.clientY - s0.y, s0.dir, Date.now() - s0.t); s0 = null; };
+    el.addEventListener('touchend', fin);
+    el.addEventListener('touchcancel', () => { if (s0) end(0, 0, null, 0); s0 = null; });
+  };
+
+  // giorno: scorri a sinistra = giorno dopo, a destra = giorno prima
+  const col = $('#collage');
+  track($('#day-scroll'), {
+    start: (e) => mode === 'day' && !composing && !e.target.closest('textarea, input, .plus-menu'),
+    move: (e, dx, dy, dir) => { if (dir === 'h') { col.style.transition = 'none'; col.style.transform = `translateX(${dx * 0.35}px)`; col.style.opacity = String(1 - Math.min(0.5, Math.abs(dx) / 600)); } },
+    end: (dx, dy, dir) => {
+      col.style.transition = ''; col.style.transform = ''; col.style.opacity = '';
+      if (dir !== 'h' || Math.abs(dx) < 70) return;
+      selDay = addDays(selDay, dx < 0 ? 1 : -1);
+      col.classList.remove('slide-l', 'slide-r'); void col.offsetWidth;
+      renderDayView(false);
+      col.classList.add(dx < 0 ? 'slide-l' : 'slide-r');
+      $('#day-scroll').scrollTop = 0;
+    },
+  });
+
+  // scheda: trascinala giù per chiuderla (dalla maniglia o dall'anteprima della carta)
+  const sh = $('#sheet');
+  track(sh, {
+    start: (e) => !!e.target.closest('.grabber, .ed-card, #sheet-title') && !e.target.closest('textarea'),
+    move: (e, dx, dy, dir) => { if (dir === 'v' && dy > 0) { e.preventDefault(); sh.style.transition = 'none'; sh.style.transform = `translateY(${dy}px)`; } },
+    end: (dx, dy, dir, ms) => { sh.style.transition = ''; sh.style.transform = ''; if (dir === 'v' && (dy > 110 || (dy > 40 && dy / ms > 0.6))) closeSheet(); },
+  });
+
+  // riepilogo: dal bordo sinistro verso destra si torna al calendario
+  const sm = $('#summary');
+  track(sm, {
+    start: (e, t) => t.clientX < 28,
+    move: (e, dx, dy, dir) => { if (dir === 'h' && dx > 0) { e.preventDefault(); sm.style.transition = 'none'; sm.style.transform = `translateX(${dx}px)`; } },
+    end: (dx, dy, dir) => { sm.style.transition = ''; sm.style.transform = ''; if (dir === 'h' && dx > 90) closeSummary(); },
+  });
 }
 
 function openOverview() {
@@ -710,7 +760,7 @@ function bindPinch() {
       const tl = target;
       target = null;
       if (tl) { tl.style.transition = ''; tl.style.transform = ''; }
-      if (scale > 1.1 && tl) {
+      if (scale > 1.1) { // il pizzico al contrario torna al giorno (quello sotto le dita, o quello di prima)
         const k = tl?.dataset.day || selDay;
         openDay(k, tl || document.querySelector(`.cd[data-day="${esc(k)}"]`));
       }
@@ -853,22 +903,8 @@ async function onPhotoPicked(file) {
   if (sheetPhoto?.url) URL.revokeObjectURL(sheetPhoto.url);
   sheetPhoto = { blob, url: URL.createObjectURL(blob) };
   if (photoTarget === 'new') openSheet(null, {}, true);
-  else renderPhotoField();
+  else renderEditor();
 }
-function renderPhotoField() {
-  const el = $('#photo-field');
-  if (!el) return;
-  const id = $('#sheet-form').dataset.id;
-  const it = id ? state.items.find((x) => x.id === id) : null;
-  const src = sheetPhoto?.url || (!sheetPhoto?.remove && it?.image ? cachedImageUrl(it.image) : null);
-  const hasImg = sheetPhoto?.url || (!sheetPhoto?.remove && it?.image);
-  el.className = 'photo-field' + (hasImg ? '' : ' empty');
-  el.innerHTML = hasImg
-    ? `<img ${src ? `src="${src}"` : `data-img="${esc(it.image)}"`} alt=""><span class="rm" data-photo="remove" aria-label="Togli la foto">×</span>`
-    : `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="3"/><circle cx="12" cy="12.5" r="3.5"/></svg> Aggiungi una foto`;
-  fillImages(el);
-}
-
 // ---------------------------------------------------------------- scheda modifica
 function openSheet(id, preset = {}, keepPhoto = false) {
   if (!keepPhoto) sheetPhoto = null;
@@ -891,35 +927,101 @@ function openSheet(id, preset = {}, keepPhoto = false) {
   }
   const it = id ? state.items.find((x) => x.id === id) : null;
   const isNew = !it;
-  const v = it || { title: '', kind: 'task', date: selDay, start: null, duration: 45, priority: 2, energy: 2, window: null, deadline: null, status: 'todo', ...preset };
-  const seg = (name, opts, val) => `<div class="seg" data-seg="${name}">${opts.map(([k, l]) => `<button type="button" data-v="${k}" class="${String(val) === String(k) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  const v = it || { title: '', kind: 'task', date: selDay, start: null, duration: 45, priority: 2, energy: 2, window: null, deadline: null, status: 'todo', project: null, color: null, ...preset };
+  ed = { title: v.title, kind: v.kind, date: v.date || null, start: v.start ?? null, duration: v.duration || 45, priority: v.priority || 2, energy: v.energy || 2,
+    window: v.window || null, deadline: v.deadline || null, project: v.project || null, color: v.color || null, image: v.image || null, estimated: !!v.durationEstimated };
+  const t = today(), tm = addDays(t, 1);
+  const chip = (group, val, label, extra = '') => `<button type="button" class="ch" data-ed="${group}" data-v="${esc(String(val))}" ${extra}>${label}</button>`;
+  const colors = [['', 'Carta'], ['rose', 'Rosa'], ['lilac', 'Lilla'], ['sage', 'Salvia'], ['sand', 'Sabbia'], ['sky', 'Cielo']];
   $('#sheet-form').innerHTML = `
-    <h2 id="sheet-title">${isNew ? 'Nuova attività' : it.status === 'done' ? 'Completata' : 'Modifica'}</h2>
-    <input class="title-input" name="title" value="${esc(v.title)}" placeholder="Cosa devi fare?" required>
-    <button type="button" class="photo-field" id="photo-field" data-photo="pick"></button>
-    <div class="card">
-      <div class="row"><span class="lbl">Tipo</span>${seg('kind', [['task', 'Flessibile'], ['event', 'Impegno fisso']], v.kind)}</div>
-      <div class="row"><label for="f-date">Giorno</label><input type="date" id="f-date" name="date" value="${v.date || ''}"></div>
-      <div class="row"><label for="f-start">Orario<small>${v.kind === 'task' ? 'vuoto = lo sceglie l\'app' : ''}</small></label><input type="time" id="f-start" name="start" value="${v.start != null ? fmtMin(v.start) : ''}"></div>
-      <div class="row"><label for="f-dur">Durata (min)${v.durationEstimated ? '<small>stimata</small>' : ''}</label><input type="number" id="f-dur" name="duration" min="5" max="960" step="5" value="${v.duration}" inputmode="numeric"></div>
-      <div class="row"><span class="lbl">Priorità</span>${seg('priority', [[1, 'Bassa'], [2, 'Normale'], [3, 'Alta']], v.priority)}</div>
-      <div class="row"><span class="lbl">Energia</span>${seg('energy', [[1, 'Leggera'], [2, 'Media'], [3, 'Pesante']], v.energy)}</div>
-      <div class="row"><label for="f-win">Fascia preferita</label><select id="f-win" name="window"><option value="">Qualsiasi</option>${Object.keys(WINDOWS).map((w) => `<option ${v.window === w ? 'selected' : ''}>${w}</option>`).join('')}</select></div>
-      <div class="row"><label for="f-dl">Scadenza</label><input type="date" id="f-dl" name="deadline" value="${v.deadline || ''}"></div>
+    <h2 id="sheet-title" class="sr-only">${isNew ? 'Nuova carta' : 'Modifica la carta'}</h2>
+    <div class="ed-card" id="ed-card">
+      <div class="ed-photo" id="ed-photo"></div>
+      <textarea class="ed-title" name="title" rows="2" placeholder="Cosa devi fare?" aria-label="Titolo" maxlength="80">${esc(v.title)}</textarea>
+      <div class="ed-sub" id="ed-sub"></div>
+      <div class="ed-foot" id="ed-foot"></div>
     </div>
-    <div class="sheet-actions">
-      ${isNew ? '' : it.status === 'done'
-        ? `<button type="button" class="btn" data-sheet="reopen">Riapri</button>`
-        : `<button type="button" class="btn" data-sheet="done">✓ Fatto</button>${it.kind === 'task' && it.status !== 'doing' ? `<button type="button" class="btn" data-sheet="start">▶ Inizia ora</button>` : `<button type="button" class="btn" data-sheet="tomorrow">Sposta a domani</button>`}`}
-      ${isNew ? '' : `<button type="button" class="btn danger${it.status === 'done' ? '' : ' full'}" data-sheet="delete">Elimina</button>`}
-      <button type="button" class="btn" data-sheet="close">Annulla</button>
-      <button type="submit" class="btn primary">${isNew ? 'Aggiungi' : 'Salva'}</button>
+    <div class="ed-colors" role="radiogroup" aria-label="Colore della carta">
+      ${colors.map(([c, l]) => `<button type="button" class="sw" data-ed="color" data-v="${c}" data-c="${c}" role="radio" aria-label="${l}"></button>`).join('')}
+      <button type="button" class="sw photo" data-photo="pick" aria-label="Foto"><i class="ic ic-photo" aria-hidden="true"></i></button>
+    </div>
+    <section class="ed-row"><span class="ed-k">Quando</span><div class="chips-x">
+      ${v.kind === 'task' ? chip('date', '', 'Quando vuoi') : ''}${chip('date', t, 'Oggi')}${chip('date', tm, 'Domani')}
+      <label class="ch ch-in" data-ed-in="date"><span id="ed-date-l">Altro giorno</span><input type="date" id="ed-date" aria-label="Scegli il giorno"></label>
+    </div></section>
+    <section class="ed-row"><span class="ed-k">Ora</span><div class="chips-x">
+      <span id="ed-free-wrap">${chip('start', '', 'La sceglie Tempo')}</span>
+      <label class="ch ch-in" data-ed-in="start"><span id="ed-start-l">Scegli l'ora</span><input type="time" id="ed-start" aria-label="Scegli l'ora"></label>
+    </div></section>
+    <section class="ed-row"><span class="ed-k">Durata</span><div class="chips-x">
+      ${[15, 30, 45, 60, 90, 120].map((m) => chip('duration', m, durLabel(m))).join('')}
+      <span class="stepper"><button type="button" data-step="-5" aria-label="Meno 5 minuti">−</button><b id="ed-dur">${durLabel(ed.duration)}</b><button type="button" data-step="5" aria-label="Più 5 minuti">+</button></span>
+    </div></section>
+    ${(state.projects || []).length ? `<section class="ed-row"><span class="ed-k">Progetto</span><div class="chips-x">${chip('project', '', 'Nessuno')}${state.projects.map((p) => chip('project', p.id, `<i class="dot" style="--pc:${safeColor(p.color) || 'var(--accent)'}"></i>${esc(p.name)}`)).join('')}</div></section>` : ''}
+    <details class="ed-more"><summary>Altro</summary>
+      <section class="ed-row"><span class="ed-k">Tipo</span><div class="chips-x">${chip('kind', 'task', 'Flessibile')}${chip('kind', 'event', 'Orario fisso')}</div></section>
+      <section class="ed-row"><span class="ed-k">Importante</span><div class="chips-x">${chip('priority', 3, '★ Sì')}${chip('priority', 2, 'Normale')}${chip('priority', 1, 'Può aspettare')}</div></section>
+      <section class="ed-row"><span class="ed-k">Energia</span><div class="chips-x">${chip('energy', 1, 'Leggera')}${chip('energy', 2, 'Media')}${chip('energy', 3, 'Concentrazione')}</div></section>
+      <section class="ed-row"><span class="ed-k">Fascia</span><div class="chips-x">${chip('window', '', 'Qualsiasi')}${Object.keys(WINDOWS).map((w) => chip('window', w, cap(w))).join('')}</div></section>
+      <section class="ed-row"><span class="ed-k">Scadenza</span><div class="chips-x">${chip('deadline', '', 'Nessuna')}<label class="ch ch-in" data-ed-in="deadline"><span id="ed-dl-l">Scegli</span><input type="date" id="ed-dl" aria-label="Scadenza"></label></div></section>
+    </details>
+    <div class="ed-actions">
+      ${isNew ? '' : `<div class="ed-quick">
+        ${it.status === 'done' ? `<button type="button" data-sheet="reopen"><i class="ic ic-undo" aria-hidden="true"></i>Riapri</button>` : `<button type="button" data-sheet="done">${ICON_CHECK}Fatto</button>`}
+        ${it.status !== 'done' && it.kind === 'task' && it.status !== 'doing' ? `<button type="button" data-sheet="start">${ICON_PLAY}Inizia</button>` : ''}
+        ${it.status !== 'done' ? `<button type="button" data-sheet="tomorrow"><i class="ic ic-next" aria-hidden="true"></i>Domani</button>` : ''}
+        <button type="button" data-sheet="delete" class="danger"><i class="ic ic-x" aria-hidden="true"></i>Elimina</button>
+      </div>`}
+      <button type="submit" class="btn primary ed-save">${isNew ? 'Aggiungi' : 'Salva'}</button>
     </div>`;
   $('#sheet-form').dataset.id = it ? it.id : '';
-  renderPhotoField();
+  renderEditor();
   showSheet();
-  if (isNew && !keepPhoto) setTimeout(() => $('#sheet-form .title-input').focus(), 300);
+  if (isNew && !keepPhoto) setTimeout(() => $('#sheet-form .ed-title').focus(), 300);
 }
+
+/** Aggiorna anteprima e scelte dell'editor senza ridisegnarlo (il fuoco resta dov'è). */
+let ed = null;
+function renderEditor() {
+  if (!ed) return;
+  const f = $('#sheet-form');
+  const t = today();
+  for (const b of f.querySelectorAll('[data-ed]')) {
+    const g = b.dataset.ed, val = b.dataset.v;
+    const cur = ed[g] == null ? '' : String(ed[g]);
+    const on = cur === val;
+    b.classList.toggle('on', on);
+    b.setAttribute(b.getAttribute('role') === 'radio' ? 'aria-checked' : 'aria-pressed', on);
+  }
+  const custom = (key, inId, lblId, fmt) => {
+    const inp = $(inId), l = $(lblId);
+    if (!inp) return;
+    const val = ed[key];
+    const isCustom = val != null && (key !== 'date' || (val !== t && val !== addDays(t, 1)));
+    inp.value = val == null ? '' : key === 'start' ? fmtMin(val) : val;
+    l.textContent = isCustom ? fmt(val) : (key === 'date' ? 'Altro giorno' : key === 'start' ? 'Scegli l\'ora' : 'Scegli');
+    inp.closest('.ch').classList.toggle('on', isCustom);
+  };
+  const dayTxt = (k) => cap(dateOf(k).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' }));
+  custom('date', '#ed-date', '#ed-date-l', dayTxt);
+  custom('start', '#ed-start', '#ed-start-l', fmtMin);
+  custom('deadline', '#ed-dl', '#ed-dl-l', dayTxt);
+  $('#ed-free-wrap').hidden = ed.kind === 'event';
+  $('#ed-dur').textContent = durLabel(ed.duration);
+  // anteprima: la carta com'è
+  const card = $('#ed-card');
+  card.dataset.c = ed.color || '';
+  card.classList.toggle('event', ed.kind === 'event');
+  const photo = sheetPhoto?.url || (!sheetPhoto?.remove && ed.image ? cachedImageUrl(ed.image) : null);
+  card.classList.toggle('has-photo', !!photo);
+  $('#ed-photo').innerHTML = photo ? `<img src="${esc(photo)}" alt=""><button type="button" class="ed-rm" data-photo="remove" aria-label="Togli la foto">×</button>` : '';
+  if (!photo && ed.image && !sheetPhoto?.remove) imageUrl(ed.image).then((u) => { if (u && ed?.image) renderEditor(); }).catch(() => {});
+  const when = [ed.date ? (ed.date === t ? 'Oggi' : ed.date === addDays(t, 1) ? 'Domani' : dayTxt(ed.date)) : 'Quando vuoi', ed.start != null ? fmtMin(ed.start) : ed.kind === 'task' ? 'ora scelta da Tempo' : 'serve un orario', durLabel(ed.duration)];
+  $('#ed-sub').textContent = when.join(' · ');
+  const pr = ed.project ? projectOf(state, ed.project) : null;
+  $('#ed-foot').innerHTML = `${pr ? projMark(pr) + `<span>${esc(pr.name)}</span>` : `<span>${ed.kind === 'event' ? 'Impegno fisso' : 'Attività'}</span>`}${ed.priority === 3 ? '<b class="ed-star" aria-label="Importante">★</b>' : ''}`;
+}
+
 function showSheet() { const sh = $('#sheet'); sh.classList.remove('closing'); sh.hidden = false; $('#sheet-backdrop').hidden = false; }
 function closeSheet() {
   const sh = $('#sheet'), bd = $('#sheet-backdrop');
@@ -929,19 +1031,7 @@ function closeSheet() {
 }
 
 function readSheet() {
-  const f = $('#sheet-form');
-  const segv = (n) => f.querySelector(`[data-seg="${n}"] .on`)?.dataset.v;
-  return {
-    title: f.title.value.trim(),
-    kind: segv('kind'),
-    date: f.date.value || null,
-    start: parseHM(f.start.value),
-    duration: Math.max(5, Math.min(960, +f.duration.value || 30)),
-    priority: +segv('priority') || 2,
-    energy: +segv('energy') || 2,
-    window: f.window.value || null,
-    deadline: f.deadline.value || null,
-  };
+  return { ...ed, title: $('#sheet-form').title.value.trim().slice(0, 80) };
 }
 
 async function sheetSave() {
@@ -966,14 +1056,23 @@ async function sheetSave() {
   const newId = id || uid();
   changedIds = new Set([newId]);
   setTimeout(() => { changedIds = new Set(); }, 2500);
+  const clean = {
+    title: v.title, kind: v.kind === 'event' ? 'event' : 'task', date: v.date || null, start: v.start ?? null,
+    duration: Math.max(5, Math.min(960, Math.round(v.duration) || 30)), priority: [1, 2, 3].includes(v.priority) ? v.priority : 2,
+    energy: [1, 2, 3].includes(v.energy) ? v.energy : 2, window: WINDOWS[v.window] ? v.window : null, deadline: v.deadline || null,
+    project: v.project && projectOf(state, v.project) ? v.project : null, color: v.color || null,
+  };
+  if ('image' in v) clean.image = v.image;
+  clean.goalId = clean.project ? (state.goals || []).find((g) => g.projectId === clean.project)?.id || null : null;
   commit(id ? 'Modifica manuale' : 'Nuova attività', () => {
     if (old) {
-      if (old.duration !== v.duration) old.durationEstimated = false;
-      Object.assign(old, v, { updatedAt: Date.now() });
+      if (old.duration !== clean.duration) { old.durationEstimated = false; old.baseDuration = null; }
+      Object.assign(old, clean, { updatedAt: Date.now() });
       if (state.anchors) delete state.anchors[id];
     } else {
-      state.items.push({ id: newId, ...v, durationEstimated: false, status: 'todo', startedAt: null, doneAt: null, actual: null, dependsOn: [], notes: '', createdAt: Date.now(), updatedAt: Date.now() });
+      state.items.push({ id: newId, ...clean, durationEstimated: false, status: 'todo', startedAt: null, doneAt: null, actual: null, dependsOn: [], notes: '', spent: 0, createdAt: Date.now(), updatedAt: Date.now() });
     }
+    applyOps(state, []); // abitudini e controlli dopo la modifica
   });
   closeSheet();
   toastUndo(id ? 'Salvato' : 'Aggiunto');
@@ -1535,19 +1634,36 @@ function bind() {
   // scheda
   $('#sheet-backdrop').addEventListener('click', closeSheet);
   $('#sheet-form').addEventListener('submit', (e) => { e.preventDefault(); sheetSave(); });
+  $('#sheet-form').addEventListener('change', (e) => {
+    if (!ed) return;
+    const id = e.target.id;
+    if (id === 'ed-date' && e.target.value) ed.date = e.target.value;
+    if (id === 'ed-start') { const m = parseHM(e.target.value); if (m != null) ed.start = m; }
+    if (id === 'ed-dl') ed.deadline = e.target.value || null;
+    renderEditor();
+  });
   $('#sheet-form').addEventListener('click', (e) => {
-    const sb = e.target.closest('.seg button');
-    if (sb) {
-      sb.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === sb));
-      return;
-    }
     const ph = e.target.closest('[data-photo]');
     if (ph) {
       e.preventDefault();
-      if (ph.dataset.photo === 'remove') { e.stopPropagation(); sheetPhoto = { remove: true }; renderPhotoField(); }
-      else if ($('#photo-field').classList.contains('empty')) pickPhoto('sheet');
+      if (ph.dataset.photo === 'remove') { e.stopPropagation(); sheetPhoto = { remove: true }; renderEditor(); }
+      else pickPhoto('sheet');
       return;
     }
+    // editor: una scelta = un tocco
+    const ch = e.target.closest('[data-ed]');
+    if (ch && ed) {
+      const g = ch.dataset.ed, raw = ch.dataset.v;
+      const val = raw === '' ? null : ['duration', 'priority', 'energy'].includes(g) ? +raw : raw;
+      ed[g] = g === 'priority' || g === 'energy' ? val || 2 : val;
+      if (g === 'kind' && val === 'event') { if (ed.start == null) ed.start = Math.min(23 * 60, Math.ceil(nowMin() / 30) * 30 + 30); if (!ed.date) ed.date = selDay; }
+      if (g === 'date' && val == null && ed.kind === 'event') ed.date = selDay;
+      if (g === 'duration') ed.estimated = false;
+      renderEditor();
+      return;
+    }
+    const st = e.target.closest('[data-step]');
+    if (st && ed) { ed.duration = Math.max(5, Math.min(600, ed.duration + +st.dataset.step)); ed.estimated = false; renderEditor(); return; }
     const b = e.target.closest('[data-sheet]');
     if (!b) return;
     const id = $('#sheet-form').dataset.id;
@@ -1658,16 +1774,27 @@ function bind() {
   });
 
   bindPinch();
+  bindSwipes();
 
   // tastiera iOS: adatta l'altezza all'area visibile
   const vv = window.visualViewport;
+  // solo con la tastiera aperta: altrimenti l'app occupa tutto lo schermo (niente fascia vuota in basso
+  // se iOS lascia un'altezza vecchia dopo aver chiuso la tastiera)
   const fit = () => {
     if (!vv) return;
     const root = document.documentElement.style;
-    root.setProperty('--vvh', Math.round(vv.height) + 'px');
-    root.setProperty('--vvt', Math.round(vv.offsetTop) + 'px');
+    const editing = document.activeElement?.matches('textarea, input:not([type=date]):not([type=time]):not([type=file])');
+    if (editing && vv.height < window.innerHeight - 80) {
+      root.setProperty('--vvh', Math.round(vv.height) + 'px');
+      root.setProperty('--vvt', Math.round(vv.offsetTop) + 'px');
+    } else {
+      root.removeProperty('--vvh');
+      root.removeProperty('--vvt');
+    }
     if (vv.offsetTop === 0) window.scrollTo(0, 0);
   };
+  document.addEventListener('focusin', () => setTimeout(fit, 60));
+  document.addEventListener('focusout', () => setTimeout(fit, 350));
   vv?.addEventListener('resize', fit);
   vv?.addEventListener('scroll', fit);
   window.addEventListener('orientationchange', () => setTimeout(fit, 300));

@@ -676,3 +676,87 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .ask .ic { color: var(--ink-2); }
 .ask textarea { flex: 1; border: 0; background: none; outline: 0; resize: none; font-size: 16px; line-height: 1.3; padding: 10px 0; color: var(--ink); max-height: 120px; }
 .ask textarea::placeholder { color: var(--ink-3); }
+
+/* ---------- colori delle carte (scelti dall'utente) ---------- */
+:root { --cc-rose: #F7DFE9; --cc-lilac: #E7E0F6; --cc-sage: #DFEDE0; --cc-sand: #F4E9D6; --cc-sky: #DDE9F5; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cc-rose: #47303C; --cc-lilac: #37304A; --cc-sage: #2D3B31; --cc-sand: #413829; --cc-sky: #2C3846; } }
+[data-c="rose"] { --card: var(--cc-rose); } [data-c="lilac"] { --card: var(--cc-lilac); } [data-c="sage"] { --card: var(--cc-sage); }
+[data-c="sand"] { --card: var(--cc-sand); } [data-c="sky"] { --card: var(--cc-sky); }
+.pc[data-c]:not([data-c=""]), .ed-card[data-c]:not([data-c=""]), .cd-card[data-c]:not([data-c=""]) { background: var(--card); }
+.pc[data-c]:not([data-c=""]) .pc-foot { border-top-color: color-mix(in srgb, var(--ink) 8%, transparent); }
+/* ombre: calde e leggere in chiaro, quasi assenti in scuro (dove si legge il bordo) */
+.pc, .sm-card, .sm-list, .ed-card { box-shadow: var(--shadow); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pc, :root:not([data-theme="light"]) .sm-card, :root:not([data-theme="light"]) .ed-card { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 14px 30px rgba(0, 0, 0, 0.35); } }
+
+/* gesti: il giorno scorre a destra e a sinistra */
+.collage { transition: transform 0.35s var(--ease), opacity 0.3s; }
+.collage.slide-l { animation: slideL 0.45s var(--ease); } .collage.slide-r { animation: slideR 0.45s var(--ease); }
+@keyframes slideL { from { transform: translateX(60px); opacity: 0; } } @keyframes slideR { from { transform: translateX(-60px); opacity: 0; } }
+#app.mode-overview .bar { transform: translateY(calc(100% + 120px)); opacity: 0; pointer-events: none; }
+
+/* ---------- calendario: quadranti colorati, oggi e selezione chiari ---------- */
+.cd { background: color-mix(in srgb, var(--paper) 55%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent); }
+.cd b { color: var(--ink-2); }
+.cd.past { opacity: 0.4; }
+.cd.has { background: none; box-shadow: none; }
+.cd-card { background: var(--paper); box-shadow: 0 6px 14px -6px rgba(77, 58, 56, 0.35); padding: 17px 5px 4px; }
+.cd-card[data-proj] { box-shadow: inset 0 -3px 0 var(--pc), 0 6px 14px -6px rgba(77, 58, 56, 0.35); }
+.cd-t { font-family: inherit; font-size: 10px; font-weight: 600; line-height: 1.15; color: var(--paper-ink); }
+.cd.today:not(.has) { box-shadow: inset 0 0 0 2px var(--accent); }
+.cd.has.today .cd-card { box-shadow: 0 0 0 2px var(--accent), 0 6px 14px -6px rgba(77, 58, 56, 0.35); }
+.cd.sel:not(.today) { box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.cd.has.sel:not(.today) .cd-card { box-shadow: 0 0 0 1.5px var(--ink-3); }
+.cd.off:not(.has) b { opacity: 0.55; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .cd-card { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07); } }
+
+/* ---------- editor della carta ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ic-photo { --m: url(icons/ui/camera.svg); } .ic-undo { --m: url(icons/ui/rotate-ccw.svg); width: 18px; height: 18px; }
+.ic-next { --m: url(icons/ui/arrow-right.svg); width: 18px; height: 18px; } .ic-x { --m: url(icons/ui/x.svg); width: 18px; height: 18px; }
+.sheet { background: var(--bg); }
+.sheet:has(.ed-card) { padding-bottom: 0; }
+.ed-card { position: relative; margin: 6px 4px 16px; border-radius: 22px; background: var(--card, var(--paper)); color: var(--paper-ink); overflow: hidden; transform: rotate(-1deg);
+  transition: background 0.3s, transform 0.4s var(--spring); touch-action: pan-y; }
+.ed-photo:empty { display: none; }
+.ed-photo { position: relative; height: 150px; }
+.ed-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ed-rm { position: absolute; top: 10px; right: 10px; width: 30px; height: 30px; border-radius: 50%; background: rgba(0, 0, 0, 0.45); color: #fff; font-size: 20px; line-height: 1; }
+.ed-title { display: block; width: 100%; border: 0; outline: 0; resize: none; background: none; color: inherit; padding: 18px 18px 0; font: 700 22px/1.15 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; letter-spacing: -0.01em; }
+.ed-title::placeholder { color: var(--ink-3); }
+.ed-card.event .ed-title { color: var(--lilac); }
+.ed-sub { padding: 6px 18px 0; font-size: 15px; color: var(--ink-2); }
+.ed-foot { display: flex; align-items: center; gap: 6px; min-height: 44px; margin-top: 14px; padding: 0 18px; border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); font-size: 12px; color: var(--ink-3); }
+.ed-foot span:not(.pc-mark) { flex: 1; }
+.ed-star { color: var(--accent); font-size: 15px; }
+.ed-colors { display: flex; gap: 10px; padding: 2px 4px 14px; }
+.sw { width: 34px; height: 34px; border-radius: 50%; background: var(--card, var(--paper)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent); transition: transform 0.3s var(--spring), box-shadow 0.2s; flex: none; display: grid; place-items: center; color: var(--ink-2); }
+.sw.on { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent), 0 0 0 2.5px var(--bg), 0 0 0 4.5px var(--ink); transform: scale(1.06); }
+.sw:active { transform: scale(0.88); }
+.sw.photo { margin-left: auto; background: var(--field); box-shadow: none; }
+.ed-row { display: flex; flex-direction: column; gap: 8px; padding: 10px 4px; }
+.ed-k { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.chips-x { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 -4px; padding: 2px 4px; }
+.chips-x::-webkit-scrollbar { display: none; }
+.ch { position: relative; flex: none; display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 15px; border-radius: 999px; font-size: 14.5px; font-weight: 600; color: var(--ink);
+  background: var(--paper); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent); transition: background 0.2s, color 0.2s, transform 0.25s var(--spring); white-space: nowrap; }
+.ch.on { background: var(--ink); color: var(--bg); box-shadow: none; }
+.ch:active { transform: scale(0.94); }
+.ch-in input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; }
+.ch .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pc); }
+.stepper { flex: none; display: inline-flex; align-items: center; height: 38px; border-radius: 999px; background: var(--paper); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent); }
+.stepper button { width: 38px; height: 38px; font-size: 20px; color: var(--ink-2); }
+.stepper b { min-width: 52px; text-align: center; font-size: 14.5px; }
+.ed-more { margin: 4px 0 6px; }
+.ed-more summary { list-style: none; cursor: pointer; padding: 12px 4px; font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.ed-more summary::-webkit-details-marker { display: none; }
+.ed-more summary::after { content: " ›"; display: inline-block; transition: transform 0.25s; }
+.ed-more[open] summary::after { transform: rotate(90deg); }
+.ed-actions { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; }
+.ed-save { position: sticky; bottom: 0; margin-bottom: calc(var(--safe-b) + 8px); box-shadow: 0 -14px 24px 10px var(--bg); }
+.ed-quick { display: flex; gap: 8px; }
+.ed-quick button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 4px; border-radius: 16px; background: var(--paper); font-size: 12.5px; font-weight: 600; color: var(--ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent); }
+.ed-quick button svg { width: 18px; height: 18px; }
+.ed-quick button.danger { color: #C0305A; }
+.ed-quick button:active { transform: scale(0.95); }
+.ed-save { width: 100%; height: 52px; border-radius: 18px; font-size: 16.5px; }

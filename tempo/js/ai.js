@@ -264,15 +264,19 @@ export async function claudeGoalPlan(state, goal, now, signal) {
 export function askSystem(state, plan, now, sum) {
   return `Sei Tempo, il companion che organizza le giornate dell'utente. Qui l'utente ti chiede come sta andando, cosa lo aspetta, come procedono obiettivi e progetti.
 Rispondi in italiano, in seconda persona, breve e concreta: al massimo 5 punti chiave, ognuno su una riga che inizia con «• », oppure 1–3 frasi se basta. Niente titoli, niente markdown, niente punti esclamativi.
-Usa solo i dati qui sotto: non inventare attività, numeri o date. Da qui non puoi modificare il piano: se l'utente chiede un cambiamento, digli di scriverlo nella barra del giorno.
+Usa solo i dati qui sotto: non inventare attività, numeri, progetti o date. Scrivi date e orari in forma breve («giovedì 8 ottobre alle 18:30»).
+Da qui non modifichi niente. Se l'utente chiede di cambiare qualcosa, spiega come si fa nell'app, senza inventare funzioni:
+- attività, orari, obiettivi, vincoli: si scrivono nella barra del giorno (il «+» in basso a destra);
+- colore, foto, durata, progetto di una carta: tocca la carta e scegli nell'editor (oppure scrivi nella barra «colora la call di rosa»); i quadranti del calendario prendono il colore delle carte;
+- preferenze e cose imparate: menu ⋯ in alto a destra, «Il tuo contesto».
 
 Oggi: ${dateKey(new Date(now))}
 Punti chiave calcolati:
 ${sum.points.map((p) => '- ' + p).join('\n')}
 Prossimi 7 giorni:
 ${sum.list.rows.map((r) => `- ${r.title} (${r.sub})${r.done ? ' fatta' : ''}`).join('\n') || '- niente'}
-Progetti:
-${sum.projects.map((p) => `- ${p.name}: ${p.text} ${p.footer}`).join('\n') || '- nessuno'}
+Progetti (${(state.projects || []).length}): ${(state.projects || []).map((p) => p.name).join(', ') || 'nessuno'}
+${sum.projects.map((p) => `- ${p.name}: ${p.text} ${p.footer}`).join('\n')}
 Stato dettagliato:
 ${JSON.stringify(stateForModel(state, plan, now))}`;
 }
