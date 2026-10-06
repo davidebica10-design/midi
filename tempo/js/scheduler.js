@@ -47,6 +47,8 @@ export const DEFAULT_PREFS = {
   decompress: 45,    // minuti di "cena / decompressione" dopo una lunga giornata di lavoro
   availability: {},  // finestre speciali per giorno: { 'YYYY-MM-DD': { start, end } }
   projectDue: {},    // progetto → scadenza dell'obiettivo collegato
+  freeDays: [],      // giorni interamente liberi per i progetti
+  projectDayCap: null, // minuti massimi dello stesso progetto in un giorno (null = una sessione, due nei giorni liberi)
 };
 const remaining = (t) => Math.max(5, (t.duration || 30) - (t.spent || 0));
 
@@ -85,7 +87,8 @@ function score(t, day) {
 function windowOrder(t, prefs) {
   const order = [];
   if (t.window && WINDOWS[t.window]) order.push(WINDOWS[t.window]);
-  else if ((t.energy || 2) >= 3 && prefs.focusWindow && WINDOWS[prefs.focusWindow]) order.push(WINDOWS[prefs.focusWindow]);
+  // lavoro pesante e lavoro sui progetti: nella fascia in cui rendi di più
+  else if (((t.energy || 2) >= 3 || t.project) && prefs.focusWindow && WINDOWS[prefs.focusWindow]) order.push(WINDOWS[prefs.focusWindow]);
   order.push([0, 24 * 60]);
   return order;
 }
@@ -186,6 +189,10 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
   for (const b of blocks) placedEnd.set(b.id, b.end);
   const placedFlex = [];
   const used = new Set();
+  // un progetto non si mangia la giornata: una sessione al giorno, due quando la giornata è libera
+  const fullDay = !fixed.some((b) => b.item.kind === 'event' && b.end - b.start >= 240) || (P.freeDays || []).includes(weekday(day));
+  const projCap = P.projectDayCap || (fullDay ? 2 : 1) * Math.max(60, P.maxBlock || 120);
+  const projUsed = {};
 
   for (const t of cands) {
     let dur = remaining(t);
@@ -193,6 +200,7 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
     let left = 0;
     if (P.maxBlock > 0 && dur > P.maxBlock) { left = dur - P.maxBlock; dur = P.maxBlock; }
     const heavy = (t.energy || 2) >= 3;
+    if (t.project && !t.date && (projUsed[t.project] || 0) + dur > projCap) continue; // resta nel pool: domani
     // dipendenze
     let minStart = 0;
     let blockedBy = null;
@@ -244,6 +252,7 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
       const cont = { ...t, spent: (t.spent || 0) + dur, earliest: addDays(day, 1), date: null };
       if (i >= 0) pool.splice(i, 1, cont); else pool.push(cont);
     }
+    if (t.project) projUsed[t.project] = (projUsed[t.project] || 0) + dur;
     const b = { id: t.id, item: t, start: slot.s, end, type: 'flex', part: left > 0 ? left : 0, carried: !!(t.date && t.date < day) || (!t.date && day !== today && pool.includes(t)) };
     blocks.push(b);
     placedFlex.push(b);

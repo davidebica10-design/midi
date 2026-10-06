@@ -41,7 +41,6 @@ test('«Stasera 2 ore sul beat 02» senza attività esistente crea «Beat 02»',
 
 test('obiettivo «entro fine novembre»', () => {
   const s = freshState();
-  say(s, 'EP, portfolio');
   say(s, "Far uscire l'EP con MIDI entro fine novembre");
   const g = s.goals.find((x) => /EP con MIDI/.test(x.title));
   assert.ok(g, JSON.stringify(s.goals));
@@ -126,4 +125,44 @@ test('durate a parole', () => {
   assert.equal(parseDuration('circa 30 min'), 30);
   assert.equal(parseDuration("un'ora e mezza"), 90);
   assert.equal(parseDuration('mezz\'ora'), 30);
+});
+
+test('scadenze in tutte le forme', async () => {
+  const { parseDue } = await import('../js/parse.js');
+  const due = (t) => parseDue(t, TODAY)?.due;
+  assert.equal(due('entro fine novembre'), '2026-11-30');
+  assert.equal(due('tra 6 settimane'), '2026-11-17');
+  assert.equal(due('entro un mese'), '2026-11-06');
+  assert.equal(due('entro il 15/12'), '2026-12-15');
+  assert.equal(due('entro venerdì'), '2026-10-09');
+  assert.equal(due('a fine mese'), '2026-10-31');
+  assert.equal(due('per Natale'), '2026-12-25');
+  assert.equal(due('entro il 3 marzo'), '2027-03-03');
+});
+
+test('un\'attività con scadenza breve resta un\'attività, non un obiettivo', () => {
+  const s = freshState();
+  say(s, 'Consegnare la relazione entro venerdì');
+  assert.equal(s.goals.length, 0);
+  assert.equal(s.items[0].title, 'Consegnare la relazione');
+  assert.equal(s.items[0].deadline, '2026-10-09');
+});
+
+test('migrazione v1 → v2: le note strutturabili diventano preferenze, niente si perde', async () => {
+  const { migrate } = await import('../js/store.js');
+  const v1 = { items: [{ id: 'a', title: 'X', kind: 'task', status: 'todo', duration: 30 }], prefs: { offDays: [] }, memory: [{ id: 'm', text: 'La domenica voglio staccare', category: 'preferenza' }], chat: [], recurring: [] };
+  const s = migrate(v1, NOW);
+  assert.equal(s.schema, 2);
+  assert.deepEqual(s.prefs.offDays, [0]);
+  assert.equal(s.items.length, 1);
+  assert.equal(s.memory.length, 1);
+  assert.deepEqual(s.habits, []);
+});
+
+test('il punto dopo un orario chiude la frase («18:30. Sabato…»)', () => {
+  const s = freshState();
+  say(s, 'Lavoro 9–18:30. Sabato sono libero. Non voglio lavorare sulla musica ogni sera.');
+  assert.deepEqual(s.recurring[0].weekdays, [1, 2, 3, 4, 5]);
+  assert.ok(!s.prefs.offDays.includes(6));
+  assert.equal(s.memory.length, 3);
 });

@@ -1,7 +1,7 @@
 // Il companion: guarda il piano, il contesto e la storia e dice cosa fare adesso.
 // È deterministico (funziona anche senza AI); l'AI aggiunge solo il linguaggio naturale.
 import { fmtMin, dateKey, addDays, daysBetween, weekday, dayLabel } from './scheduler.js';
-import { projectOf, parseWeekdays, dueFromText } from './store.js';
+import { projectOf } from './store.js';
 
 const nowMinOf = (now) => { const d = new Date(now); return d.getHours() * 60 + d.getMinutes(); };
 const dur = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ' ' + (m % 60) + "'" : ''}` : `${m} minuti`);
@@ -156,40 +156,8 @@ export function nextSaturday(today) {
   return addDays(today, (6 - w + 7) % 7 || 0);
 }
 
-// ------------------------------------------------------------------
-// Presentazione iniziale: dal testo libero al contesto (senza AI)
-// ------------------------------------------------------------------
-const sentences = (t) => String(t || '').split(/[.\n;]+/).map((x) => x.trim()).filter(Boolean);
-
-export function contextOps(answers, today) {
-  const ops = [];
-  const projects = String(answers.projects || '').split(/[,\n;]|\se\s/).map((x) => x.trim().replace(/\.$/, '')).filter((x) => x && x.length < 40);
-  for (const pr of projects) ops.push({ action: 'add_project', title: pr });
-  for (const sct of sentences(answers.goals)) {
-    const pr = projects.find((x) => sct.toLowerCase().includes(x.toLowerCase()));
-    const gt = sct.replace(/\s*(tra|fra|entro)\s+\S+\s+(giorni|settimane|settimana|mesi|mese)\s*$/i, '').replace(/^(voglio|vorrei|devo|il mio obiettivo è|obiettivo:?)\s+/i, '');
-    ops.push({ action: 'set_goal', title: gt.charAt(0).toUpperCase() + gt.slice(1), note: sct, deadline: dueFromText(sct, today), project: pr || null });
-  }
-  for (const sct of sentences(answers.constraints)) {
-    const m = sct.toLowerCase().match(/lavor\w*\s+(?:dalle\s+)?(\d{1,2})(?:[:.](\d{2}))?\s*(?:–|-|—|alle|a|fino alle)\s*(\d{1,2})(?:[:.](\d{2}))?/);
-    if (m) {
-      ops.push({ action: 'add_recurring', title: 'Lavoro', start_time: `${m[1]}:${m[2] || '00'}`, end_time: `${m[3]}:${m[4] || '00'}`, weekdays: [1, 2, 3, 4, 5] });
-      continue;
-    }
-    ops.push({ action: 'remember', note: sct, category: 'vincolo' });
-  }
-  for (const sct of sentences(answers.prefs)) {
-    const l = sct.toLowerCase();
-    if (/(sera|notte)/.test(l) && /(meglio|rendo|produco|concentr)/.test(l)) ops.push({ action: 'set_pref', pref_key: 'focus_window', pref_value: 'sera' });
-    else if (/mattin/.test(l) && /(meglio|rendo|produco|concentr)/.test(l)) ops.push({ action: 'set_pref', pref_key: 'focus_window', pref_value: 'mattina' });
-    const h = l.match(/(\d+(?:[.,]\d+)?)\s*(?:h|ore|ora)\b/);
-    if (h && /(consecutiv|di fila|più di|massimo|max)/.test(l)) ops.push({ action: 'set_pref', pref_key: 'max_block_min', pref_value: String(Math.round(parseFloat(h[1].replace(',', '.')) * 60)) });
-    const days = parseWeekdays(l);
-    if (days.length && /(stacc|riposo|liber|non lavor|off)/.test(l)) ops.push({ action: 'set_pref', pref_key: 'off_days', pref_value: days.join(',') });
-    ops.push({ action: 'remember', note: sct, category: 'preferenza' });
-  }
-  return ops;
-}
+// Presentazione iniziale: dal testo libero al contesto (senza AI) → parse.js
+export { contextOps } from './parse.js';
 
 // ------------------------------------------------------------------
 // Per l'AI: chi è l'utente e come deve parlare il companion
