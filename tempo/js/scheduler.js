@@ -100,7 +100,7 @@ export function recurringFor(day, recurring = []) {
     .filter((r) => (r.weekdays || []).includes(wd) && !(r.skip || []).includes(day))
     .map((r) => ({
       id: `rec:${r.id}:${day}`, recId: r.id, title: r.title, kind: 'event', date: day,
-      start: r.start, duration: r.end - r.start, priority: 2, energy: 2, status: 'todo', recurring: true,
+      start: r.start, duration: r.end - r.start, priority: 2, energy: 2, status: 'todo', recurring: true, color: r.color || null,
     }));
 }
 

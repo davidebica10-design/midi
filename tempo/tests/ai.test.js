@@ -92,3 +92,20 @@ test('timeout: oltre il tempo massimo la richiesta viene annullata', async () =>
   );
   assert.ok(aborted);
 });
+
+test('AI: un messaggio che comincia con un comando ma dice più cose va al modello, con il calendario', async () => {
+  const s = freshState();
+  applyOps(s, [{ action: 'add', kind: 'task', title: 'Spesa', duration_min: 30 }], NOW);
+  online(s);
+  let sent = null;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'models/gemini-2.5-flash' }] }), { status: 200 });
+    sent = JSON.parse(init.body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: 'Fatto.', ops: [], requires_confirmation: false }) } }] }), { status: 200 });
+  };
+  await runOpenTurn({ state: s, plan: planDays(s, NOW, 2), now: NOW, userText: 'Ho finito la spesa e giovedì ho il dentista alle 15:30', chat: [] });
+  assert.ok(sent, 'il modello deve essere chiamato');
+  const all = sent.messages.map((m) => m.content).join('\n');
+  assert.match(all, /2026-10-08 = giovedì/);
+  assert.match(all, /fai un'operazione per ognuna/);
+});

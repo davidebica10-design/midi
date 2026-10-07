@@ -473,7 +473,7 @@ const projMark = (p) => p ? `<span class="pc-mark" style="--pc:${safeColor(p.col
 function cardHtml(c, i) {
   const st = `--r:${c.r ?? 0}deg;--i:${i}`;
   if (c.type === 'rest') {
-    return `<div class="pc rest" style="${st}" aria-label="${esc(`${c.title}, dalle ${c.start} alle ${c.end}`)}">
+    return `<div class="pc rest" role="button" tabindex="0" data-rest="1" style="${st}" aria-label="${esc(`${c.title}, dalle ${c.start} alle ${c.end}. Cambia la pausa`)}">
       <div class="pc-body"><div class="pc-title">${esc(c.title)}</div><div class="pc-desc">${c.start} – ${c.end}</div></div>
       <div class="pc-label">${esc(c.note)}</div></div>`;
   }
@@ -559,7 +559,9 @@ function renderDayView(animate) {
     const a = v.now;
     const act = a.action ? `<button class="adv-go" data-adv="${a.action.type}" data-id="${esc(a.action.id)}">${a.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(a.action.label)}</span></button>` : '';
     const blk = a.block ? `<div class="pc-progress" role="progressbar" aria-valuenow="${a.block.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.block.title)}"><i style="--w:${a.block.pct}%"></i></div><div class="pc-desc">${esc(a.block.title)} · fino alle ${a.block.until} · ${a.block.left} rimasti</div>` : '';
-    put(`<div class="pc quote adv mood-${a.mood}" style="--r:-2deg;--i:0" aria-live="polite">
+    const nowId = a.block?.kind === 'rest' ? null : a.block?.itemId || a.block?.id || a.action?.id || null;
+    const open = nowId ? ` role="button" tabindex="0" data-item="${esc(nowId)}"` : a.block?.kind === 'rest' ? ' role="button" tabindex="0" data-rest="1"' : '';
+    put(`<div class="pc quote adv mood-${a.mood}"${open} style="--r:-2deg;--i:0" aria-live="polite">
       <div class="pc-body"><div class="pc-quote">${esc(a.title)}</div>${a.why ? `<div class="pc-desc">${esc(a.why)}</div>` : ''}${blk}${act}</div>
       <div class="pc-label">Adesso</div></div>`);
   }
@@ -667,8 +669,12 @@ function bindSwipes() {
 
   // scheda: trascinala giù per chiuderla (dalla maniglia o dall'anteprima della carta)
   const sh = $('#sheet');
+  // tirata giù quando è già in cima: niente rimbalzo di iOS, la scheda segue il dito
+  let shY = null;
+  sh.addEventListener('touchstart', (e) => { shY = e.touches.length === 1 && sh.scrollTop <= 0 && !e.target.closest('input, .chips-x') ? e.touches[0].clientY : null; }, { passive: true });
+  sh.addEventListener('touchmove', (e) => { if (shY != null && e.touches[0].clientY > shY && sh.scrollTop <= 0 && e.cancelable) e.preventDefault(); }, { passive: false });
   track(sh, {
-    start: (e) => !!e.target.closest('.grabber, .ed-card, #sheet-title') && !e.target.closest('textarea'),
+    start: (e) => sh.scrollTop <= 0 && !e.target.closest('input, .chips-x'),
     move: (e, dx, dy, dir) => { if (dir === 'v' && dy > 0) { e.preventDefault(); sh.style.transition = 'none'; sh.style.transform = `translateY(${dy}px)`; } },
     end: (dx, dy, dir, ms) => { sh.style.transition = ''; sh.style.transform = ''; if (dir === 'v' && (dy > 110 || (dy > 40 && dy / ms > 0.6))) closeSheet(); },
   });
@@ -927,22 +933,8 @@ async function onPhotoPicked(file) {
 function openSheet(id, preset = {}, keepPhoto = false) {
   if (!keepPhoto) sheetPhoto = null;
   closePlus();
-  if (id && String(id).startsWith('rec:')) {
-    const [, recId, day] = String(id).split(':');
-    const r = state.recurring.find((x) => x.id === recId);
-    if (!r) return;
-    $('#sheet-form').innerHTML = `
-      <h2 id="sheet-title">${esc(r.title)}</h2>
-      <div class="card"><div class="row"><span class="lbl">Orario</span><span>${fmtMin(r.start)}–${fmtMin(r.end)}</span></div>
-      <div class="row"><span class="lbl">Giorni</span><span>${r.weekdays.map((d) => ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'][d]).join(' ')}</span></div></div>
-      <div class="sheet-actions">
-        <button type="button" class="btn" data-sheet="skip" data-rec="${esc(r.id)}" data-day="${esc(day)}">Salta solo ${esc(dayLabel(day, today()))}</button>
-        <button type="button" class="btn danger" data-sheet="delrec" data-rec="${esc(r.id)}">Elimina ricorrenza</button>
-        <button type="button" class="btn full" data-sheet="close">Chiudi</button>
-      </div>`;
-    showSheet();
-    return;
-  }
+  if (id && String(id).startsWith('rec:')) { openRecSheet(id); return; }
+  sheetMode = 'item';
   const it = id ? state.items.find((x) => x.id === id) : null;
   const isNew = !it;
   const v = it || { title: '', kind: 'task', date: selDay, start: null, duration: 45, priority: 2, energy: 2, window: null, deadline: null, status: 'todo', project: null, color: null, ...preset };
@@ -996,6 +988,86 @@ function openSheet(id, preset = {}, keepPhoto = false) {
   renderEditor();
   showSheet();
   if (isNew && !keepPhoto) setTimeout(() => $('#sheet-form .ed-title').focus(), 300);
+}
+
+// ---- impegno ricorrente: si modifica come una carta (titolo, orario, giorni, colore)
+let sheetMode = 'item', red = null;
+const WD_SHORT = ['L', 'M', 'M', 'G', 'V', 'S', 'D'], WD_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const WD_FULL = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+function openRecSheet(id) {
+  const [, recId, day] = String(id).split(':');
+  const r = state.recurring.find((x) => x.id === recId);
+  if (!r) return;
+  sheetMode = 'rec';
+  ed = null;
+  red = { id: r.id, day, title: r.title, start: r.start, end: r.end, weekdays: [...r.weekdays], color: r.color || null };
+  const colors = [['', 'Carta'], ['rose', 'Rosa'], ['lilac', 'Lilla'], ['sage', 'Salvia'], ['sand', 'Sabbia'], ['sky', 'Cielo']];
+  $('#sheet-form').innerHTML = `
+    <h2 id="sheet-title" class="sr-only">Impegno di ogni settimana</h2>
+    <div class="ed-card event" id="ed-card">
+      <textarea class="ed-title" name="title" rows="2" aria-label="Titolo" maxlength="80">${esc(r.title)}</textarea>
+      <div class="ed-sub" id="ed-sub"></div>
+      <div class="ed-foot"><span>Ogni settimana</span></div>
+    </div>
+    <div class="ed-colors" role="radiogroup" aria-label="Colore della carta">
+      ${colors.map(([c, l]) => `<button type="button" class="sw" data-rc="${c}" data-c="${c}" role="radio" aria-label="${l}"></button>`).join('')}
+    </div>
+    <section class="ed-row"><span class="ed-k">Orario</span><div class="chips-x">
+      <label class="ch ch-in on"><span id="rec-start-l"></span><input type="time" id="rec-start" aria-label="Inizio"></label>
+      <label class="ch ch-in on"><span id="rec-end-l"></span><input type="time" id="rec-end" aria-label="Fine"></label>
+    </div></section>
+    <section class="ed-row"><span class="ed-k">Giorni</span><div class="chips-x days">
+      ${WD_ORDER.map((d) => `<button type="button" class="ch day" data-rd="${d}" aria-label="${WD_FULL[d]}">${WD_SHORT[WD_ORDER.indexOf(d)]}</button>`).join('')}
+    </div></section>
+    <div class="ed-actions">
+      <div class="ed-quick">
+        <button type="button" data-sheet="skip" data-rec="${esc(r.id)}" data-day="${esc(day)}"><i class="ic ic-next" aria-hidden="true"></i>Salta ${esc(dayLabel(day, today()))}</button>
+        <button type="button" data-sheet="delrec" data-rec="${esc(r.id)}" class="danger"><i class="ic ic-x" aria-hidden="true"></i>Elimina</button>
+      </div>
+      <button type="submit" class="btn primary ed-save">Salva</button>
+    </div>`;
+  $('#sheet-form').dataset.id = '';
+  renderRec();
+  showSheet();
+}
+function renderRec() {
+  if (!red) return;
+  const f = $('#sheet-form');
+  for (const b of f.querySelectorAll('[data-rc]')) { const on = (red.color || '') === b.dataset.rc; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); }
+  for (const b of f.querySelectorAll('[data-rd]')) { const on = red.weekdays.includes(+b.dataset.rd); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); }
+  $('#rec-start').value = fmtMin(red.start); $('#rec-end').value = fmtMin(red.end);
+  $('#rec-start-l').textContent = 'Dalle ' + fmtMin(red.start); $('#rec-end-l').textContent = 'alle ' + fmtMin(red.end);
+  $('#ed-card').dataset.c = red.color || '';
+  const days = WD_ORDER.filter((d) => red.weekdays.includes(d));
+  const dl = days.length === 7 ? 'Tutti i giorni' : days.join() === '1,2,3,4,5' ? 'Dal lunedì al venerdì' : days.map((d) => WD_FULL[d]).join(', ');
+  $('#ed-sub').textContent = `${cap(dl || 'nessun giorno')} · ${fmtMin(red.start)}–${fmtMin(red.end)}`;
+}
+function saveRec() {
+  const title = $('#sheet-form').title.value.trim().slice(0, 80);
+  if (!title) { toast('Serve un titolo'); return; }
+  if (!red.weekdays.length) { toast('Scegli almeno un giorno'); return; }
+  if (red.end <= red.start) { toast('La fine deve venire dopo l\'inizio'); return; }
+  const r = red;
+  commit('Impegno ricorrente', () => { applyOps(state, [{ action: 'update_recurring', id: r.id, title, start_time: fmtMin(r.start), end_time: fmtMin(r.end), weekdays: r.weekdays, color: r.color }]); });
+  closeSheet();
+  toastUndo('Salvato: vale per tutte le settimane');
+}
+
+// ---- la pausa dopo il lavoro: quanto dura (o niente)
+function openRestSheet() {
+  sheetMode = 'rest';
+  ed = null; red = null;
+  const cur = state.prefs.decompress ?? 45;
+  $('#sheet-form').innerHTML = `
+    <h2 id="sheet-title" class="sr-only">Pausa dopo il lavoro</h2>
+    <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">Cena / decompressione</div>
+      <div class="ed-sub">Dopo il lavoro tengo libero questo tempo prima delle attività.</div><div class="ed-foot"><span>Pausa</span></div></div>
+    <section class="ed-row"><span class="ed-k">Quanto dura</span><div class="chips-x">
+      ${[0, 15, 30, 45, 60, 90].map((m) => `<button type="button" class="ch${m === cur ? ' on' : ''}" data-dec="${m}" aria-pressed="${m === cur}">${m ? durLabel(m) : 'Niente pausa'}</button>`).join('')}
+    </div></section>
+    <div class="ed-actions"><button type="button" class="btn ed-save" data-sheet="close">Chiudi</button></div>`;
+  $('#sheet-form').dataset.id = '';
+  showSheet();
 }
 
 /** Aggiorna anteprima e scelte dell'editor senza ridisegnarlo (il fuoco resta dov'è). */
@@ -1576,10 +1648,12 @@ function bind() {
     if (ad) { e.stopPropagation(); quickOp(ad.dataset.adv, ad.dataset.id); return; }
     const br = e.target.closest('[data-brief]');
     if (br) { e.stopPropagation(); briefAction(br.dataset.brief, br.dataset.arg); return; }
+    if (e.target.closest('[data-rest]')) { openRestSheet(); return; }
     const c = e.target.closest('[data-item]');
     if (c && !/^rest:/.test(c.dataset.item)) openSheet(c.dataset.item);
   });
   col.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.rest) { e.preventDefault(); openRestSheet(); return; }
     if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.item && !/^rest:/.test(e.target.dataset.item)) { e.preventDefault(); openSheet(e.target.dataset.item); }
   });
 
@@ -1652,7 +1726,7 @@ function bind() {
 
   // scheda
   $('#sheet-backdrop').addEventListener('click', closeSheet);
-  $('#sheet-form').addEventListener('submit', (e) => { e.preventDefault(); sheetSave(); });
+  $('#sheet-form').addEventListener('submit', (e) => { e.preventDefault(); if (sheetMode === 'rec') saveRec(); else if (sheetMode === 'item') sheetSave(); });
   $('#sheet-form').addEventListener('change', (e) => {
     if (!ed) return;
     const id = e.target.id;
@@ -1661,12 +1735,33 @@ function bind() {
     if (id === 'ed-dl') ed.deadline = e.target.value || null;
     renderEditor();
   });
+  $('#sheet-form').addEventListener('change', (e) => {
+    if (sheetMode !== 'rec' || !red) return;
+    const m = parseHM(e.target.value);
+    if (e.target.id === 'rec-start' && m != null) { const len = red.end - red.start; red.start = m; if (red.end <= m) red.end = Math.min(24 * 60 - 1, m + Math.max(30, len)); }
+    if (e.target.id === 'rec-end' && m != null) red.end = m;
+    renderRec();
+  });
   $('#sheet-form').addEventListener('click', (e) => {
     const ph = e.target.closest('[data-photo]');
     if (ph) {
       e.preventDefault();
       if (ph.dataset.photo === 'remove') { e.stopPropagation(); sheetPhoto = { remove: true }; renderEditor(); }
       else pickPhoto('sheet');
+      return;
+    }
+    // impegno ricorrente: colore e giorni
+    const rc = e.target.closest('[data-rc]');
+    if (rc && red) { red.color = rc.dataset.rc || null; renderRec(); return; }
+    const rd = e.target.closest('[data-rd]');
+    if (rd && red) { const d = +rd.dataset.rd; red.weekdays = red.weekdays.includes(d) ? red.weekdays.filter((x) => x !== d) : [...red.weekdays, d]; renderRec(); return; }
+    // pausa dopo il lavoro
+    const dec = e.target.closest('[data-dec]');
+    if (dec) {
+      const v = +dec.dataset.dec;
+      commit('Pausa dopo il lavoro', () => { applyOps(state, [{ action: 'set_pref', pref_key: 'decompress_min', pref_value: String(v) }]); });
+      closeSheet();
+      toastUndo(v ? `Pausa di ${durLabel(v)} dopo il lavoro` : 'Niente pausa dopo il lavoro');
       return;
     }
     // editor: una scelta = un tocco

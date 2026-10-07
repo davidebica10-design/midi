@@ -96,7 +96,6 @@ export function today(ctx) {
     prev = b;
     if (b === cur) continue;
     out.cards.push(cardOf(state, b));
-    if (b === lastTask && b.end >= 17 * 60 && (!isToday || b.end > n)) out.cards.push({ type: 'stop', at: fmtMin(b.end), text: 'Stop. Hai fatto abbastanza.' });
   }
   for (const u of p.unscheduled) out.cards.push({ type: 'unscheduled', id: u.item.id, title: u.item.title, minutes: u.item.duration, reason: u.reason, moveTo: isToday ? 'domani' : 'giorno dopo' });
   const name = (id) => (state.items.find((x) => x.id === id) || {}).title || 'ricorrente';

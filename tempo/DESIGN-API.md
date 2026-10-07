@@ -48,7 +48,6 @@ Il blocco in corso **non** compare anche fra le `cards`.
 | `event` | `id, itemId (null se ricorrente), title, start, end, recurring, image, color, project` |
 | `rest` | `id, title` («Cena / decompressione»), `start, end, note` («Stacca dal lavoro») |
 | `pause` | `at, minutes` («20:00 · pausa 15'») |
-| `stop` | `at, text` («Stop. Hai fatto abbastanza.») |
 | `missed` | `id, title, start, minutes`: domanda «Hai fatto…?» con Sì / In parte / No |
 | `unscheduled` | `id, title, minutes, reason, moveTo` («domani» / «giorno dopo») |
 | `conflict` | `id, a, b` (titoli) |
@@ -154,6 +153,8 @@ Le carte colorate hanno una sfumatura (tinta chiara → tinta più profonda); se
 
 Ogni attività o impegno può avere `color`: `rose`, `lilac`, `sage`, `sand`, `sky` oppure `null` (carta normale). Il colore vale per la carta del giorno, per l'anteprima nell'editor e per il quadrante del calendario (`month().cells[].pick.color`); il quadrante ha anche una riga sotto nel colore del progetto. Si sceglie toccando la carta oppure scrivendo nella barra «colora la call di rosa».
 
+Tutte le carte si aprono: le attività e gli impegni nell'editor, gli impegni di ogni settimana (il lavoro) in un editor con titolo, orario, giorni e colore (vale per tutte le settimane, con «Salta oggi»), la carta «Cena / decompressione» nella scelta di quanto dura la pausa dopo il lavoro, la carta «Adesso» nell'attività di cui parla.
+
 L'editor (si apre toccando una carta) mostra la carta stessa in anteprima dal vivo, con il titolo modificabile dentro. Sotto ci sono il colore (e la foto), Quando, Ora, Durata e Progetto come scelte da toccare; Tipo, Importanza, Energia, Fascia e Scadenza stanno in «Altro». In fondo ci sono Fatto, Inizia, Domani, Elimina e il pulsante Salva fisso.
 
 ## Gesti
@@ -164,7 +165,7 @@ L'editor (si apre toccando una carta) mostra la carta stessa in anteprima dal vi
 | Pizzico verso l'esterno | calendario | il giorno sotto le dita (o quello di prima) |
 | Tocco su un giorno | calendario | apre quel giorno |
 | Scorri a sinistra / destra | giorno | giorno dopo / giorno prima |
-| Trascina giù | editor (maniglia o anteprima) | chiude senza salvare |
+| Trascina giù | editor, quando è in cima | chiude senza salvare (niente rimbalzo) |
 | Dal bordo sinistro verso destra | riepilogo | torna al calendario |
 | Tocco sul «+» | giorno | apre la barra per parlare con Tempo |
 | Tocco su «Riepilogo» | calendario | apre il riepilogo |

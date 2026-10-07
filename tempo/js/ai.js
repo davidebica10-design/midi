@@ -14,6 +14,37 @@ export const MODELS = [
   { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — il più economico' },
 ];
 
+const WD_LONG = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+/**
+ * I prossimi giorni con la loro data: i modelli sbagliano spesso i conti sul calendario,
+ * così non devono farli («giovedì» = la riga del giovedì).
+ */
+export function calendarLines(now, n = 15) {
+  const today = dateKey(new Date(now));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const k = addDays(today, i);
+    const [y, m, d] = k.split('-').map(Number);
+    const wd = WD_LONG[new Date(y, m - 1, d).getDay()];
+    out.push(`${k} = ${wd}${i === 0 ? ' (oggi)' : i === 1 ? ' (domani)' : i === 2 ? ' (dopodomani)' : i < 7 ? '' : ' (settimana prossima)'}`);
+  }
+  return out;
+}
+
+/** Regole comuni per capire i messaggi (Claude e modelli open). */
+export const UNDERSTANDING_RULES = `Come capire i messaggi
+- Un messaggio può dire più cose insieme («ho finito la spesa, sposta il beat a domani e aggiungi la lavatrice»): fai un'operazione per ognuna, senza perderne nessuna.
+- Le date le prendi dal CALENDARIO: «giovedì» = il prossimo giovedì dell'elenco, «lunedì prossimo» = il lunedì della settimana prossima. Non calcolare le date a mente.
+- «il martedì», «ogni martedì», «tutti i martedì» con un orario = impegno di ogni settimana (add_recurring con weekdays, 0=domenica … 6=sabato). Senza orario e con una frequenza = abitudine (add_habit).
+- Una scadenza («entro venerdì», «venerdì devo consegnare») va in "deadline", non in "date": l'attività la fa il motore prima della scadenza.
+- Se l'attività esiste già nell'elenco (anche con parole diverse: «il beat» = «Beat 02»), usa update/move/complete/delete con il suo id: non crearne una nuova.
+- «Ho fatto 40 minuti di X» = progress; «ho finito X» = complete; «non ho fatto X» = skip; «ho fatto metà di X» = progress con metà dei minuti.
+- «La riunione è stata spostata alle 11» = update di start_time dell'impegno. «Anticipa/posticipa di 30 minuti» = update di start_time.
+- «Oggi sono libero solo dalle 15 alle 19» = set_availability. «Mercoledì non ci sono» = event «Non disponibile» dall'inizio alla fine della giornata.
+- «Mi sveglio alle 7», «vado a dormire a mezzanotte» = set_pref day_start / day_end.
+- Commenti senza niente da fare («questa settimana è un casino») non diventano attività.
+- Titoli brevi e puliti, come li scriveresti in un'agenda: «Dentista», «Esame di analisi», «Chiamare mamma» (mai «Giovedì ho il dentista»).`;
+
 const SYSTEM = `Rispondi sempre in italiano, in modo breve e concreto (1–4 frasi), come una persona di fiducia, non come un software.
 
 ${COMPANION_RULES}
@@ -47,10 +78,13 @@ Regole
 - Non dire che una giornata è fattibile se il tempo non basta: preferisci un piano realistico e proponi cosa rimandare.
 - Per modifiche importanti (spostare o cancellare impegni fissi, cancellare attività, svuotare la serata) imposta requires_confirmation=true: l'utente vedrà le modifiche e deciderà se applicarle.
 - Domande come "cosa riesco a fare oggi?" o "cosa posso rimandare?": rispondi leggendo il piano nello stato, senza modificare nulla (o proponendo modifiche con requires_confirmation=true).
-- Le date sono nel formato YYYY-MM-DD, gli orari HH:MM (24h).
+- Le date sono nel formato YYYY-MM-DD, gli orari HH:MM (24h). Per i giorni usa il campo "calendario" dello stato.
+
+${UNDERSTANDING_RULES}
 - Non elencare di nuovo tutta la timeline: l'utente la vede già. Cita solo ciò che conta.`;
 
 const N = (t) => ({ type: [t, 'null'] });
+
 const OP_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -137,6 +171,7 @@ export function stateForModel(state, plan, now) {
   return {
     adesso: `${WD[d.getDay()]} ${today} ore ${fmtMin(nowMin)}`,
     oggi: today, domani: addDays(today, 1),
+    calendario: calendarLines(now),
     preferenze: {
       inizio_giornata: fmtMin(state.prefs.dayStart), fine_giornata: fmtMin(state.prefs.dayEnd),
       pausa_tra_attivita_min: state.prefs.buffer, margine_imprevisti_percento: Math.round(state.prefs.slack * 100),

@@ -2,7 +2,7 @@
 // compatibile con l'API OpenAI (Google Gemini, OpenRouter, Groq, …).
 // I modelli piccoli non usano strumenti: rispondono con un JSON che il codice valida.
 import { fmtMin, dateKey, addDays } from './scheduler.js';
-import { localParse, goalPlanPrompt } from './ai.js';
+import { localParse, goalPlanPrompt, calendarLines, UNDERSTANDING_RULES } from './ai.js';
 import { sanitizeOps } from './store.js';
 import { COMPANION_RULES, companionContext } from './companion.js';
 
@@ -81,7 +81,9 @@ function systemPrompt(now, full) {
   return `Sei il companion personale dell'utente: costruisci le sue giornate in base ai suoi obiettivi. Rispondi SOLO con un oggetto JSON, senza altro testo:
 {"reply": "risposta breve in italiano", "ops": [ ... ], "requires_confirmation": false}
 
-Adesso è ${WD[d.getDay()]} ${today}, ore ${fmtMin(d.getHours() * 60 + d.getMinutes())}. Domani è ${addDays(today, 1)}.
+Adesso è ${WD[d.getDay()]} ${today}, ore ${fmtMin(d.getHours() * 60 + d.getMinutes())}.
+CALENDARIO (usa queste date, non calcolarle):
+${calendarLines(now).join('\n')}
 
 Operazioni possibili in "ops" (metti solo i campi che servono):
 - Nuova attività flessibile (l'orario lo sceglie l'app): {"action":"add","kind":"task","title":"Spesa","duration_min":30,"priority":2,"energy":1}
@@ -89,7 +91,7 @@ Operazioni possibili in "ops" (metti solo i campi che servono):
 - Nuovo impegno fisso con orario: {"action":"add","kind":"event","title":"Call","date":"${addDays(today, 1)}","start_time":"16:00","end_time":"17:00"}
 - Attività finita: {"action":"complete","id":"ID"}
 - Spostare: {"action":"move","id":"ID","date":"YYYY-MM-DD"}
-- Modificare: {"action":"update","id":"ID","duration_min":120} oppure "priority":3, "start_time":"HH:MM"
+- Modificare: {"action":"update","id":"ID","duration_min":120} oppure "priority":3, "start_time":"HH:MM", "end_time":"HH:MM", "deadline":"YYYY-MM-DD", "window":"sera", "title":"nuovo titolo"
 - Non ancora iniziata: {"action":"reopen","id":"ID"}
 - Eliminare: {"action":"delete","id":"ID"}
 - Ricordare una preferenza o un vincolo: {"action":"remember","note":"testo","category":"preferenza"|"vincolo"}
@@ -99,6 +101,8 @@ Operazioni possibili in "ops" (metti solo i campi che servono):
 - Disponibilità di un giorno: {"action":"set_availability","date":"YYYY-MM-DD","start_time":"19:00","end_time":"21:00"}
 - Preferenze: {"action":"set_pref","pref_key":"max_block_min"|"focus_window"|"off_days"|"decompress_min","pref_value":"120"}
 - Impegno ricorrente: {"action":"add_recurring","title":"Lavoro","start_time":"09:00","end_time":"18:30","weekdays":[1,2,3,4,5]}
+- Saltare un impegno ricorrente un giorno: {"action":"remove_recurring","id":"ID_RICORRENTE","date":"YYYY-MM-DD"}
+- Attività con scadenza: {"action":"add","kind":"task","title":"Consegnare la relazione","duration_min":240,"deadline":"YYYY-MM-DD"}
 - Piano di un obiettivo (subito dopo set_goal): {"action":"plan_goal","title":"Far uscire l'EP","sessions":[{"key":"s1","title":"Beat 01","duration_min":120,"energy":3,"after":[]}]} (massimo 30 sessioni; senza "sessions" uso un modello)
 - Abitudine: {"action":"add_habit","title":"Palestra","pref_value":"3","duration_min":60}
 - Colore di una carta: {"action":"update","id":"ID","color":"rose"|"lilac"|"sage"|"sand"|"sky"} (null = colore normale)
@@ -109,7 +113,13 @@ Regole:
 - Usa gli ID dell'elenco attività. Non inventare impegni. Se manca un orario necessario, chiedilo in "reply" con "ops": [].
 - "Lavoro fino alle 18:30" = impegno fisso da adesso alle 18:30. "Sono in ritardo di un'ora" = impegno fisso "Ritardo" di 60 minuti da adesso.
 - Per eliminare cose o spostare impegni fissi metti "requires_confirmation": true.
-- Per domande ("che faccio?") rispondi con UNA azione concreta adatta al tempo che resta e cosa non iniziare, con "ops": [].${full ? '\n\n' + COMPANION_RULES : ''}`;
+- Per domande ("che faccio?") rispondi con UNA azione concreta adatta al tempo che resta e cosa non iniziare, con "ops": [].
+- "reply" dice in breve cosa hai fatto, senza elencare di nuovo tutto.
+
+${UNDERSTANDING_RULES}
+
+Esempio. Messaggio: «giovedì ho il dentista alle 15:30, venerdì devo consegnare la relazione e mi servono ancora 4 ore, ho finito la spesa»
+{"reply":"Ho messo il dentista giovedì alle 15:30, 4 ore per la relazione prima di venerdì e segnato la spesa come fatta.","ops":[{"action":"add","kind":"event","title":"Dentista","date":"(data del giovedì dal CALENDARIO)","start_time":"15:30","end_time":"16:30"},{"action":"update","id":"(id di Relazione)","duration_min":240,"deadline":"(data del venerdì)"},{"action":"complete","id":"(id di Spesa)"}],"requires_confirmation":false}${full ? '\n\n' + COMPANION_RULES : ''}`;
 }
 
 function compactState(state, plan, now) {
@@ -129,6 +139,8 @@ function compactState(state, plan, now) {
     if (p.deferred?.length) lines.push(`SLITTA: ${p.deferred.map((t) => t.title).join(', ')}`);
     lines.push(`Tempo libero ${label.toLowerCase()}: ${p.free} min`);
   }
+  if (state.recurring?.length) lines.push('RICORRENTI (id | titolo | orario | giorni 0=dom): ' + state.recurring.map((r) => `${r.id} | ${r.title} | ${fmtMin(r.start)}-${fmtMin(r.end)} | ${r.weekdays.join(',')}`).join('; '));
+  if (state.prefs?.availability && Object.keys(state.prefs.availability).length) lines.push('DISPONIBILITÀ SPECIALI: ' + Object.entries(state.prefs.availability).map(([d, a]) => `${d} ${a.start != null ? fmtMin(a.start) : ''}-${a.end != null ? fmtMin(a.end) : ''}`).join('; '));
   if (state.memory.length) lines.push('MEMORIA: ' + state.memory.map((m) => (m.category ? `[${m.category}] ` : '') + m.text).join('; '));
   const c = companionContext(state, plan, now);
   if (c.obiettivi.length) lines.push('OBIETTIVI: ' + c.obiettivi.join('; '));
@@ -139,17 +151,14 @@ function compactState(state, plan, now) {
   return lines.join('\n');
 }
 
-function history(chat, n) {
-  const out = [];
+function recent(chat, n) {
+  const lines = [];
   for (const m of chat.slice(-n)) {
     if (m.pending || m.error || !m.text) continue;
-    const role = m.role === 'user' ? 'user' : 'assistant';
-    const content = role === 'assistant' ? JSON.stringify({ reply: m.text, ops: [] }) : m.text;
-    if (out.length && out[out.length - 1].role === role) continue;
-    out.push({ role, content });
+    if (m.role === 'user') lines.push(`Utente: ${m.text}`);
+    else lines.push(`Tempo: ${m.text}${m.changes?.length ? ` [modifiche ${m.applied === false ? 'non applicate' : 'fatte'}: ${m.changes.slice(0, 6).join('; ')}]` : ''}`);
   }
-  while (out.length && out[0].role !== 'user') out.shift();
-  return out;
+  return lines.length ? 'CONVERSAZIONE RECENTE (per capire a cosa si riferisce il messaggio; è già tutto applicato):\n' + lines.join('\n') + '\n\n' : '';
 }
 
 const REPLY_SCHEMA = {
@@ -161,7 +170,7 @@ const REPLY_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'progress', 'skip', 'set_goal', 'plan_goal', 'add_project', 'set_availability', 'set_pref', 'add_recurring', 'add_habit'] },
+          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'progress', 'skip', 'set_goal', 'plan_goal', 'add_project', 'set_availability', 'set_pref', 'add_recurring', 'remove_recurring', 'add_habit'] },
           id: { type: 'string' },
           title: { type: 'string' },
           kind: { type: 'string', enum: ['task', 'event'] },
@@ -234,18 +243,16 @@ export const preloadLocal = (model, onProgress) => getEngine(model, onProgress);
  * onProgress(frazione, testo) viene chiamato durante il primo download del modello locale.
  */
 export async function runOpenTurn({ state, plan, now, userText, onProgress, signal, chat = [] }) {
-  // comandi semplici: li gestisce il codice, più veloce e affidabile di un modello piccolo
-  const quick = localParse(userText, state, now);
-  if (quick.ops?.length && quick.ops.every((o) => (o.action !== 'add' || o.title === 'Ritardo') && o.action !== 'set_goal')) {
-    return { text: quick.reply, ops: quick.ops, confirm: !!quick.confirm };
-  }
+  // un solo comando semplice («ho finito la spesa», «la domenica stacco»): lo gestisce il codice, più veloce e sicuro.
+  // Tutto il resto, anche quando comincia con un comando, va all'AI: il messaggio può dire più cose.
+  const quick = localParse(userText.replace(/^\[[^\]]*\]\s*/, ''), state, now);
+  if (quick.simple && quick.ops?.length) return { text: quick.reply, ops: quick.ops, confirm: !!quick.confirm };
 
   const S = state.settings;
   const isLocal = S.provider === 'local';
   const messages = [
     { role: 'system', content: systemPrompt(now, !isLocal) },
-    ...history(chat, isLocal ? 4 : 10),
-    { role: 'user', content: `${compactState(state, plan, now)}\n\nMESSAGGIO DELL'UTENTE: ${userText}` },
+    { role: 'user', content: `${compactState(state, plan, now)}\n\n${recent(chat, isLocal ? 4 : 10)}MESSAGGIO DELL'UTENTE: ${userText}` },
   ];
 
   let content;

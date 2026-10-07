@@ -74,7 +74,7 @@ export function sanitizeState(s) {
   s.goals = ids(s.goals).map((g) => ({ ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId) }));
   s.habits = ids(s.habits).map((h) => ({ ...h, title: str(h.title, 60), perWeek: num(h.perWeek, 1, 7, 1), duration: num(h.duration, 10, 240, 60), project: safeId(h.project), goalId: safeId(h.goalId), window: WINDOWS[h.window] ? h.window : null }));
   s.memory = ids(s.memory).map((m) => ({ ...m, text: str(m.text, 200), category: ['vincolo', 'preferenza', 'obiettivo', 'nota'].includes(m.category) ? m.category : 'nota' }));
-  s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate) }));
+  s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate), color: cardColor(r.color) }));
   s.chat = arr(s.chat).filter((m) => m && typeof m === 'object' && safeId(m.id)).map((m) => ({ ...m, text: str(m.text, 4000), changes: arr(m.changes).map((c) => str(c, 300)), undoId: safeId(m.undoId) }));
   s.askChat = arr(s.askChat).filter((m) => m && typeof m === 'object' && safeId(m.id) && !m.pending).map((m) => ({ id: m.id, role: m.role === 'user' ? 'user' : 'assistant', text: str(m.text, 4000), ts: num(m.ts, 0, 9e15, 0), error: !!m.error })).slice(-40);
   s.askIntro = s.askIntro && typeof s.askIntro === 'object' ? { key: str(s.askIntro.key, 2000), text: str(s.askIntro.text, 2000) } : null;
@@ -455,6 +455,21 @@ export function applyOps(state, ops, now = Date.now()) {
           log.push(`⟳ ${op.title} ${fmtMin(start)}–${fmtMin(e)} (${days.map((d) => 'DLMMGVS'[d]).join('')})`);
           break;
         }
+        case 'update_recurring': {
+          const r = state.recurring.find((x) => x.id === op.id);
+          if (!r) { errors.push('Impegno ricorrente non trovato'); break; }
+          touchedFixed = true;
+          const e = parseHM(op.end_time);
+          const days = Array.isArray(op.weekdays) ? op.weekdays.filter((d) => d >= 0 && d <= 6) : null;
+          if (op.title) r.title = String(op.title).slice(0, 80);
+          if (start != null) r.start = start;
+          if (e != null) r.end = e;
+          if (r.end <= r.start) r.end = Math.min(24 * 60 - 1, r.start + 60);
+          if (days && days.length) r.weekdays = [...new Set(days)].sort();
+          if (op.color !== undefined) r.color = cardColor(op.color);
+          log.push(`⟳ ${r.title} ${fmtMin(r.start)}–${fmtMin(r.end)} (${r.weekdays.map((d) => 'DLMMGVS'[d]).join('')})`);
+          break;
+        }
         case 'remove_recurring': {
           const r = state.recurring.find((x) => x.id === op.id || x.title.toLowerCase() === String(op.id || op.title || '').toLowerCase());
           if (!r) { errors.push('Impegno ricorrente non trovato'); break; }
@@ -526,7 +541,7 @@ export function refreshHabits(state, today) {
 
 // ---- Validazione di ciò che arriva dall'AI: tipi, formati, azioni ammesse
 const ACTIONS = ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'remember', 'forget', 'set_pref',
-  'add_recurring', 'remove_recurring', 'set_goal', 'remove_goal', 'plan_goal', 'add_project', 'set_availability', 'add_habit', 'remove_habit'];
+  'add_recurring', 'update_recurring', 'remove_recurring', 'set_goal', 'remove_goal', 'plan_goal', 'add_project', 'set_availability', 'add_habit', 'remove_habit'];
 const FIELD = {
   id: 'str', title: 'str', kind: ['task', 'event'], date: 'date', start_time: 'time', end_time: 'time', duration_min: 'int', duration_is_estimate: 'bool',
   priority: 'int', deadline: 'date', earliest_date: 'date', window: ['mattina', 'pomeriggio', 'sera'], energy: 'int', depends_on: 'strs', actual_min: 'int',

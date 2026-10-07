@@ -845,3 +845,13 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .collage.enter .pc { animation: dealSoft 0.9s var(--spring-soft) both; animation-delay: calc(var(--i, 0) * 60ms + 100ms); }
 @keyframes dealSoft { from { opacity: 0; transform: translateY(46px) scale(0.92) rotate(calc(var(--r, 0deg) * 3)); } }
 
+
+/* scheda: niente rimbalzo, si chiude tirandola giù */
+.sheet { overscroll-behavior: contain; }
+.sheet .grabber { touch-action: none; }
+/* carte che si aprono: la pausa e «Adesso» */
+.pc[data-rest], .pc.adv[data-item] { cursor: pointer; }
+.pc[data-rest]:active, .pc.adv[data-item]:active { --s: 0.975; }
+/* impegno ricorrente: i giorni come tasti tondi */
+.chips-x.days { gap: 6px; }
+.ch.day { width: 40px; padding: 0; justify-content: center; }
