@@ -855,3 +855,70 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 /* impegno ricorrente: i giorni come tasti tondi */
 .chips-x.days { gap: 6px; }
 .ch.day { width: 40px; padding: 0; justify-content: center; }
+
+/* =====================================================================
+   L'attività in corso: icona, orologio a puntini (timer), arco del pomodoro.
+   Stanno in alto, mezzo dietro le carte, come il saluto.
+   ===================================================================== */
+.bg.themed i { transition: --c 6s cubic-bezier(.22, 1, .36, 1); }
+.hero-art { position: relative; display: flex; justify-content: center; margin-top: 6px; }
+.hero-art button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+
+/* icona dell'attività al posto del saluto */
+.hero[data-mode="icon"] .hero-art { margin-bottom: -18px; }
+.hero-ic { display: block; width: clamp(140px, 44vw, 184px); height: clamp(140px, 44vw, 184px); background: var(--hero); -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat;
+  animation: icIn 1.1s var(--spring-soft) both, breathe 7s ease-in-out 1.2s infinite; filter: drop-shadow(0 10px 30px rgba(120, 40, 90, 0.18)); }
+@keyframes icIn { from { opacity: 0; transform: scale(0.6) rotate(-10deg); filter: blur(12px); } }
+@keyframes breathe { 50% { transform: scale(1.04); } }
+
+/* pomodoro: l'arco (dal Figma), con il numero in serif */
+.pomo { position: relative; width: min(90vw, 360px); display: block; animation: icIn 0.9s var(--spring-soft) both; }
+.gauge { display: block; width: 100%; height: auto; overflow: visible; touch-action: none; }
+.g-track path { fill: none; stroke: var(--hero); stroke-width: 22; stroke-linecap: round; }
+.g-fill path { fill: none; stroke: var(--acc); stroke-width: 22; stroke-linecap: round; }
+.g-fill { filter: drop-shadow(0 6px 12px color-mix(in srgb, var(--acc) 40%, transparent)); }
+.g-tick { stroke: #fff; stroke-width: 3; stroke-linecap: round; }
+.g-tick-o { stroke: #1B1B1B; stroke-width: 6.5; stroke-linecap: round; }
+.g-comet { fill: #fff; filter: drop-shadow(0 0 5px #fff) drop-shadow(0 0 12px var(--acc)); }
+.g-num { position: absolute; left: 0; right: 0; bottom: 4%; display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+.g-num b { font-family: "Playfair Display", "Tinos", Georgia, serif; font-weight: 700; font-size: clamp(50px, 15vw, 64px); line-height: 1; letter-spacing: -0.01em; font-variant-numeric: lining-nums tabular-nums;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--acc) 30%, var(--ink)) 0%, var(--ink) 70%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.g-num > span { margin-top: 6px; font-size: 15px; color: var(--ink-2); }
+.hero[data-mode="pomo"] .hero-art { margin-bottom: -64px; }
+
+/* timer: l'orologio a puntini che gira attorno al numero */
+.ring { position: relative; display: block; width: min(84vw, 320px); aspect-ratio: 1; animation: icIn 1s var(--spring-soft) both; }
+.ring-spin { position: absolute; inset: 0; animation: spin 120s linear infinite; }
+.ring.run .ring-spin { animation-duration: 48s; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.dotring { display: block; width: 100%; height: 100%; }
+.dotring .d { opacity: 0.28; transition: opacity 1s var(--ease); transform-box: fill-box; transform-origin: center; }
+.dotring .d.on { opacity: 1; }
+.ring.run .dotring .d.on { animation: twinkle 3.4s ease-in-out infinite; animation-delay: var(--k); }
+@keyframes twinkle { 50% { transform: scale(1.35); opacity: 0.75; } }
+.dr-glow { opacity: 0.9; }
+.r-num { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; color: var(--ink); }
+.r-num small { font-size: 12.5px; color: var(--ink-2); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r-num b { font-size: clamp(64px, 20vw, 86px); font-weight: 800; line-height: 1; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.r-num > span { font-size: 14px; font-weight: 600; margin-top: 2px; }
+.r-ic { width: 30px; height: 30px; margin-top: 12px; border-radius: 9px; background: var(--paper); box-shadow: var(--shadow); position: relative; }
+.r-ic::after { content: ""; position: absolute; inset: 7px; background: var(--ink); -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat; }
+.hero[data-mode="ring"] .hero-art { margin-bottom: -120px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .dr-glow { opacity: 0.1; } :root:not([data-theme="light"]) .g-tick-o { stroke: #000; } }
+
+/* pannello aperto: le carte scendono e si vede tutto, con i comandi */
+#app.focus-open .hero[data-mode] .hero-art { margin-bottom: 0; }
+#app.focus-open .collage { margin-top: 26px; }
+.collage { transition: margin-top 0.6s var(--spring-soft), transform 0.35s var(--ease), opacity 0.3s; }
+.focus-ctl { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 16px; animation: fade 0.5s var(--ease) both; }
+.f-mins { display: flex; gap: 8px; }
+.f-mins .ch { min-width: 54px; justify-content: center; }
+.f-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.fbtn { height: 44px; padding: 0 20px; border-radius: 22px; background: var(--field); color: var(--ink); font-size: 15px; font-weight: 600; -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); transition: transform 0.3s var(--spring); }
+.fbtn.primary { background: var(--ink); color: var(--bg); }
+.fbtn:active { transform: scale(0.94); }
+.f-note { max-width: 300px; text-align: center; font-size: 15px; line-height: 1.35; color: var(--ink-2); }
+
+/* l'icona del tipo di attività sulle carte */
+.act-ic { float: right; width: 22px; height: 22px; margin: -1px -3px 6px 10px; background: currentColor; color: color-mix(in srgb, var(--paper-ink) 42%, transparent);
+  -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat; }

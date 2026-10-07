@@ -12,9 +12,28 @@ export function glowSoon() {
   glowRaf = requestAnimationFrame(updateGlow);
 }
 
+// il tema dell'attività in corso: quando c'è, lo sfondo passa piano ai suoi colori
+let actPal = null;
+const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, t) => { const x = hex(a), y = hex(b); return '#' + x.map((v, i) => Math.round(v * t + y[i] * (1 - t)).toString(16).padStart(2, '0')).join(''); };
+/** Colori del tema (o null per tornare ai colori delle carte). */
+export function setActPalette(pal) {
+  const key = pal ? pal.join() : '';
+  if (key === (actPal || []).join()) return;
+  actPal = pal;
+  document.querySelector('.bg')?.classList.toggle('themed', !!pal);
+  glowSoon();
+}
+
 /** Le carte colorate più vicine al centro dello schermo colorano le tre macchie dello sfondo. */
 export function updateGlow() {
   const app = document.getElementById('app');
+  if (actPal && !app.classList.contains('mode-overview') && !app.classList.contains('sum-open')) {
+    const dark = matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light';
+    const bg = dark ? '#171617' : '#ECECEA';
+    document.querySelectorAll('.bg i').forEach((b, i) => b.style.setProperty('--c', dark ? mix(actPal[i % actPal.length], bg, 0.42) : actPal[i % actPal.length]));
+    return;
+  }
   const sel = app.classList.contains('sum-open') ? '#sum-scroll .sm-card'
     : app.classList.contains('mode-overview') ? '#cal-scroll .cd-card' : '#collage .pc';
   const H = innerHeight, mid = H * 0.45;

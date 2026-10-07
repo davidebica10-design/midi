@@ -4,6 +4,8 @@ import { DEFAULT_PREFS, parseHM, fmtMin, dateKey, addDays, WINDOWS, weekday, day
 import { parseDue, weekdaysIn, structureMemory } from './parse.js';
 import { sessionsFor, validatePlan, MAX_SESSIONS } from './templates.js';
 import { estimate, updateDurations } from './learn.js';
+import { sanitizeFocus } from './focus.js';
+import { THEME_KEYS } from './themes.js';
 
 const KEY = 'tempo.v1';
 const UNDO_KEY = 'tempo.undo.v1';
@@ -21,6 +23,7 @@ export function emptyState() {
     seenObs: { day: null, ids: [] },       // osservazioni già mostrate oggi (massimo 2)
     askChat: [],    // le domande del riepilogo e le risposte
     askIntro: null, // i punti chiave scritti dall'AI: { key, text }
+    focus: null,    // il timer o pomodoro in corso (focus.js)
     prefs: { ...DEFAULT_PREFS },
     recurring: [],
     memory: [],
@@ -68,8 +71,10 @@ export function sanitizeState(s) {
     date: validDate(x.date), deadline: validDate(x.deadline), earliest: validDate(x.earliest),
     start: num(x.start, 0, 1440), duration: num(x.duration, 1, 1440, 30), status: ['todo', 'doing', 'done'].includes(x.status) ? x.status : 'todo',
     dependsOn: arr(x.dependsOn).filter(safeId), project: safeId(x.project), goalId: safeId(x.goalId), habitId: safeId(x.habitId), image: safeId(x.image),
-    window: WINDOWS[x.window] ? x.window : null, color: cardColor(x.color),
+    window: WINDOWS[x.window] ? x.window : null, color: cardColor(x.color), theme: THEME_KEYS.includes(x.theme) ? x.theme : null,
   }));
+  s.focus = sanitizeFocus(s.focus);
+  if (s.focus && !s.items.some((x) => x.id === s.focus.itemId)) s.focus = null;
   s.projects = ids(s.projects).map((p, i) => ({ ...p, name: str(p.name, 40) || 'Progetto', color: safeColor(p.color) || COLORS[i % COLORS.length], due: validDate(p.due), aliases: arr(p.aliases).map((a) => str(a, 40)) }));
   s.goals = ids(s.goals).map((g) => ({ ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId) }));
   s.habits = ids(s.habits).map((h) => ({ ...h, title: str(h.title, 60), perWeek: num(h.perWeek, 1, 7, 1), duration: num(h.duration, 10, 240, 60), project: safeId(h.project), goalId: safeId(h.goalId), window: WINDOWS[h.window] ? h.window : null }));
@@ -235,6 +240,7 @@ export function applyOps(state, ops, now = Date.now()) {
             dependsOn: resolveDeps(op.depends_on),
             notes: op.note || '',
             project: op.project ? projectId(state, op.project) : null,
+            theme: THEME_KEYS.includes(op.theme) ? op.theme : null,
             goalId: null,
             spent: 0,
             createdAt: now, updatedAt: now,
@@ -266,6 +272,7 @@ export function applyOps(state, ops, now = Date.now()) {
           if (op.depends_on) it.dependsOn = resolveDeps(op.depends_on);
           if (op.note) it.notes = op.note;
           if (op.color !== undefined) { it.color = cardColor(op.color); ch.push(it.color ? 'colore' : 'colore normale'); }
+          if (op.theme && THEME_KEYS.includes(op.theme)) it.theme = op.theme;
           if (op.project) { it.project = projectId(state, op.project); it.goalId = goalOfProject(state, it.project)?.id || it.goalId || null; ch.push(projectOf(state, it.project)?.name || ''); }
           if (it.status === 'doing' && (date || start != null)) { it.status = 'todo'; it.startedAt = null; }
           it.updatedAt = now;
@@ -545,7 +552,7 @@ const ACTIONS = ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete
 const FIELD = {
   id: 'str', title: 'str', kind: ['task', 'event'], date: 'date', start_time: 'time', end_time: 'time', duration_min: 'int', duration_is_estimate: 'bool',
   priority: 'int', deadline: 'date', earliest_date: 'date', window: ['mattina', 'pomeriggio', 'sera'], energy: 'int', depends_on: 'strs', actual_min: 'int',
-  note: 'str', project: 'str', color: ['rose', 'lilac', 'sage', 'sand', 'sky'], category: ['vincolo', 'preferenza', 'obiettivo', 'nota'], pref_key: 'str', pref_value: 'str', weekdays: 'ints', unpin: 'bool', sessions: 'sessions',
+  note: 'str', project: 'str', color: ['rose', 'lilac', 'sage', 'sand', 'sky'], theme: THEME_KEYS, category: ['vincolo', 'preferenza', 'obiettivo', 'nota'], pref_key: 'str', pref_value: 'str', weekdays: 'ints', unpin: 'bool', sessions: 'sessions',
 };
 /** Tiene solo operazioni e campi validi; restituisce { ops, dropped }. */
 export function sanitizeOps(raw) {

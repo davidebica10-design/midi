@@ -172,3 +172,18 @@ L'editor (si apre toccando una carta) mostra la carta stessa in anteprima dal vi
 | Tocco su oggi (in alto a sinistra) | calendario | torna alla giornata di oggi |
 | Pressione su una carta | giorno | la carta si inclina verso il dito, con un riflesso |
 | Tieni premuto e trascina | giorno | la carta si solleva e si sposta; lasciata, torna al suo posto con una molla (non cambia il piano) |
+
+## Attività in corso: icona, timer, pomodoro (`themes.js`, `focus.js`)
+
+Ogni attività ha un tema, deciso dalle parole del titolo (o dal campo `theme` scelto dall'AI tra quelli ammessi): `{ key, label, icon, tool, accent, pal }`. Le icone sono Phosphor «fill» (licenza MIT, `icons/act/`).
+
+| Stato del giorno (oggi) | In alto, mezzo dietro le carte | Sfondo |
+| --- | --- | --- |
+| niente in corso | il saluto | colori delle carte in vista |
+| un'attività in corso | la sua icona grande (toccandola parte il timer) | passa piano ai colori del tema |
+| timer in corso (`tool: timer`) | l'orologio a puntini: i puntini trascorsi si accendono, l'anello gira; al centro i minuti che restano | colori del tema |
+| pomodoro (`tool: pomodoro`, studio e lavoro) | l'arco del Figma: si sceglie la durata (tocco o trascinando sull'arco), poi il progresso cresce con la tacca e una luce che va avanti e indietro | colori del tema |
+
+«Inizia» (sulla carta «Adesso» o nell'editor) avvia il timer. Toccando il timer si apre il pannello: le carte scendono e compaiono i comandi (Avvia, Pausa, Termina, Salta la pausa, Riduci). Alla fine: «Fatta» (segna i minuti veri), «Altri 10'» o «Un altro giro», «Non ancora» (segna i minuti fatti). Il pomodoro fa giri da 25' con 5' di pausa (15' ogni 4 giri).
+
+Il timer è in `state.focus` e si basa sugli orari: continua anche ad app chiusa. iPhone non garantisce un avviso con l'app chiusa: alla riapertura il timer è già avanzato alla fase giusta.

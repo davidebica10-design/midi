@@ -1,5 +1,7 @@
 import { planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
-import { glowSoon, bindCards, dragging } from './motion.js';
+import { glowSoon, bindCards, dragging, setActPalette } from './motion.js';
+import { themeOf } from './themes.js';
+import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor } from './store.js';
 import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from './companion.js';
 import { goalFit, planSummary, horizonFor } from './goals.js';
@@ -508,13 +510,15 @@ function cardHtml(c, i) {
   const tint = !c.color && c.project ? ` data-proj style="--pc:${safeColor(c.project.color) || 'var(--accent)'};${st}"` : ` style="${st}"`;
   const open = `role="button" tabindex="0" data-item="${esc(c.id)}" data-c="${c.color || ''}" aria-label="${esc(label)}"${tint}`;
   const check = isTask ? `<button class="pc-check" data-check="${esc(c.id)}" aria-label="${done ? 'Riapri' : 'Segna come fatta'}: ${esc(c.title)}" aria-pressed="${done}">${ICON_CHECK}</button>` : '';
+  const th = themeFor(state.items.find((x) => x.id === c.itemId) || { title: c.title, project: c.project?.id });
+  const ic = `<i class="act-ic" style="--m:url(icons/act/${th.icon}.svg)" aria-hidden="true"></i>`;
   const title = `${c.important ? '<i class="imp" title="Importante"></i>' : ''}${esc(c.title)}`;
   if (c.image) {
     return `<div class="${cls}" ${open}>${imgTag(c.image)}${check}
       <div class="ph-cap"><b>${title}</b><span>${esc(desc)}</span></div></div>`;
   }
   return `<div class="${cls}" ${open}>
-    <div class="pc-body"><div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div></div>
+    <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div></div>
     <div class="pc-foot">${isTask ? projMark(c.project) : ''}<span>${esc(foot)}</span>${check}</div>
   </div>`;
 }
@@ -540,6 +544,7 @@ function renderDayView(animate) {
   const evN = v.cards.filter((c) => c.type === 'event').length + (v.now?.block?.kind === 'event' ? 1 : 0);
   const prog = sum.total ? `${sum.done} di ${sum.total} fatte` : evN ? plural(evN, 'impegno', 'impegni') : 'giornata libera';
   $('#hero-time').textContent = `${v.header.time} · ${prog}`;
+  renderHero(v);
   const g = v.header.greeting;
   const ht = $('#hero-title');
   if (ht.dataset.g !== g || animate) {
@@ -584,6 +589,205 @@ function renderDayView(animate) {
   if (animate) animateIn(col, 300 + i * 70 + 800);
   $('#undo-btn').hidden = !canUndo();
   glowSoon();
+}
+
+// ---------------------------------------------------------------- l'attività in corso: icona, orologio a puntini, pomodoro
+// In alto, mezzo dietro le carte come il saluto: l'icona dell'attività in corso; quando parte un timer,
+// l'orologio a puntini (attività con una durata) o l'arco del pomodoro (studio, lavoro di concentrazione).
+const projName = (it) => (it?.project ? projectOf(state, it.project)?.name : '') || '';
+const themeFor = (it) => themeOf(it, projName(it));
+let heroKey = '', focusOpen = false, tickTimer = 0;
+const MIN_CHOICES = { pomodoro: [15, 25, 45, 60], timer: [15, 30, 45, 60, 90] };
+
+function focusTheme(f) {
+  const it = state.items.find((x) => x.id === f.itemId);
+  return themeOf({ title: f.title, theme: it?.theme || null }, projName(it));
+}
+
+function renderHero(v) {
+  const f = state.focus;
+  const art = $('#hero-art'), ctl = $('#focus-ctl'), hero = $('#hero');
+  let mode = 'greet', key = 'greet', th = null, it = null;
+  const block = v.isToday ? v.now?.block : null;
+  if (f && v.isToday) {
+    th = focusTheme(f);
+    mode = f.mode === 'pomodoro' ? 'pomo' : 'ring';
+    key = `${mode}|${f.itemId}|${f.phase}|${f.round}|${!!f.pausedAt}|${f.minutes}|${focusOpen}`;
+    $('#hero-time').textContent = th.label.toLowerCase() === f.title.toLowerCase() ? `${f.title} · ${f.mode === 'pomodoro' ? 'pomodoro' : 'timer'}` : `${th.label} · ${f.title}`;
+  } else if (block) {
+    const bid = block.itemId || (block.kind === 'event' && !String(block.id).startsWith('rec:') ? block.id : null);
+    it = bid ? state.items.find((x) => x.id === bid) : null;
+    th = block.kind === 'rest' ? themeOf({ kind: 'rest' }) : themeFor(it || { title: block.title });
+    mode = 'icon';
+    key = `icon|${th.icon}|${block.title}|${block.itemId}`;
+    $('#hero-time').textContent = `${block.title} · fino alle ${block.until}`;
+  }
+  setActPalette(th?.pal || null);
+  hero.dataset.mode = mode;
+  $('#app').classList.toggle('focus-open', mode === 'pomo' || mode === 'ring' ? focusOpen : false);
+  $('#hero-title').hidden = mode !== 'greet';
+  art.hidden = mode === 'greet';
+  ctl.hidden = !((mode === 'pomo' || mode === 'ring') && focusOpen);
+  if (key !== heroKey) {
+    heroKey = key;
+    if (mode === 'icon') {
+      const startable = !!it && it.status !== 'done';
+      art.innerHTML = `<button type="button" class="hero-ic-btn" data-hero="${startable ? 'start' : 'none'}" data-id="${esc(it?.id || '')}" aria-label="${esc(startable ? `Avvia il timer di ${block.title}` : block.title)}"><i class="hero-ic" style="--m:url(icons/act/${th.icon}.svg)"></i></button>`;
+    } else if (mode === 'pomo') {
+      const run = f.phase === 'work' && !f.pausedAt;
+      art.innerHTML = `<button type="button" class="pomo" data-hero="toggle" style="--acc:${f.phase === 'break' ? '#6C5BA8' : th.accent}" aria-label="Pomodoro: ${esc(f.title)}">${gaugeSvg({ pct: 0, running: run || f.phase === 'break', accent: f.phase === 'break' ? '#6C5BA8' : th.accent })}
+        <span class="g-num"><b id="f-num"></b><span id="f-lbl"></span></span></button>`;
+    } else if (mode === 'ring') {
+      const run = f.phase === 'work' && !f.pausedAt;
+      art.innerHTML = `<button type="button" class="ring${run ? ' run' : ''}" data-hero="toggle" aria-label="Timer: ${esc(f.title)}"><span class="ring-spin">${dotRingSvg({ colors: [...(th.pal || ['#F4C542', '#C9B6EE', '#F2A7C3']), th.accent] })}</span>
+        <span class="r-num"><small id="f-top"></small><b id="f-num"></b><span id="f-lbl"></span><i class="r-ic" style="--m:url(icons/act/${th.icon}.svg)"></i></span></button>`;
+    } else art.innerHTML = '';
+    if (mode === 'pomo' || mode === 'ring') renderFocusCtl(f);
+  }
+  updateFocus();
+}
+
+/** I comandi del timer (si vedono con il pannello aperto). */
+function renderFocusCtl(f) {
+  const b = (act, label, cls = '') => `<button type="button" class="fbtn ${cls}" data-f="${act}">${label}</button>`;
+  let html = '';
+  if (f.phase === 'setup' || f.phase === 'ready') {
+    html = `<div class="f-mins" role="radiogroup" aria-label="Quanto dura">${MIN_CHOICES[f.mode].map((m) => `<button type="button" class="ch${m === f.minutes ? ' on' : ''}" data-fmin="${m}" role="radio" aria-checked="${m === f.minutes}">${m}'</button>`).join('')}</div>
+      <div class="f-row">${b('go', f.phase === 'ready' ? `Giro ${f.round}` : 'Avvia', 'primary')}${b('cancel', 'Annulla')}</div>`;
+  } else if (f.phase === 'work') {
+    html = `<div class="f-row">${f.pausedAt ? b('resume', 'Riprendi', 'primary') : b('pause', 'Pausa', 'primary')}${b('end', 'Termina')}${b('collapse', 'Riduci')}</div>`;
+  } else if (f.phase === 'break') {
+    html = `<div class="f-row">${b('skipbreak', 'Salta la pausa', 'primary')}${b('end', 'Termina')}</div>`;
+  } else if (f.phase === 'done') {
+    const w = workedMin(f, Date.now());
+    html = `<p class="f-note">${w ? `Hai lavorato ${durLabel(w)} su «${esc(f.title)}».` : `«${esc(f.title)}»`} Com'è andata?</p>
+      <div class="f-row">${b('done', 'Fatta', 'primary')}${f.mode === 'timer' ? b('more', 'Altri 10\'') : b('go2', 'Un altro giro')}${b('later', 'Non ancora')}</div>`;
+  }
+  $('#focus-ctl').innerHTML = html;
+}
+
+/** Numero, etichetta e progresso: ogni secondo, senza ridisegnare (la luce e la rotazione non si fermano). */
+function updateFocus() {
+  const f = state.focus;
+  clearTimeout(tickTimer);
+  if (!f || $('#hero').dataset.mode === 'greet' || $('#hero').dataset.mode === 'icon') return;
+  const now = Date.now();
+  const v = focusView(f, now);
+  if ((f.phase === 'work' || f.phase === 'break') && v.over && !f.pausedAt) { advanceFocus(); return; }
+  const num = $('#f-num'), lbl = $('#f-lbl');
+  if (!num) return;
+  const live = f.phase === 'work' || f.phase === 'break';
+  if (f.mode === 'pomodoro') {
+    num.textContent = live ? clock(v.left) : f.phase === 'done' ? '✓' : `${f.minutes}'`;
+    lbl.textContent = f.phase === 'setup' ? 'Trascina sull\'arco o scegli quanto' : f.phase === 'ready' ? `Pronto per il giro ${f.round}` : f.phase === 'break' ? 'Pausa · respira' : f.phase === 'done' ? 'Fatto' : f.pausedAt ? 'In pausa' : `Giro ${f.round} di ${POMO_ROUNDS}`;
+    const pct = f.phase === 'setup' || f.phase === 'ready' ? f.minutes / 60 : f.phase === 'done' ? 1 : v.pct;
+    const g = document.querySelector('#hero-art .g-prog');
+    if (g) g.innerHTML = gaugeParts(pct);
+  } else {
+    const mins = Math.ceil(v.left / 60000);
+    num.textContent = f.phase === 'done' ? '✓' : String(live ? mins : f.minutes);
+    lbl.textContent = f.phase === 'done' ? 'fatto' : f.pausedAt ? 'in pausa' : live ? (mins === 1 ? 'minuto' : 'minuti') : 'minuti';
+    const top = $('#f-top');
+    if (top) top.textContent = live && f.startedAt ? `${fmtMin(minOfDay(f.startedAt))} – ${fmtMin(minOfDay(f.startedAt + f.paused + v.total))}` : f.title;
+    const lit = Math.round((f.phase === 'done' ? 1 : v.pct) * 84);
+    document.querySelectorAll('#hero-art .dotring .d').forEach((d, i) => d.classList.toggle('on', i < lit));
+  }
+  if (live && !f.pausedAt) tickTimer = setTimeout(updateFocus, 1000 - (now % 1000) + 20);
+}
+const minOfDay = (t) => { const d = new Date(t); return d.getHours() * 60 + d.getMinutes(); };
+
+/** Il tempo della fase è finito. */
+function advanceFocus() {
+  const f = state.focus;
+  const next = focusNext(f, Date.now());
+  state.focus = next;
+  if (next.phase === 'break') toast(`Giro ${f.round} finito: ${next.round % POMO_ROUNDS === 0 ? 15 : 5} minuti di pausa`);
+  else if (next.phase === 'ready') { toast('Pausa finita: quando vuoi, il prossimo giro'); focusOpen = true; }
+  else if (next.phase === 'done') { toast(`Tempo finito: «${f.title}»`); focusOpen = true; }
+  save(state);
+  renderDayView(false);
+}
+
+/** «Inizia»: l'attività parte e compare il suo timer (il pomodoro aspetta che scegli quanto). */
+function startFocusFor(id) {
+  const it = state.items.find((x) => x.id === id);
+  if (!it) return;
+  if (state.focus && state.focus.itemId !== id) endFocus('later', true);
+  const th = themeFor(it);
+  // un impegno già iniziato (lo yoga delle 18): il timer dura fino alla sua fine
+  const left = it.kind === 'event' && it.start != null && it.date === today() ? it.start + it.duration - nowMin() : null;
+  let f = focusSetup(it, { theme: th, now: Date.now(), minutes: left > 0 && th.tool !== 'pomodoro' ? Math.max(1, left) : undefined });
+  if (f.mode !== 'pomodoro') f = focusStart(f, Date.now());
+  focusOpen = f.mode === 'pomodoro';
+  selDay = today();
+  commit(`Iniziata: ${it.title}`, () => { applyOps(state, [{ action: 'start', id }]); state.focus = f; });
+  closeSheet();
+  $('#day-scroll').scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/** Chiude il timer: «done» = fatta (con i minuti veri), «later» = in parte, «cancel» = niente. */
+function endFocus(how, quiet = false) {
+  const f = state.focus;
+  if (!f) return;
+  const w = workedMin(f, Date.now());
+  state.focus = null;
+  focusOpen = false;
+  heroKey = '';
+  if (how === 'done') quickOp('complete', f.itemId, w ? { actual_min: w } : {});
+  else if (how === 'later' && w) { if (quiet) { applyOps(state, [{ action: 'progress', id: f.itemId, actual_min: w }]); save(state); } else quickOp('progress', f.itemId, { actual_min: w }); }
+  else { save(state); renderDayView(false); }
+}
+
+function focusAction(act, el) {
+  const now = Date.now();
+  let f = state.focus;
+  if (!f) return;
+  if (act === 'go' || act === 'go2') f = focusStart({ ...f, phase: act === 'go2' ? 'ready' : f.phase }, now);
+  else if (act === 'pause') f = focusPause(f, now);
+  else if (act === 'resume') f = focusResume(f, now);
+  else if (act === 'skipbreak') f = focusStart(focusNext(f, now), now);
+  else if (act === 'more') f = { ...f, phase: 'work', minutes: 10, startedAt: now, pausedAt: null, paused: 0 };
+  else if (act === 'end') {
+    const v = focusView(f, now);
+    f = { ...f, worked: f.worked + (f.phase === 'work' ? Math.min(v.elapsed, v.total) : 0), phase: 'done', startedAt: null, pausedAt: null, paused: 0 };
+  } else if (act === 'collapse') { focusOpen = false; renderDayView(false); return; }
+  else if (act === 'done' || act === 'later' || act === 'cancel') { endFocus(act); return; }
+  else if (act === 'min') f = { ...f, minutes: +el.dataset.fmin };
+  if (act === 'go' || act === 'go2' || act === 'skipbreak' || act === 'more') focusOpen = f.mode === 'pomodoro';
+  state.focus = f;
+  save(state);
+  renderDayView(false);
+}
+
+function bindFocus() {
+  $('#focus-ctl').addEventListener('click', (e) => {
+    const m = e.target.closest('[data-fmin]');
+    if (m) { focusAction('min', m); return; }
+    const b = e.target.closest('[data-f]');
+    if (b) focusAction(b.dataset.f, b);
+  });
+  const art = $('#hero-art');
+  art.addEventListener('click', (e) => {
+    const h = e.target.closest('[data-hero]');
+    if (!h || Date.now() - dragAt < 400) return;
+    if (h.dataset.hero === 'start') startFocusFor(h.dataset.id);
+    else if (h.dataset.hero === 'toggle') { focusOpen = !focusOpen; renderDayView(false); }
+  });
+  // pomodoro: la durata si sceglie anche trascinando sull'arco
+  let dragAt = 0, dragging2 = false;
+  const pick = (e) => {
+    const f = state.focus, g = art.querySelector('.gauge');
+    if (!f || !g || !(f.phase === 'setup' || f.phase === 'ready')) return false;
+    const m = Math.max(5, Math.min(60, Math.round((pctAt(e.clientX, e.clientY, g.getBoundingClientRect()) * 60) / 5) * 5));
+    if (m !== f.minutes) { state.focus = { ...f, minutes: m }; updateFocus(); document.querySelectorAll('#focus-ctl [data-fmin]').forEach((c) => { const on = +c.dataset.fmin === m; c.classList.toggle('on', on); c.setAttribute('aria-checked', on); }); }
+    return true;
+  };
+  art.addEventListener('pointerdown', (e) => { if (e.target.closest('.gauge') && focusOpen && pick(e)) { dragging2 = true; art.setPointerCapture(e.pointerId); e.preventDefault(); } });
+  art.addEventListener('pointermove', (e) => { if (dragging2) { pick(e); dragAt = Date.now(); } });
+  const stop = () => { if (dragging2) { dragging2 = false; dragAt = Date.now(); save(state); renderFocusCtl(state.focus); } };
+  art.addEventListener('pointerup', stop);
+  art.addEventListener('pointercancel', stop);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && state.focus) updateFocus(); });
 }
 
 // ---------------------------------------------------------------- tutti i giorni
@@ -1568,6 +1772,7 @@ function toast(text, action) {
 const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
 
 function renderAll() {
+  if (state.focus && !state.items.some((x) => x.id === state.focus.itemId && x.status !== 'done')) { state.focus = null; focusOpen = false; heroKey = ''; }
   if (mode === 'day') renderDayView(false); else renderCalendar(false);
   $('#undo-btn').hidden = !canUndo();
   renderComposer();
@@ -1645,7 +1850,7 @@ function bind() {
       return;
     }
     const ad = e.target.closest('[data-adv]');
-    if (ad) { e.stopPropagation(); quickOp(ad.dataset.adv, ad.dataset.id); return; }
+    if (ad) { e.stopPropagation(); if (ad.dataset.adv === 'start') startFocusFor(ad.dataset.id); else quickOp(ad.dataset.adv, ad.dataset.id); return; }
     const br = e.target.closest('[data-brief]');
     if (br) { e.stopPropagation(); briefAction(br.dataset.brief, br.dataset.arg); return; }
     if (e.target.closest('[data-rest]')) { openRestSheet(); return; }
@@ -1784,7 +1989,7 @@ function bind() {
     const a = b.dataset.sheet;
     if (a === 'close') closeSheet();
     else if (a === 'done') quickOp('complete', id);
-    else if (a === 'start') quickOp('start', id);
+    else if (a === 'start') { closeSheet(); startFocusFor(id); }
     else if (a === 'reopen') quickOp('reopen', id);
     else if (a === 'tomorrow') quickOp('move', id, { date: addDays(today(), 1) });
     else if (a === 'delete') {
@@ -1888,6 +2093,7 @@ function bind() {
   });
 
   $('#sum-fab').inert = true;
+  bindFocus();
   bindPinch();
   bindSwipes();
   bindCards($('#collage'), { canStart: () => mode === 'day' && !composing, scroller: $('#day-scroll') });
