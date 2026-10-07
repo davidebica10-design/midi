@@ -187,3 +187,10 @@ Ogni attività ha un tema, deciso dalle parole del titolo (o dal campo `theme` s
 «Inizia» (sulla carta «Adesso» o nell'editor) avvia il timer. Toccando il timer si apre il pannello: le carte scendono e compaiono i comandi (Avvia, Pausa, Termina, Salta la pausa, Riduci). Alla fine: «Fatta» (segna i minuti veri), «Altri 10'» o «Un altro giro», «Non ancora» (segna i minuti fatti). Il pomodoro fa giri da 25' con 5' di pausa (15' ogni 4 giri).
 
 Il timer è in `state.focus` e si basa sugli orari: continua anche ad app chiusa. iPhone non garantisce un avviso con l'app chiusa: alla riapertura il timer è già avanzato alla fase giusta.
+
+## Concluse e movimento
+
+- Le carte concluse (attività fatte, impegni di oggi già finiti) non stanno tra le altre: vanno in una pila in fondo, come le notifiche dell'iPhone («3 concluse · Mostra»). Toccandola si apre in due colonne; «Nascondi» la richiude. Nei giorni passati è già aperta.
+- Ogni volta che il giorno cambia (spunti, sposti, aggiungi), le carte scivolano al nuovo posto con una molla invece di saltare; quella spuntata vola nella pila, che fa un piccolo rimbalzo. Le carte nuove entrano dal basso.
+- Toccando una carta, la carta si solleva e diventa l'anteprima dell'editor.
+- Con «Riduci il movimento» attivo su iPhone le animazioni si spengono.

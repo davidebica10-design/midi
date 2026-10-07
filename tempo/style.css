@@ -922,3 +922,37 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 /* l'icona del tipo di attività sulle carte */
 .act-ic { float: right; width: 22px; height: 22px; margin: -1px -3px 6px 10px; background: currentColor; color: color-mix(in srgb, var(--paper-ink) 42%, transparent);
   -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat; }
+
+/* =====================================================================
+   Le concluse in una pila in fondo (come le notifiche dell'iPhone) e movimenti alla Apple
+   ===================================================================== */
+.collage { flex-wrap: wrap; }
+.done-stack { flex: 0 0 100%; margin-top: 22px; }
+.ds-head { display: flex; justify-content: space-between; align-items: baseline; width: 100%; padding: 4px 6px 10px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.ds-head .ds-hint { color: var(--accent); font-weight: 600; }
+.ds-pile { position: relative; display: block; width: 100%; height: 96px; text-align: left; transition: transform 0.4s var(--spring-soft); }
+.ds-pile:active { transform: scale(0.97); }
+.ds-card { position: absolute; top: calc(var(--j) * 10px); left: calc(var(--j) * 14px); right: calc(var(--j) * 14px); height: 72px; z-index: calc(3 - var(--j));
+  display: flex; align-items: center; gap: 12px; padding: 0 16px; border-radius: 20px; color: var(--paper-ink);
+  background: var(--card, var(--paper)); box-shadow: var(--shadow); opacity: calc(1 - var(--j) * 0.25); }
+.ds-card[data-c]:not([data-c=""]) { background: linear-gradient(160deg, var(--card) 8%, var(--card2, var(--card)) 100%); }
+.ds-card:not([style*="--j:0"]) > * { visibility: hidden; }
+.ds-ok { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--ok); color: #fff; }
+.ds-ok svg { width: 15px; height: 15px; }
+.ds-t { display: flex; flex-direction: column; min-width: 0; }
+.ds-t b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: color-mix(in srgb, var(--paper-ink) 40%, transparent); }
+.ds-t small { font-size: 13px; color: var(--ink-3); }
+.ds-grid { display: flex; gap: 14px; align-items: flex-start; }
+.ds-grid > .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.ds-grid .pc { opacity: 0.72; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ds-card { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 14px 30px rgba(0, 0, 0, 0.35); } }
+
+/* la spunta: un piccolo scatto quando la tocchi */
+.pc-check { transition: transform 0.45s var(--spring-soft), background 0.25s; }
+.pc-check:active { transform: scale(0.8); }
+/* la scheda che nasce da una carta: niente salita, la carta vola al suo posto */
+.sheet.zoom { animation: sheetIn 0.42s var(--ease) both; }
+@keyframes sheetIn { from { opacity: 0; transform: translateY(24px); } }
+/* ogni tasto risponde al tocco con una molla */
+.btn, .ch, .round, .bar-btn, .send, .mini-btn, .adv-go, .sw, .fbtn, .cd, .sl-row, .sm-card, .ed-quick button { transition: transform 0.45s var(--spring-soft), background 0.2s, color 0.2s, box-shadow 0.2s; }
+.btn:active, .ch:active, .mini-btn:active, .adv-go:active, .fbtn:active, .ed-quick button:active { transform: scale(0.94); transition-duration: 0.15s; }

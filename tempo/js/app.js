@@ -1,5 +1,5 @@
 import { planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
-import { glowSoon, bindCards, dragging, setActPalette } from './motion.js';
+import { glowSoon, bindCards, dragging, setActPalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor } from './store.js';
@@ -527,7 +527,31 @@ function dayModel() {
   return vm.today({ state, plan, planFor, now: Date.now(), day: selDay, fits: goalFits(), backupDue: backupDue(), env: { online: navigator.onLine, ai: aiMode() } });
 }
 
-function renderDayView(animate) {
+// la pila delle carte concluse: chiusa come le notifiche dell'iPhone, si apre con un tocco
+let doneOpen = false;
+const FLIP_SEL = '.pc, .ds-card, .ds-head';
+function doneStackHtml(cards, v) {
+  if (!cards.length) return '';
+  const open = doneOpen || v.past;
+  const n = cards.length;
+  const label = `<span class="ds-n">${n}</span> ${n === 1 ? 'conclusa' : 'concluse'}`;
+  if (open) {
+    const cols = [[], []];
+    cards.forEach((c, j) => cols[j % 2].push(cardHtml({ ...c, r: 0 }, j)));
+    return `<section class="done-stack open" aria-label="Concluse">
+      <button type="button" class="ds-head" data-ds="close" data-k="ds-head" aria-expanded="true"><span>${label}</span><span class="ds-hint">${v.past ? '' : 'Nascondi'}</span></button>
+      <div class="ds-grid"><div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div></div></section>`;
+  }
+  const top = cards.slice(-3).reverse();
+  return `<section class="done-stack" aria-label="Concluse">
+    <button type="button" class="ds-head" data-ds="open" data-k="ds-head" aria-expanded="false"><span>${label}</span><span class="ds-hint">Mostra</span></button>
+    <button type="button" class="ds-pile" data-ds="open" aria-label="Mostra ${n} ${n === 1 ? 'conclusa' : 'concluse'}">
+      ${top.map((c, j) => `<span class="ds-card" data-k="${esc(c.id)}" style="--j:${j}" data-c="${c.color || ''}">
+        <i class="ds-ok" aria-hidden="true">${ICON_CHECK}</i><span class="ds-t"><b>${esc(c.title)}</b><small>${esc(c.done && c.doneAt ? `Fatto alle ${c.doneAt}` : `${c.start} – ${c.end}`)}</small></span></span>`).join('')}
+    </button></section>`;
+}
+
+function renderDayView(animate, opts = {}) {
   const t = today();
   const v = dayModel();
   // osservazioni mostrate oggi: si ricordano (massimo 2 al giorno)
@@ -574,17 +598,26 @@ function renderDayView(animate) {
   // 2. osservazioni (massimo 2) come carte
   for (const o of v.observations) put(cardHtml({ ...o, type: 'obs', r: rot(o.id) }, i));
 
-  // 3. le carte della giornata
+  // 3. le carte della giornata; quelle concluse (fatte, o impegni già finiti) vanno nella pila in fondo
+  const nowHM = fmtMin(nowMin());
+  const concluded = (c) => c.type === 'task' ? !!c.done : c.type === 'event' && (v.past || (v.isToday && c.end <= nowHM));
+  const doneCards = [];
   let pauseBefore = 0;
   for (const c of v.cards) {
     if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
+    if (concluded(c)) { doneCards.push(c); pauseBefore = 0; continue; }
     put(cardHtml({ ...c, pauseBefore, r: rot((c.type === 'missed' ? 'm' : c.type === 'unscheduled' ? 'u' : '') + (c.id || c.at)) }, i));
     pauseBefore = 0;
   }
-  const html = `<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>${v.emptyText ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : ''}`;
+  const html = `<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>${doneStackHtml(doneCards, v)}${v.emptyText && !doneCards.length ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : ''}`;
 
   const col = $('#collage');
+  const before = animate || opts.flip === false ? null : flipCapture(col, FLIP_SEL);
+  const had = col.querySelector('.done-stack .ds-n')?.textContent;
   col.innerHTML = html;
+  flipPlay(col, FLIP_SEL, before);
+  const stackEl = col.querySelector('.done-stack');
+  if (before && stackEl && had !== stackEl.querySelector('.ds-n')?.textContent) bump(stackEl.querySelector('.ds-pile, .ds-head'), 1.05);
   fillImages(col);
   if (animate) animateIn(col, 300 + i * 70 + 800);
   $('#undo-btn').hidden = !canUndo();
@@ -865,7 +898,7 @@ function bindSwipes() {
       if (dragging() || dir !== 'h' || Math.abs(dx) < 70) return;
       selDay = addDays(selDay, dx < 0 ? 1 : -1);
       col.classList.remove('slide-l', 'slide-r'); void col.offsetWidth;
-      renderDayView(false);
+      renderDayView(false, { flip: false });
       col.classList.add(dx < 0 ? 'slide-l' : 'slide-r');
       $('#day-scroll').scrollTop = 0;
     },
@@ -1316,7 +1349,23 @@ function renderEditor() {
   $('#ed-foot').innerHTML = `${pr ? projMark(pr) + `<span>${esc(pr.name)}</span>` : `<span>${ed.kind === 'event' ? 'Impegno fisso' : 'Attività'}</span>`}${ed.priority === 3 ? '<b class="ed-star" aria-label="Importante">★</b>' : ''}`;
 }
 
-function showSheet() { const sh = $('#sheet'); sh.classList.remove('closing'); sh.hidden = false; $('#sheet-backdrop').hidden = false; }
+// la scheda: se si apre toccando una carta, la carta si solleva e diventa l'anteprima dell'editor
+let sheetFrom = null;
+function showSheet() {
+  const sh = $('#sheet'), from = sheetFrom;
+  sheetFrom = null;
+  sh.classList.remove('closing');
+  sh.classList.toggle('zoom', !!from && !matchMedia('(prefers-reduced-motion: reduce)').matches);
+  sh.hidden = false; $('#sheet-backdrop').hidden = false;
+  const card = sh.querySelector('#ed-card');
+  if (!from || !card || !sh.classList.contains('zoom')) return;
+  const to = card.getBoundingClientRect();
+  const s = from.width / to.width;
+  card.animate([
+    { translate: `${from.left - to.left + (from.width - to.width) / 2}px ${from.top - to.top + (from.height - to.height * s) / 2}px`, scale: `${s}`, rotate: '0deg' },
+    { translate: '0 0', scale: '1' },
+  ], { duration: 640, easing: SPRING });
+}
 function closeSheet() {
   const sh = $('#sheet'), bd = $('#sheet-backdrop');
   if (sh.hidden) return;
@@ -1837,6 +1886,8 @@ function bind() {
       if (it) quickOp(it.status === 'done' ? 'reopen' : 'complete', it.id);
       return;
     }
+    const ds = e.target.closest('[data-ds]');
+    if (ds) { e.stopPropagation(); doneOpen = ds.dataset.ds === 'open'; renderDayView(false); return; }
     const nw = e.target.closest('[data-now]');
     if (nw) { e.stopPropagation(); quickOp(nw.dataset.now, nw.dataset.id); return; }
     const a2 = e.target.closest('[data-act2]');
@@ -1855,7 +1906,7 @@ function bind() {
     if (br) { e.stopPropagation(); briefAction(br.dataset.brief, br.dataset.arg); return; }
     if (e.target.closest('[data-rest]')) { openRestSheet(); return; }
     const c = e.target.closest('[data-item]');
-    if (c && !/^rest:/.test(c.dataset.item)) openSheet(c.dataset.item);
+    if (c && !/^rest:/.test(c.dataset.item)) { sheetFrom = c.getBoundingClientRect(); openSheet(c.dataset.item); }
   });
   col.addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.rest) { e.preventDefault(); openRestSheet(); return; }

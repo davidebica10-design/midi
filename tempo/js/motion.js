@@ -146,3 +146,62 @@ export function bindCards(root, { selector = '.pc', canStart = () => true, scrol
   }, true);
   root.addEventListener('contextmenu', (e) => { if (e.target.closest(selector)) e.preventDefault(); });
 }
+
+// ---------------------------------------------------------------- transizioni fluide (FLIP)
+// Prima di ridisegnare si fotografano le posizioni; dopo, ogni elemento parte da dove era
+// e arriva al suo posto con una molla. Così le carte si spostano invece di saltare.
+const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+export const SPRING = (() => {
+  try { if (CSS.supports('transition-timing-function', 'linear(0, 1)')) return 'linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 12.9%, 0.938 16.7%, 1.017 19.4%, 1.067, 1.099 24.3%, 1.108 26%, 1.1, 1.083 30.6%, 1.026 38.2%, 1.003 42.5%, 0.989 47.9%, 0.993 61.4%, 1.001 76.5%, 1)'; } catch {}
+  return 'cubic-bezier(.3, 1.4, .5, 1)';
+})();
+const keyOf = (el) => el.dataset.k || el.dataset.item || el.dataset.bid || (el.dataset.rest ? 'rest' : '');
+
+/** Le posizioni attuali degli elementi con una chiave. */
+export function flipCapture(root, selector) {
+  const out = new Map();
+  if (!root) return out;
+  for (const el of root.querySelectorAll(selector)) { const k = keyOf(el); if (k && !out.has(k)) out.set(k, el.getBoundingClientRect()); }
+  return out;
+}
+
+/** Dopo il nuovo disegno: chi si è mosso scivola al suo posto, chi è nuovo entra con una molla. */
+export function flipPlay(root, selector, before, { enter = true } = {}) {
+  if (!root || !before || reduce()) return;
+  const H = innerHeight;
+  let n = 0;
+  for (const el of root.querySelectorAll(selector)) {
+    const k = keyOf(el);
+    if (!k) continue;
+    const a = before.get(k), b = el.getBoundingClientRect();
+    if (b.bottom < -50 || b.top > H + 50) continue; // fuori dallo schermo: niente lavoro
+    if (a) {
+      const dx = a.left - b.left, dy = a.top - b.top, s = a.width && b.width ? a.width / b.width : 1;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(s - 1) < 0.01) continue;
+      el.animate([{ translate: `${dx}px ${dy}px`, scale: `${s}` }, { translate: '0 0', scale: '1' }], { duration: 650, easing: SPRING });
+    } else if (enter) {
+      el.animate([{ opacity: 0, scale: '0.86', translate: '0 18px' }, { opacity: 1, scale: '1', translate: '0 0' }], { duration: 700, easing: SPRING, delay: Math.min(6, n++) * 40, fill: 'backwards' });
+    }
+  }
+}
+
+/** Una copia dell'elemento vola da dove era fino a un altro punto (la pila delle fatte), rimpicciolendo. */
+export function flyTo(ghost, from, to, { done } = {}) {
+  if (reduce() || !from || !to) { ghost?.remove(); done?.(); return; }
+  Object.assign(ghost.style, { position: 'fixed', left: from.left + 'px', top: from.top + 'px', width: from.width + 'px', height: from.height + 'px', margin: 0, zIndex: 40, pointerEvents: 'none' });
+  document.body.appendChild(ghost);
+  const dx = to.left + to.width / 2 - (from.left + from.width / 2), dy = to.top + to.height / 2 - (from.top + from.height / 2);
+  const s = Math.max(0.3, Math.min(1, to.width / from.width));
+  const a = ghost.animate([
+    { translate: '0 0', scale: '1', rotate: '0deg', opacity: 1 },
+    { translate: `0 -14px`, scale: '1.04', rotate: '-2deg', opacity: 1, offset: 0.18 },
+    { translate: `${dx}px ${dy}px`, scale: `${s}`, rotate: '3deg', opacity: 0.2 },
+  ], { duration: 720, easing: 'cubic-bezier(.5, 0, .2, 1)', fill: 'forwards' });
+  a.onfinish = () => { ghost.remove(); done?.(); };
+}
+
+/** Un piccolo rimbalzo (la pila che riceve una carta, un numero che cambia). */
+export function bump(el, amount = 1.06) {
+  if (!el || reduce()) return;
+  el.animate([{ scale: '1' }, { scale: `${amount}` }, { scale: '1' }], { duration: 520, easing: SPRING });
+}

@@ -1,5 +1,5 @@
 // Cache dell'app per l'uso offline. Aggiorna VERSION a ogni rilascio.
-const VERSION = 'tempo-v24';
+const VERSION = 'tempo-v25';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/scheduler.js', 'js/store.js', 'js/ai.js', 'js/ai-open.js', 'js/images.js', 'js/companion.js', 'js/parse.js', 'js/templates.js', 'js/goals.js', 'js/learn.js', 'js/viewmodel.js', 'js/format.js', 'js/motion.js', 'js/themes.js', 'js/focus.js',
