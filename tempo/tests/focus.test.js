@@ -47,5 +47,5 @@ test('orologio, validazione e disegni', () => {
   assert.equal(pctAt(0, 188, { left: 0, top: 0, width: 334, height: 207 }), 0);
   assert.equal(pctAt(334, 188, { left: 0, top: 0, width: 334, height: 207 }), 1);
   assert.match(gaugeSvg({ pct: 0.25, running: true }), /animateMotion/);
-  assert.equal((dotRingSvg({ pct: 0.5 }).match(/class="d on"/g) || []).length, 42);
+  assert.equal((dotRingSvg({ pct: 0.5 }).match(/class="d on"/g) || []).length, 56);
 });

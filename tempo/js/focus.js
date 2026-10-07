@@ -128,22 +128,23 @@ export function gaugeSvg({ pct = 0, running = false, accent = '#D21E2B', id = 'g
  * l'anello gira piano su se stesso mentre il tempo scorre.
  * colors: i colori del tema; pct: quanto è passato (0–1).
  */
-export function dotRingSvg({ pct = 0, colors = ['#F4C542', '#C9B6EE', '#F2A7C3', '#DCDCDC'], running = false }) {
-  const N = 84, S = 300, C = S / 2;
+export function dotRingSvg({ pct = 0, colors = [], running = false }) {
+  // come nel riferimento: giallo, lilla, rosa e grigio chiaro, più il colore dell'attività
+  const pal = ['#F6C945', '#C7B5F0', '#F3A9C6', '#DADADA', '#F6C945', '#C7B5F0', ...colors.slice(-1)];
+  const N = 112, S = 300, C = S / 2;
   let seed = 7;
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
   const lit = Math.round(Math.min(1, Math.max(0, pct)) * N);
   let dots = '';
   for (let i = 0; i < N; i++) {
-    const a = (i / N) * Math.PI * 2 - Math.PI / 2 + (rnd() - 0.5) * 0.06;
-    const r = 112 + (rnd() - 0.5) * 30;
-    const size = 3 + rnd() * 4.2;
-    const col = colors[Math.floor(rnd() * colors.length)];
-    const on = i < lit;
-    dots += `<circle cx="${(C + r * Math.cos(a)).toFixed(1)}" cy="${(C + r * Math.sin(a)).toFixed(1)}" r="${size.toFixed(1)}" fill="${col}" class="d${on ? ' on' : ''}" style="--k:${(i % 9) * 0.35}s"/>`;
+    const a = (i / N) * Math.PI * 2 - Math.PI / 2 + (rnd() - 0.5) * 0.05;
+    const r = (i % 2 ? 104 : 124) + (rnd() - 0.5) * 16; // due file un po' disordinate
+    const size = 3.4 + rnd() * 3.8;
+    const col = pal[Math.floor(rnd() * pal.length)];
+    dots += `<circle cx="${(C + r * Math.cos(a)).toFixed(1)}" cy="${(C + r * Math.sin(a)).toFixed(1)}" r="${size.toFixed(1)}" fill="${col}" class="d${i < lit ? ' on' : ''}" style="--k:${(i % 9) * 0.35}s"/>`;
   }
   return `<svg class="dotring${running ? ' run' : ''}" viewBox="0 0 ${S} ${S}" width="${S}" height="${S}" aria-hidden="true">
-    <defs><radialGradient id="dr-glow"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".55" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs>
-    <circle cx="${C}" cy="${C}" r="96" fill="url(#dr-glow)" class="dr-glow"/>
+    <defs><radialGradient id="dr-glow"><stop offset="0" stop-color="#fff" stop-opacity=".97"/><stop offset=".6" stop-color="#fff" stop-opacity=".6"/><stop offset="1" stop-color="#FCE9D6" stop-opacity="0"/></radialGradient></defs>
+    <circle cx="${C}" cy="${C}" r="94" fill="url(#dr-glow)" class="dr-glow"/>
     <g class="dr-dots">${dots}</g></svg>`;
 }

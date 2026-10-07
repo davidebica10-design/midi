@@ -686,10 +686,10 @@ function updateFocus() {
   } else {
     const mins = Math.ceil(v.left / 60000);
     num.textContent = f.phase === 'done' ? '✓' : String(live ? mins : f.minutes);
-    lbl.textContent = f.phase === 'done' ? 'fatto' : f.pausedAt ? 'in pausa' : live ? (mins === 1 ? 'minuto' : 'minuti') : 'minuti';
+    lbl.textContent = f.phase === 'done' ? 'fatto' : f.pausedAt ? 'in pausa' : `di ${Math.round(v.total / 60000)} min`;
     const top = $('#f-top');
     if (top) top.textContent = live && f.startedAt ? `${fmtMin(minOfDay(f.startedAt))} – ${fmtMin(minOfDay(f.startedAt + f.paused + v.total))}` : f.title;
-    const lit = Math.round((f.phase === 'done' ? 1 : v.pct) * 84);
+    const lit = Math.round((f.phase === 'done' ? 1 : v.pct) * 112);
     document.querySelectorAll('#hero-art .dotring .d').forEach((d, i) => d.classList.toggle('on', i < lit));
   }
   if (live && !f.pausedAt) tickTimer = setTimeout(updateFocus, 1000 - (now % 1000) + 20);
