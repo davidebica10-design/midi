@@ -789,7 +789,7 @@ const PREF = /^(?:non\s+voglio|non\s+mi\s+piace|preferisco|preferirei|mi\s+piace
 
 // ---------------------------------------------------------------- giorni via, tempo a disposizione
 const AWAY = /\b(?:in\s+ferie|ferie|in\s+vacanza|vacanz[ae]|in\s+viaggio|in\s+trasferta|trasferta|via|fuori(?:\s+citt[aà])?|al\s+mare|in\s+montagna|dai\s+miei|dai\s+nonni|dai\s+suoceri|non\s+ci\s+sono|non\s+ci\s+sar[oò]|non\s+sono\s+disponibil\w*|malat[oa]|sono\s+(?:a|in|da)\s+[a-zà-ù]+)\b/i;
-const awayTitle = (t) => /ferie/.test(t) ? 'Ferie' : /vacanz/.test(t) ? 'Vacanza' : /\bmare\b/.test(t) ? 'Al mare' : /montagna/.test(t) ? 'In montagna'
+const awayTitle = (t) => /ferie/.test(t) ? 'Ferie' : /vacanz/.test(t) ? 'Vacanza' : /\bmare\b/.test(t) ? 'Mare' : /montagna/.test(t) ? 'In montagna'
   : /dai\s+miei/.test(t) ? 'Dai miei' : /dai\s+nonni/.test(t) ? 'Dai nonni' : /dai\s+suoceri/.test(t) ? 'Dai suoceri' : /trasferta/.test(t) ? 'Trasferta' : /viaggio/.test(t) ? 'In viaggio' : /malat/.test(t) ? 'Malattia'
   : (() => { const w = t.match(/\bsono\s+(a|in|da)\s+([a-zà-ù]+)/); return w ? `${cap(w[1])} ${cap(w[2])}` : /non\s+(?:ci\s+s|sono\s+disp)/.test(t) ? 'Non disponibile' : 'Via'; })();
 
