@@ -2,7 +2,7 @@ import { planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM
 import { glowSoon, bindCards, dragging, setActPalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor } from './store.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState } from './store.js';
 import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from './companion.js';
 import { goalFit, planSummary, horizonFor } from './goals.js';
 import { validatePlan } from './templates.js';
@@ -12,6 +12,7 @@ import { plural, windowLabel, durLabel } from './format.js';
 import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout, askSystem, claudeAsk } from './ai.js';
 import { runOpenTurn, openGoalPlan, openAsk, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
+import { archivePut, archiveAll } from './archive.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1783,8 +1784,12 @@ function onSettingsChange(e) {
     t.files[0].text().then((txt) => {
       const d = JSON.parse(txt);
       if (!Array.isArray(d.items)) throw new Error('file non valido');
-      const m = migrate({ ...d, settings: state.settings }, Date.now());
+      const { archive, ...rest } = d;
+      const m = migrate({ ...rest, settings: state.settings }, Date.now());
       commit('Ripristino backup', () => Object.assign(state, { ...m, settings: state.settings, anchors: {} }));
+      // le voci archiviate del backup tornano nell'archivio (ripulite come tutto il resto)
+      const arch = Array.isArray(archive) ? sanitizeState({ items: archive }).items : [];
+      if (arch.length && typeof indexedDB !== 'undefined') archivePut(arch).then(() => { const ids = new Set(arch.map((x) => x.id)); archived = [...archived.filter((x) => !ids.has(x.id)), ...arch]; }).catch(() => {});
       toast('Backup ripristinato');
     }).catch((err) => toast('Backup non valido: ' + err.message));
   }
@@ -1864,6 +1869,7 @@ function bind() {
     });
   }, { passive: true });
   $('#open-settings').addEventListener('click', openSettings);
+  $('#save-alert-export').addEventListener('click', exportData);
   $('#close-settings').addEventListener('click', closeSettings);
   $('#undo-btn').addEventListener('click', () => doUndo());
 
@@ -2179,6 +2185,7 @@ function bind() {
 
   // il tempo passa: aggiorna piano e carte
   const tick = () => {
+    maybeArchive();
     const before = positions(plan);
     replan();
     const after = positions(plan);
@@ -2191,6 +2198,37 @@ function bind() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 }
 
+// ---------------------------------------------------------------- archivio e spazio
+// Una volta al giorno le attività fatte e gli impegni passati da più di 60 giorni vanno nell'archivio (IndexedDB).
+// Si tolgono dallo stato solo dopo che l'archivio li ha scritti davvero.
+let archived = [], archiving = false;
+function loadArchive() {
+  if (typeof indexedDB === 'undefined') return;
+  archiveAll().then((list) => { archived = Array.isArray(list) ? list : []; }).catch(() => {});
+}
+function maybeArchive() {
+  const t = today();
+  if (archiving || state.stats.archivedOn === t || typeof indexedDB === 'undefined') return;
+  const cands = archiveCandidates(state, Date.now());
+  if (!cands.length) { state.stats.archivedOn = t; return; }
+  archiving = true;
+  const copy = clone(cands);
+  archivePut(copy).then(() => {
+    const ids = new Set(copy.map((x) => x.id));
+    archived = [...archived.filter((x) => !ids.has(x.id)), ...copy];
+    applyArchive(state, [...ids], Date.now());
+    replan();
+    save(state);
+    renderAll();
+  }).catch((e) => console.warn('archivio non disponibile', e)).finally(() => { archiving = false; });
+}
+
+/** Spazio finito: un avviso che resta finché il salvataggio non torna a funzionare, con l'export subito a portata. */
+function syncSaveAlert() {
+  const el = $('#save-alert');
+  if (el) el.hidden = !saveStatus();
+}
+
 /** Promemoria di backup: niente export da 14 giorni (e l'app si usa da almeno 14). */
 function backupDue() {
   const last = state.settings.lastExportAt || state.stats.createdAt || Date.now();
@@ -2200,7 +2238,8 @@ function backupDue() {
 function exportData() {
   // tutto tranne le chiavi API
   const { settings, ...rest } = state;
-  const data = JSON.stringify({ app: 'tempo', version: 2, exportedAt: new Date().toISOString(), ...rest }, null, 2);
+  // anche l'archivio: un backup deve contenere tutto
+  const data = JSON.stringify({ app: 'tempo', version: 3, exportedAt: new Date().toISOString(), ...rest, archive: archived }, null, 2);
   state.settings.lastExportAt = Date.now();
   save(state);
   const file = new File([data], `tempo-backup-${today()}.json`, { type: 'application/json' });
@@ -2218,7 +2257,12 @@ function exportData() {
 // ---------------------------------------------------------------- avvio
 replan();
 save(state);
+loadArchive();
+maybeArchive();
+addEventListener('tempo:save-failed', syncSaveAlert);
+addEventListener('tempo:save-ok', syncSaveAlert);
 bind();
+syncSaveAlert();
 renderAll();
 renderDayView(true);
 if (!state.onboarded) openOnboarding();

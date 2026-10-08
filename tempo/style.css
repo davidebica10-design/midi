@@ -956,3 +956,8 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 /* ogni tasto risponde al tocco con una molla */
 .btn, .ch, .round, .bar-btn, .send, .mini-btn, .adv-go, .sw, .fbtn, .cd, .sl-row, .sm-card, .ed-quick button { transition: transform 0.45s var(--spring-soft), background 0.2s, color 0.2s, box-shadow 0.2s; }
 .btn:active, .ch:active, .mini-btn:active, .adv-go:active, .fbtn:active, .ed-quick button:active { transform: scale(0.94); transition-duration: 0.15s; }
+
+/* spazio finito: avviso che resta finché il salvataggio non funziona di nuovo */
+.save-alert { position: absolute; left: 12px; right: 12px; top: calc(var(--safe-t) + 8px); z-index: 60; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px;
+  border-radius: 18px; background: var(--ink); color: var(--bg); box-shadow: var(--shadow-lg); font-size: 14.5px; line-height: 1.35; }
+.save-alert .btn.primary { background: var(--bg); color: var(--ink); height: 42px; border-radius: 14px; font-weight: 600; }

@@ -18,17 +18,24 @@ export function kindWord(title) {
 /** Le chiavi di apprendimento di un'attività: tipo (parola) e progetto. */
 const keysOf = (title, project) => [kindWord(title) && `w:${kindWord(title)}`, project && `p:${project}`].filter(Boolean);
 
-/** Campioni: attività fatte con la durata reale. Il rapporto è con la stima iniziale (prima delle correzioni). */
+export const MAX_SAMPLES = 300;
+/** Un'attività fatta in forma compatta, per non perdere ciò che insegna quando va in archivio. */
+export function sampleOf(x) {
+  if (!x || x.kind !== 'task' || x.status !== 'done' || !x.actual || x.habitId) return null;
+  const base = x.baseDuration || x.duration;
+  if (!base) return null;
+  return { keys: keysOf(x.title, x.project), base, actual: x.actual, doneAt: x.doneAt || 0 };
+}
+
+/** Campioni: attività fatte con la durata reale (nello stato e già archiviate). Il rapporto è con la stima iniziale. */
 function samples(state) {
   const out = {};
   const ignore = state.learned?.ignoreBefore || {};
-  for (const x of state.items || []) {
-    if (x.kind !== 'task' || x.status !== 'done' || !x.actual || x.habitId) continue;
-    const base = x.baseDuration || x.duration;
-    if (!base) continue;
-    for (const k of keysOf(x.title, x.project)) {
-      if (ignore[k] && (x.doneAt || 0) < ignore[k]) continue;
-      (out[k] ||= []).push({ ratio: x.actual / base, base, actual: x.actual });
+  const all = [...(state.learned?.samples || []), ...(state.items || []).map(sampleOf).filter(Boolean)];
+  for (const sm of all) {
+    for (const k of sm.keys || []) {
+      if (ignore[k] && (sm.doneAt || 0) < ignore[k]) continue;
+      (out[k] ||= []).push({ ratio: sm.actual / sm.base, base: sm.base, actual: sm.actual });
     }
   }
   return out;
@@ -36,7 +43,7 @@ function samples(state) {
 
 /** Aggiorna le durate imparate (mediana, almeno 3 campioni) e corregge le stime delle attività ancora da fare. */
 export function updateDurations(state) {
-  const L = (state.learned ||= { durations: {}, slots: {} });
+  const L = (state.learned ||= { durations: {}, slots: {}, samples: [] });
   L.durations ||= {};
   const S = samples(state);
   for (const [k, xs] of Object.entries(S)) {

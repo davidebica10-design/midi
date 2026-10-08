@@ -152,7 +152,7 @@ test('migrazione v1 → v2: le note strutturabili diventano preferenze, niente s
   const { migrate } = await import('../js/store.js');
   const v1 = { items: [{ id: 'a', title: 'X', kind: 'task', status: 'todo', duration: 30 }], prefs: { offDays: [] }, memory: [{ id: 'm', text: 'La domenica voglio staccare', category: 'preferenza' }], chat: [], recurring: [] };
   const s = migrate(v1, NOW);
-  assert.equal(s.schema, 2);
+  assert.equal(s.schema, 3);
   assert.deepEqual(s.prefs.offDays, [0]);
   assert.equal(s.items.length, 1);
   assert.equal(s.memory.length, 1);

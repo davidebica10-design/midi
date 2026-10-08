@@ -3,7 +3,7 @@
 import { DEFAULT_PREFS, parseHM, fmtMin, dateKey, addDays, WINDOWS, weekday, daysBetween } from './scheduler.js';
 import { parseDue, weekdaysIn, structureMemory } from './parse.js';
 import { sessionsFor, validatePlan, MAX_SESSIONS } from './templates.js';
-import { estimate, updateDurations } from './learn.js';
+import { estimate, updateDurations, sampleOf, MAX_SAMPLES } from './learn.js';
 import { sanitizeFocus } from './focus.js';
 import { THEME_KEYS } from './themes.js';
 
@@ -12,19 +12,19 @@ const UNDO_KEY = 'tempo.undo.v1';
 
 export const uid = () => Math.random().toString(36).slice(2, 8);
 
-export const SCHEMA = 2;
+export const SCHEMA = 3;
 
 export function emptyState() {
   return {
     schema: SCHEMA,
     items: [],
     habits: [],     // abitudini con frequenza: { id, title, perWeek, duration, project, goalId, window }
-    learned: { durations: {}, slots: {} }, // cosa ha imparato dal tuo comportamento
+    learned: { durations: {}, slots: {}, samples: [] }, // cosa ha imparato dal tuo comportamento (samples: durate vere delle attività archiviate)
     seenObs: { day: null, ids: [] },       // osservazioni già mostrate oggi (massimo 2)
     askChat: [],    // le domande del riepilogo e le risposte
     askIntro: null, // i punti chiave scritti dall'AI: { key, text }
     focus: null,    // il timer o pomodoro in corso (focus.js)
-    prefs: { ...DEFAULT_PREFS },
+    prefs: structuredClone(DEFAULT_PREFS), // copia profonda: availability e gli elenchi non si condividono tra stati
     recurring: [],
     memory: [],
     goals: [],      // obiettivi: { id, title, due, projectId, note }
@@ -34,7 +34,7 @@ export function emptyState() {
     anchors: {},
     chat: [],
     settings: { apiKey: '', model: 'claude-opus-5-5', name: '' },
-    stats: { replans: {}, createdAt: Date.now() },
+    stats: { replans: {}, createdAt: Date.now(), archived: { tasks: 0, done: 0 }, archivedOn: null },
   };
 }
 
@@ -86,7 +86,11 @@ export function sanitizeState(s) {
   s.anchors = Object.fromEntries(Object.entries(obj(s.anchors)).filter(([k]) => safeId(k)));
   s.log = arr(s.log).filter((e) => e && typeof e === 'object').map((e) => ({ ...e, id: safeId(e.id), project: safeId(e.project) }));
   const L = obj(s.learned);
-  s.learned = { ...L, durations: Object.fromEntries(Object.entries(obj(L.durations)).filter(([k]) => safeId(k))), slots: obj(L.slots), ignoreBefore: obj(L.ignoreBefore) };
+  s.learned = { ...L, durations: Object.fromEntries(Object.entries(obj(L.durations)).filter(([k]) => safeId(k))), slots: obj(L.slots), ignoreBefore: obj(L.ignoreBefore),
+    samples: arr(L.samples).filter((x) => x && typeof x === 'object' && Number.isFinite(+x.base) && Number.isFinite(+x.actual))
+      .map((x) => ({ keys: arr(x.keys).filter((k) => typeof k === 'string').map((k) => k.slice(0, 64)).slice(0, 2), base: num(x.base, 1, 1440, 30), actual: num(x.actual, 1, 1440, 30), doneAt: num(x.doneAt, 0, 9e15, 0) })).slice(-MAX_SAMPLES) };
+  const A = obj(obj(s.stats).archived);
+  s.stats = { ...obj(s.stats), archived: { tasks: num(A.tasks, 0, 1e7, 0), done: num(A.done, 0, 1e7, 0) } };
   const P = obj(s.prefs);
   s.prefs = { ...P, offDays: arr(P.offDays).map(Number).filter((d) => d >= 0 && d <= 6), freeDays: arr(P.freeDays).map(Number).filter((d) => d >= 0 && d <= 6),
     focusWindow: WINDOWS[P.focusWindow] ? P.focusWindow : null,
@@ -114,29 +118,78 @@ export function migrate(s, now = Date.now()) {
     // le attività dei progetti con un obiettivo si collegano all'obiettivo
     for (const it of out.items) if (it.project && !it.goalId) it.goalId = goalOfProject(out, it.project)?.id || null;
     out.stats.replans = {}; // prima contava ogni modifica: si riparte da zero
-    out.schema = 2;
   }
+  // v2 → v3: archivio delle attività vecchie (learned.samples, stats.archived): i valori vuoti li mette già emptyState
+  out.schema = SCHEMA;
   return out;
 }
 
+// ---- Salvataggio ----
+// Se lo spazio finisce: prima si libera la cronologia dell'annulla e si riprova; se non basta,
+// lo si segnala (evento «tempo:save-failed») e il salvataggio precedente resta com'era.
+let saveError = null;
+/** null se l'ultimo salvataggio è riuscito, altrimenti { at, error }. */
+export const saveStatus = () => saveError;
+const emit = (name, detail) => { try { globalThis.dispatchEvent?.(new CustomEvent(name, { detail })); } catch {} };
+
 export function save(state) {
-  try {
-    if (state.chat.length > 200) state.chat = state.chat.slice(-200);
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch (e) { console.warn('save failed', e); }
+  if (state.chat.length > 200) state.chat = state.chat.slice(-200);
+  const json = JSON.stringify(state);
+  const write = () => { localStorage.setItem(KEY, json); return true; };
+  try { write(); }
+  catch {
+    try { localStorage.removeItem(UNDO_KEY); } catch {}
+    try { write(); }
+    catch (e) {
+      saveError = { at: Date.now(), error: String(e?.name || e) };
+      emit('tempo:save-failed', saveError);
+      return false;
+    }
+  }
+  if (saveError) { saveError = null; emit('tempo:save-ok', null); }
+  return true;
 }
 
 // ---- Annulla ----
+// In memoria le ultime 20 modifiche; su disco solo le ultime 3, e solo se stanno in 300 mila caratteri:
+// l'annulla non deve mai crescere con lo stato e riempire lo spazio del telefono.
+const UNDO_MEM = 20, UNDO_DISK = 3, UNDO_DISK_MAX = 300_000;
 let undo = [];
-try { undo = JSON.parse(localStorage.getItem(UNDO_KEY) || '[]'); } catch { undo = []; }
-const persistUndo = () => { try { localStorage.setItem(UNDO_KEY, JSON.stringify(undo.slice(-30))); } catch {} };
+const storage = () => globalThis.localStorage;
+const persistUndo = () => {
+  try {
+    // si misura prima di serializzare: le copie troppo grandi non vengono nemmeno scritte
+    const keep = [];
+    let size = 2;
+    for (const u of undo.slice(-UNDO_DISK).reverse()) {
+      size += u.snap.length * 1.1 + 120;
+      if (size > UNDO_DISK_MAX) break;
+      keep.unshift(u);
+    }
+    let json = JSON.stringify(keep);
+    while (keep.length && json.length > UNDO_DISK_MAX) { keep.shift(); json = JSON.stringify(keep); }
+    if (keep.length) storage().setItem(UNDO_KEY, json); else storage().removeItem(UNDO_KEY);
+  } catch { try { storage().removeItem(UNDO_KEY); } catch {} }
+};
+/** All'avvio: legge l'annulla salvato e, se è troppo grande (versioni precedenti), lo riduce o lo elimina. */
+export function trimUndoStorage() {
+  let raw = null;
+  try { raw = storage()?.getItem(UNDO_KEY); } catch { return; }
+  if (!raw) { undo = []; return; }
+  try {
+    const list = JSON.parse(raw);
+    undo = Array.isArray(list) ? list.filter((u) => u && typeof u.snap === 'string' && u.snap.length < UNDO_DISK_MAX).slice(-UNDO_DISK) : [];
+  } catch { undo = []; }
+  if (raw.length > UNDO_DISK_MAX || !undo.length) persistUndo();
+}
+trimUndoStorage();
 
 const snapshotOf = (s) => JSON.stringify({ items: s.items, prefs: s.prefs, recurring: s.recurring, memory: s.memory, anchors: s.anchors, goals: s.goals, projects: s.projects, habits: s.habits, learned: s.learned });
 
 export function pushUndo(state, label) {
   const id = uid();
   undo.push({ id, label, at: Date.now(), snap: snapshotOf(state) });
-  undo = undo.slice(-30);
+  undo = undo.slice(-UNDO_MEM);
   persistUndo();
   return id;
 }
@@ -154,6 +207,39 @@ export function popUndo(state, id) {
   undo = undo.slice(0, idx);
   persistUndo();
   return entry;
+}
+
+// ---- Archivio ----
+// Le attività fatte e gli impegni passati da più di 60 giorni escono dallo stato (vanno in IndexedDB, archive.js):
+// lo stato resta piccolo e il piano non li rilegge ogni 30 secondi. Le durate vere restano per l'apprendimento.
+export const ARCHIVE_AFTER_DAYS = 60;
+/** Le voci da archiviare oggi. Le sessioni di un obiettivo ancora aperto restano (servono al suo avanzamento). */
+export function archiveCandidates(state, now = Date.now()) {
+  const limit = addDays(dateKey(new Date(now)), -ARCHIVE_AFTER_DAYS);
+  const openGoals = new Set((state.goals || []).filter((g) => !g.archivedAt).map((g) => g.id));
+  const pinned = new Set([state.focus?.itemId].filter(Boolean));
+  return (state.items || []).filter((x) => {
+    if (pinned.has(x.id) || (x.goalId && openGoals.has(x.goalId))) return false;
+    if (x.status === 'done') return !!x.doneAt && dateKey(new Date(x.doneAt)) < limit;
+    return x.kind === 'event' && !!x.date && x.date < limit;
+  });
+}
+/** Toglie dallo stato le voci archiviate (dopo che sono state scritte nell'archivio), tenendo i campioni delle durate. */
+export function applyArchive(state, ids, now = Date.now()) {
+  const set = new Set(ids);
+  const gone = state.items.filter((x) => set.has(x.id));
+  if (!gone.length) return 0;
+  const L = (state.learned ||= { durations: {}, slots: {} });
+  const fresh = gone.map((x) => sampleOf(x)).filter(Boolean);
+  L.samples = [...(L.samples || []), ...fresh].sort((a, b) => a.doneAt - b.doneAt).slice(-MAX_SAMPLES);
+  state.items = state.items.filter((x) => !set.has(x.id));
+  for (const x of state.items) if (x.dependsOn?.length) x.dependsOn = x.dependsOn.filter((d) => !set.has(d));
+  if (state.anchors) for (const id of set) delete state.anchors[id];
+  const A = ((state.stats ||= {}).archived ||= { tasks: 0, done: 0 });
+  A.tasks += gone.filter((x) => x.kind === 'task').length;
+  A.done += gone.filter((x) => x.kind === 'task' && x.status === 'done').length;
+  state.stats.archivedOn = dateKey(new Date(now));
+  return gone.length;
 }
 
 // ---- Progetti ----
@@ -612,13 +698,14 @@ export const prefLabel = (k) => ({
 export function computeStats(state) {
   const tasks = state.items.filter((x) => x.kind === 'task');
   const done = tasks.filter((x) => x.status === 'done');
+  const arch = state.stats?.archived || { tasks: 0, done: 0 };
   const withActual = done.filter((x) => x.actual && x.duration);
   const ratio = withActual.length ? withActual.reduce((s, x) => s + x.actual / x.duration, 0) / withActual.length : null;
   const replans = Object.values(state.stats.replans || {});
   return {
-    total: tasks.length,
-    done: done.length,
-    pct: tasks.length ? Math.round((done.length / tasks.length) * 100) : 0,
+    total: tasks.length + arch.tasks,
+    done: done.length + arch.done,
+    pct: tasks.length + arch.tasks ? Math.round(((done.length + arch.done) / (tasks.length + arch.tasks)) * 100) : 0,
     ratio,
     samples: withActual.length,
     replansPerDay: replans.length ? (replans.reduce((a, b) => a + b, 0) / replans.length).toFixed(1) : '0',

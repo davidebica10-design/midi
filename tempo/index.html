@@ -27,6 +27,11 @@
 <div class="bg" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="b3"></i></div>
 
 <div id="app">
+  <!-- spazio finito: resta finché il salvataggio non torna a funzionare -->
+  <div class="save-alert" id="save-alert" role="alert" hidden>
+    <p><b>Lo spazio per Tempo sul telefono è pieno.</b> Le ultime modifiche non sono salvate: esporta subito un backup.</p>
+    <button type="button" class="btn primary" id="save-alert-export">Esporta il backup</button>
+  </div>
   <!-- GIORNO: saluto + carte -->
   <section id="day" class="layer" aria-label="Giornata">
     <div class="topbar">
