@@ -149,10 +149,10 @@ test('un\'attività con scadenza breve resta un\'attività, non un obiettivo', (
 });
 
 test('migrazione v1 → v2: le note strutturabili diventano preferenze, niente si perde', async () => {
-  const { migrate } = await import('../js/store.js');
+  const { migrate, SCHEMA } = await import('../js/store.js');
   const v1 = { items: [{ id: 'a', title: 'X', kind: 'task', status: 'todo', duration: 30 }], prefs: { offDays: [] }, memory: [{ id: 'm', text: 'La domenica voglio staccare', category: 'preferenza' }], chat: [], recurring: [] };
   const s = migrate(v1, NOW);
-  assert.equal(s.schema, 3);
+  assert.equal(s.schema, SCHEMA);
   assert.deepEqual(s.prefs.offDays, [0]);
   assert.equal(s.items.length, 1);
   assert.equal(s.memory.length, 1);

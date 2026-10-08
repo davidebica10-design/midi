@@ -45,14 +45,15 @@ test('fasce orarie: due settimane di sessioni saltate la mattina → una domanda
   const s = freshState();
   const day = 864e5;
   s.log = [];
-  for (let i = 0; i < 6; i++) s.log.push({ type: 'skip', at: NOW - (13 - i * 2) * day, start: 8 * 60 });
+  // almeno 8 sessioni nella fascia (fase 2.5)
+  for (let i = 0; i < 8; i++) s.log.push({ type: 'skip', at: NOW - (13 - i) * day, start: 8 * 60 });
   s.log.push({ type: 'done', at: NOW - 3 * day, start: 8 * 60 });
   for (let i = 0; i < 4; i++) s.log.push({ type: 'done', at: NOW - (12 - i * 3) * day, start: 20 * 60 });
   const before = JSON.stringify(s.prefs);
   const obs = learnedObservations(s, NOW);
   const slot = obs.find((o) => o.id === 'slot-mattina');
   assert.ok(slot, JSON.stringify(obs));
-  assert.match(slot.text, /mattino.*1 su 7.*sera/);
+  assert.match(slot.text, /mattino.*1 su 9.*sera/);
   assert.equal(JSON.stringify(s.prefs), before);
 });
 

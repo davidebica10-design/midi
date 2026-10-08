@@ -11,7 +11,9 @@ export function horizonFor(state, now) {
 
 /**
  * Dove finiscono le sessioni di un obiettivo.
- * { total, placed, late, unplaced, lastDay, first: { day, start, title } | null }
+ * { total, placed, late, unplaced, notYet, lastDay, first: { day, start, title } | null }
+ * Una sessione non collocata è in ritardo solo se il piano arriva fino alla scadenza:
+ * oltre l'orizzonte è «non ancora pianificata» (notYet), non un allarme.
  */
 export function goalFit(state, goal, now, plan = null) {
   const today = dateKey(new Date(now));
@@ -28,14 +30,37 @@ export function goalFit(state, goal, now, plan = null) {
       if (!first || d < first.day || (d === first.day && b.start < first.start)) first = { day: d, start: b.start, title: b.item.title };
     }
   }
-  let late = 0, unplaced = 0, lastDay = null;
+  const end = Object.keys(p).sort().at(-1);
+  const covered = !!goal.due && !!end && goal.due <= end;
+  let late = 0, unplaced = 0, notYet = 0, lastDay = null;
   for (const it of open) {
     const l = lastOf.get(it.id);
-    if (!l) { unplaced++; late++; continue; }
+    if (!l) { unplaced++; if (covered) late++; else notYet++; continue; }
     if (goal.due && l > goal.due) late++;
     if (!lastDay || l > lastDay) lastDay = l;
   }
-  return { total: open.length, placed: open.length - unplaced, late, unplaced, lastDay, first };
+  return { total: open.length, placed: open.length - unplaced, late, unplaced, notYet, lastDay, first };
+}
+
+/** Una sessione dell'obiettivo è in corso adesso (avviata, oppure nella sua fascia secondo il piano)? */
+export function goalInProgress(state, goal, plan, now) {
+  if ((state.items || []).some((x) => x.goalId === goal.id && x.status === 'doing')) return true;
+  const t = dateKey(new Date(now));
+  return (plan?.[t]?.blocks || []).some((b) => (b.type === 'doing' || b.type === 'current') && b.item.goalId === goal.id);
+}
+
+/**
+ * Ricorda da quando un obiettivo risulta in ritardo (goal.lateSince): l'allarme si mostra solo
+ * se il ritardo c'è da almeno due giorni di fila. Mentre una sua sessione è in corso non si tocca niente.
+ */
+export function trackLate(state, fits, now, plan) {
+  const t = dateKey(new Date(now));
+  for (const g of state.goals || []) {
+    const fit = fits?.[g.id];
+    if (!fit || goalInProgress(state, g, plan, now)) continue;
+    if (fit.late > 0 && g.due && g.due >= t) g.lateSince ||= t;
+    else g.lateSince = null;
+  }
 }
 
 /** «Ho messo 22 sessioni per l'EP da qui al 30 novembre. Si parte stasera alle 19:15 con il beat 01.» */

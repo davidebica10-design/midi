@@ -1,6 +1,6 @@
 // Il companion impara dal comportamento: quanto durano davvero le cose, quando le fai davvero.
 // Tutto ciò che impara è visibile e dimenticabile ("Cosa ho imparato"); niente si applica di nascosto.
-import { dateKey, weekday, WINDOWS } from './scheduler.js';
+import { dateKey, weekday, addDays, WINDOWS, isOffDay } from './scheduler.js';
 
 const STOP = new Set(['il', 'la', 'lo', 'i', 'gli', 'le', 'l', 'un', 'una', 'uno', 'di', 'del', 'della', 'dello', 'dell', 'per', 'con', 'su', 'sul', 'sulla', 'al', 'alla', 'a', 'e', 'in', 'da',
   'finire', 'fare', 'chiudere', 'completare', 'continuare', 'lavorare', 'iniziare', 'sessione', 'registrazione', 'carica', 'piano', 'contenuti']);
@@ -80,20 +80,56 @@ const windowOf = (min) => (min < 13 * 60 ? 'mattina' : min < 18 * 60 ? 'pomerigg
 const LABEL = { mattina: 'del mattino', pomeriggio: 'del pomeriggio', sera: 'della sera' };
 const WD = ['la domenica', 'il lunedì', 'il martedì', 'il mercoledì', 'il giovedì', 'il venerdì', 'il sabato'];
 
-/** Completamento per fascia e per giorno negli ultimi 14 giorni. */
+const MIN_SLOT = 8; // sessioni in una fascia (o in un giorno della settimana) prima di dire qualcosa
+const MIN_TARGET = 4; // sessioni nella fascia proposta: senza dati non si propone
+const MIN_PROJECT_DAYS = 3; // giorni della settimana che restano sempre ai progetti
+
+/**
+ * Completamento per fascia (ultimi 14 giorni) e per giorno della settimana (ultime 4 settimane).
+ * Le sessioni delle abitudini che l'app ha segnato come saltate da sola (refreshHabits) non contano:
+ * spesso vuol dire solo che l'app non è stata aperta.
+ */
 export function slotStats(state, now) {
-  const since = Math.max(now - 14 * 864e5, state.learned?.ignoreBefore?.slots || 0);
+  const ignore = state.learned?.ignoreBefore?.slots || 0;
+  const since = Math.max(now - 14 * 864e5, ignore), sinceDay = Math.max(now - 28 * 864e5, ignore);
   const win = {}, day = {};
   let first = null;
   for (const e of state.log || []) {
-    if ((e.type !== 'done' && e.type !== 'skip') || e.at < since) continue;
+    if ((e.type !== 'done' && e.type !== 'skip') || e.at < sinceDay || e.habit || e.auto) continue;
     const d = new Date(e.at);
     const start = e.start ?? d.getHours() * 60 + d.getMinutes();
-    const w = windowOf(start), wd = d.getDay();
-    for (const [map, k] of [[win, w], [day, wd]]) { (map[k] ||= { done: 0, skip: 0 })[e.type]++; }
+    (day[d.getDay()] ||= { done: 0, skip: 0 })[e.type]++;
+    if (e.at < since) continue;
+    (win[windowOf(start)] ||= { done: 0, skip: 0 })[e.type]++;
     if (!first || e.at < first) first = e.at;
   }
   return { win, day, spanDays: first ? (now - first) / 864e5 : 0 };
+}
+
+/** Quanta parte di una fascia (nei tuoi orari) è già presa dagli impegni ricorrenti, nella settimana: 0–1. */
+export function recurringShare(state, w) {
+  const P = state.prefs || {};
+  const a = Math.max(WINDOWS[w][0], P.dayStart ?? 8 * 60), b = Math.min(WINDOWS[w][1], P.dayEnd ?? 23 * 60);
+  if (b <= a) return 1;
+  let busy = 0;
+  for (let wd = 0; wd < 7; wd++) {
+    const spans = (state.recurring || []).filter((r) => (r.weekdays || []).includes(wd)).map((r) => [Math.max(a, r.start), Math.min(b, r.end)]).filter(([x, y]) => y > x).sort((x, y) => x[0] - y[0]);
+    let end = a;
+    for (const [x, y] of spans) { if (y <= end) continue; busy += y - Math.max(x, end); end = y; }
+  }
+  return busy / (7 * (b - a));
+}
+
+/** Giorni della settimana che oggi restano ai progetti. */
+export function projectDaysLeft(state, today) {
+  let n = 0;
+  for (let k = 0; k < 7; k++) if (!isOffDay(state.prefs, addDays(today, k))) n++;
+  return n;
+}
+
+/** Toglie un giorno liberato dal companion: torna subito ai progetti. */
+export function dropRestDay(state, wd) {
+  state.prefs.restDays = (state.prefs.restDays || []).filter((r) => r.wd !== +wd);
 }
 
 const rate = (s) => s.done / (s.done + s.skip);
@@ -116,17 +152,26 @@ export function learnedObservations(state, now) {
   }
   // fasce orarie: due settimane di dati prima di proporre
   const st = slotStats(state, now);
+  const today = dateKey(new Date(now));
   if (st.spanDays >= 10) {
     const dismissed = L.slots || {};
-    const bad = Object.entries(st.win).find(([w, s]) => s.done + s.skip >= 4 && rate(s) < 0.4 && !(dismissed[w] > now - 14 * 864e5));
-    if (bad) {
+    // una fascia «da spostare»: almeno 8 sessioni, meno del 40% fatte
+    const bad = Object.entries(st.win).find(([w, s]) => s.done + s.skip >= MIN_SLOT && rate(s) < 0.4 && !(dismissed[w] > now - 14 * 864e5));
+    // dove spostarle: solo in una fascia con dati che vanno davvero meglio e non già piena di impegni fissi
+    const better = bad && Object.keys(WINDOWS)
+      .filter((x) => x !== bad[0] && st.win[x] && st.win[x].done + st.win[x].skip >= MIN_TARGET && rate(st.win[x]) >= 0.6 && recurringShare(state, x) <= 0.5)
+      .sort((a, b) => rate(st.win[b]) - rate(st.win[a]))[0];
+    if (bad && better) {
       const [w, s] = bad;
-      const better = Object.keys(WINDOWS).filter((x) => x !== w).sort((a, b) => (st.win[b] ? rate(st.win[b]) : 0.5) - (st.win[a] ? rate(st.win[a]) : 0.5))[0];
-      out.push({ id: `slot-${w}`, text: `Le sessioni ${LABEL[w]} le salti spesso (${s.done} su ${s.done + s.skip} nelle ultime due settimane). Le sposto ${better === 'pomeriggio' ? 'al pomeriggio' : `alla ${better}`}?`,
+      const to = better === 'pomeriggio' ? 'al pomeriggio' : `alla ${better}`;
+      const fw = state.prefs?.focusWindow;
+      // se avevi detto tu una fascia diversa, lo dice chiaramente
+      const ask = fw && fw !== better ? `Mi avevi detto che rendi meglio ${fw === 'pomeriggio' ? 'il pomeriggio' : `la ${fw}`}: le sposto comunque ${to}?` : `Le sposto ${to}?`;
+      out.push({ id: `slot-${w}`, text: `Le sessioni ${LABEL[w]} le salti spesso (${s.done} su ${s.done + s.skip} nelle ultime due settimane). ${ask}`,
         actions: [{ label: 'Sì, spostale', act: 'slot-move', arg: `${w}|${better}` }, { label: 'No, lascia così', act: 'slot-keep', arg: w }] });
-    } else {
-      const off = new Set(state.prefs?.offDays || []);
-      const badDay = Object.entries(st.day).find(([wd, s]) => !off.has(+wd) && s.done + s.skip >= 3 && rate(s) < 0.34 && !(dismissed['d' + wd] > now - 14 * 864e5));
+    } else if (projectDaysLeft(state, today) > MIN_PROJECT_DAYS) {
+      // un giorno da liberare: almeno 8 sessioni in quel giorno nelle ultime 4 settimane, quasi tutte saltate
+      const badDay = Object.entries(st.day).find(([wd, s]) => !isOffDay(state.prefs, nextOf(today, +wd)) && s.done + s.skip >= MIN_SLOT && rate(s) < 0.34 && !(dismissed['d' + wd] > now - 14 * 864e5));
       if (badDay) {
         const [wd, s] = badDay;
         out.push({ id: `day-${wd}`, text: `${WD[wd].charAt(0).toUpperCase() + WD[wd].slice(1)} salti quasi sempre le sessioni (${s.done} su ${s.done + s.skip}). Lo tengo libero dai progetti?`,
@@ -136,6 +181,9 @@ export function learnedObservations(state, now) {
   }
   return out;
 }
+
+/** Il prossimo giorno (da oggi) che cade di quel giorno della settimana. */
+const nextOf = (today, wd) => addDays(today, (wd - weekday(today) + 7) % 7);
 
 /** Per "Cosa ho imparato": tutto ciò che il companion usa, in parole. */
 export function learnedList(state, now) {

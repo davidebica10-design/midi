@@ -1,6 +1,6 @@
 // Stato, persistenza locale, annullamento e applicazione delle modifiche strutturate.
 // Qui vengono validati orari, durate e vincoli: l'AI propone, il codice decide.
-import { DEFAULT_PREFS, parseHM, fmtMin, dateKey, addDays, WINDOWS, weekday, daysBetween } from './scheduler.js';
+import { DEFAULT_PREFS, parseHM, fmtMin, dateKey, addDays, WINDOWS, weekday, daysBetween, isOffDay } from './scheduler.js';
 import { parseDue, weekdaysIn, structureMemory } from './parse.js';
 import { sessionsFor, validatePlan, MAX_SESSIONS } from './templates.js';
 import { estimate, updateDurations, sampleOf, MAX_SAMPLES } from './learn.js';
@@ -12,7 +12,7 @@ const UNDO_KEY = 'tempo.undo.v1';
 
 export const uid = () => Math.random().toString(36).slice(2, 8);
 
-export const SCHEMA = 3;
+export const SCHEMA = 4;
 
 export function emptyState() {
   return {
@@ -76,7 +76,7 @@ export function sanitizeState(s) {
   s.focus = sanitizeFocus(s.focus);
   if (s.focus && !s.items.some((x) => x.id === s.focus.itemId)) s.focus = null;
   s.projects = ids(s.projects).map((p, i) => ({ ...p, name: str(p.name, 40) || 'Progetto', color: safeColor(p.color) || COLORS[i % COLORS.length], due: validDate(p.due), aliases: arr(p.aliases).map((a) => str(a, 40)) }));
-  s.goals = ids(s.goals).map((g) => ({ ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId) }));
+  s.goals = ids(s.goals).map((g) => ({ ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId), lateSince: validDate(g.lateSince) }));
   s.habits = ids(s.habits).map((h) => ({ ...h, title: str(h.title, 60), perWeek: num(h.perWeek, 1, 7, 1), duration: num(h.duration, 10, 240, 60), project: safeId(h.project), goalId: safeId(h.goalId), window: WINDOWS[h.window] ? h.window : null }));
   s.memory = ids(s.memory).map((m) => ({ ...m, text: str(m.text, 200), category: ['vincolo', 'preferenza', 'obiettivo', 'nota'].includes(m.category) ? m.category : 'nota' }));
   s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate), color: cardColor(r.color) }));
@@ -93,6 +93,7 @@ export function sanitizeState(s) {
   s.stats = { ...obj(s.stats), archived: { tasks: num(A.tasks, 0, 1e7, 0), done: num(A.done, 0, 1e7, 0) } };
   const P = obj(s.prefs);
   s.prefs = { ...P, offDays: arr(P.offDays).map(Number).filter((d) => d >= 0 && d <= 6), freeDays: arr(P.freeDays).map(Number).filter((d) => d >= 0 && d <= 6),
+    restDays: arr(P.restDays).filter((r) => r && Number.isInteger(+r.wd) && +r.wd >= 0 && +r.wd <= 6 && validDate(r.until)).map((r) => ({ wd: +r.wd, until: r.until })),
     focusWindow: WINDOWS[P.focusWindow] ? P.focusWindow : null,
     dayStart: num(P.dayStart, 0, 1440, DEFAULT_PREFS.dayStart), dayEnd: num(P.dayEnd, 0, 1440, DEFAULT_PREFS.dayEnd), buffer: num(P.buffer, 0, 120, DEFAULT_PREFS.buffer),
     slack: num(P.slack, 0, 0.9, DEFAULT_PREFS.slack), maxBlock: num(P.maxBlock, 20, 600, DEFAULT_PREFS.maxBlock), decompress: num(P.decompress, 0, 180, DEFAULT_PREFS.decompress), heavyRest: num(P.heavyRest, 0, 120, 0),
@@ -120,6 +121,19 @@ export function migrate(s, now = Date.now()) {
     out.stats.replans = {}; // prima contava ogni modifica: si riparte da zero
   }
   // v2 → v3: archivio delle attività vecchie (learned.samples, stats.archived): i valori vuoti li mette già emptyState
+  if ((s.schema || 1) < 4) {
+    // v3 → v4: i giorni liberati dal companion non sono più per sempre. Erano finiti in offDays:
+    // si riconoscono dalla risposta salvata in learned.slots['d<giorno>'] e dal fatto che non li hai detti tu
+    // (nessun vincolo in memoria che nomina quel giorno). Diventano giorni liberi per altre 4 settimane.
+    const NAMES = ['domenic', 'luned', 'marted', 'mercoled', 'gioved', 'venerd', 'sabat'];
+    const said = (wd) => (out.memory || []).some((m) => String(m.text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(NAMES[wd]));
+    const today = dateKey(new Date(now));
+    const fromCompanion = (out.prefs.offDays || []).filter((wd) => out.learned.slots?.['d' + wd] && !said(wd));
+    if (fromCompanion.length) {
+      out.prefs.offDays = out.prefs.offDays.filter((wd) => !fromCompanion.includes(wd));
+      out.prefs.restDays = [...(out.prefs.restDays || []), ...fromCompanion.map((wd) => ({ wd, until: addDays(today, 28) }))];
+    }
+  }
   out.schema = SCHEMA;
   return out;
 }
@@ -599,14 +613,15 @@ const estimateFor = (state, title, project, minutes) => estimate(state, title, p
  * Le sessioni passate non fatte vengono tolte e annotate come saltate.
  */
 export function refreshHabits(state, today) {
-  const off = new Set(state.prefs?.offDays || []);
+  const offOn = (d) => isOffDay(state.prefs, d);
   const habits = state.habits || [];
   const live = new Set(habits.map((h) => h.id));
   state.items = state.items.filter((x) => {
     if (!x.habitId || x.status === 'done') return true;
     if (!live.has(x.habitId)) return false;
-    if (x.date < today) { logEvent(state, { type: 'skip', id: x.id, project: x.project, at: Date.parse(x.date + 'T21:00'), habit: x.habitId }); return false; }
-    return !off.has(weekday(x.date)); // un giorno appena diventato di stacco libera la sessione
+    // segnata come saltata dall'app, non da te (auto): non conta per le statistiche su giorni e fasce
+    if (x.date < today) { logEvent(state, { type: 'skip', id: x.id, project: x.project, at: Date.parse(x.date + 'T21:00'), habit: x.habitId, auto: true }); return false; }
+    return !offOn(x.date); // un giorno appena diventato di stacco libera la sessione
   });
   const monday = addDays(today, -((weekday(today) + 6) % 7));
   for (const h of habits) {
@@ -617,7 +632,7 @@ export function refreshHabits(state, today) {
       let need = h.perWeek - mine.length - doneIn;
       if (need <= 0) continue;
       const taken = new Set(mine.map((x) => x.date));
-      const free = days.filter((d) => d >= today && !off.has(weekday(d)) && !taken.has(d));
+      const free = days.filter((d) => d >= today && !offOn(d) && !taken.has(d));
       need = Math.min(need, free.length);
       for (let i = 0; i < need; i++) {
         const d = free[Math.floor(((i + 0.5) * free.length) / need)];

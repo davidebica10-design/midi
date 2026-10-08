@@ -44,11 +44,17 @@ export const DEFAULT_PREFS = {
   heavyRest: 0,      // pausa extra tra due attività pesanti
   maxBlock: 120,     // sessione più lunga di fila: oltre, il resto va al giorno dopo
   offDays: [],       // giorni di riposo (0 = domenica): niente attività flessibili
+  restDays: [],      // giorni liberati dal companion, a tempo: [{ wd, until: 'YYYY-MM-DD' }]
   decompress: 45,    // minuti di "cena / decompressione" dopo una lunga giornata di lavoro
   availability: {},  // finestre speciali per giorno: { 'YYYY-MM-DD': { start, end } }
   projectDue: {},    // progetto → scadenza dell'obiettivo collegato
   freeDays: [],      // giorni interamente liberi per i progetti
   projectDayCap: null, // minuti massimi dello stesso progetto in un giorno (null = una sessione, due nei giorni liberi)
+};
+/** Il giorno è di stacco? (scelto da te, oppure liberato dal companion e non ancora scaduto) */
+export const isOffDay = (prefs, day) => {
+  const wd = weekday(day);
+  return (prefs?.offDays || []).includes(wd) || (prefs?.restDays || []).some((r) => r.wd === wd && day <= r.until);
 };
 const remaining = (t) => Math.max(5, (t.duration || 30) - (t.spent || 0));
 
@@ -152,6 +158,9 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
     fixed.push({ id: it.id, item: it, start: it.start, end: it.start + (it.duration || 30), type: it.kind === 'event' ? 'event' : 'pinned' });
   }
   fixed.sort((a, b) => a.start - b.start);
+  // un'attività in corso o fissata a un orario è già collocata: chi dipende da lei può andare nei giorni dopo
+  pool.placed ||= new Set();
+  for (const b of fixed) if (b.type === 'doing' || b.type === 'current' || b.type === 'pinned') pool.placed.add(b.id);
   for (let i = 0; i < fixed.length; i++)
     for (let j = i + 1; j < fixed.length; j++)
       if (fixed[j].start < fixed[i].end) conflicts.push([fixed[i].id, fixed[j].id]);
@@ -180,12 +189,12 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
     // giornate passate: nessuna pianificazione
     return { day, blocks: blocks.sort((a, b) => a.start - b.start), conflicts, unscheduled: [], deferred: [], missed: [], gaps: [], free: 0, totalFree: 0 };
   }
-  const off = (P.offDays || []).includes(weekday(day));
+  const off = isOffDay(P, day);
   const fromPool = off ? [] : pool.filter((t) => !t.earliest || t.earliest <= day);
   const cands = [...dated, ...fromPool].sort((a, b) => score(b, day) - score(a, day) || (a.createdAt || 0) - (b.createdAt || 0));
 
   const placedEnd = new Map(); // id → fine, per le dipendenze
-  const placedBefore = (pool.placed ||= new Set()); // attività già messe nei giorni precedenti
+  const placedBefore = pool.placed; // attività già messe nei giorni precedenti
   for (const b of blocks) placedEnd.set(b.id, b.end);
   const placedFlex = [];
   const used = new Set();
@@ -193,6 +202,14 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
   const fullDay = !fixed.some((b) => b.item.kind === 'event' && b.end - b.start >= 240) || (P.freeDays || []).includes(weekday(day));
   const projCap = P.projectDayCap || (fullDay ? 2 : 1) * Math.max(60, P.maxBlock || 120);
   const projUsed = {};
+  // il ritmo verso la scadenza: in 7 giorni di fila non più sessioni di un obiettivo del suo tetto (paceOf in planDays)
+  const goalDays = (pool.goalDays ||= {});
+  const weekAgo = addDays(day, -7);
+  const paceCap = (t) => {
+    const pc = t.goalId && !t.date && pool.pace?.[t.goalId];
+    if (!pc || daysBetween(day, pc.due) < 14) return Infinity; // nelle ultime due settimane si recupera
+    return pc.cap - (goalDays[t.goalId] || []).filter((d) => d > weekAgo).length;
+  };
 
   for (const t of cands) {
     let dur = remaining(t);
@@ -200,7 +217,10 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
     let left = 0;
     if (P.maxBlock > 0 && dur > P.maxBlock) { left = dur - P.maxBlock; dur = P.maxBlock; }
     const heavy = (t.energy || 2) >= 3;
-    if (t.project && !t.date && (projUsed[t.project] || 0) + dur > projCap) continue; // resta nel pool: domani
+    // lo stesso progetto (o lo stesso obiettivo) non si mangia la giornata: resta nel pool, domani
+    const capKey = t.project || (t.goalId ? 'g:' + t.goalId : null);
+    if (capKey && !t.date && (projUsed[capKey] || 0) + dur > projCap) continue;
+    if (paceCap(t) <= 0) continue; // questa settimana ha già il suo ritmo
     // dipendenze
     let minStart = 0;
     let blockedBy = null;
@@ -252,7 +272,8 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
       const cont = { ...t, spent: (t.spent || 0) + dur, earliest: addDays(day, 1), date: null };
       if (i >= 0) pool.splice(i, 1, cont); else pool.push(cont);
     }
-    if (t.project) projUsed[t.project] = (projUsed[t.project] || 0) + dur;
+    if (capKey) projUsed[capKey] = (projUsed[capKey] || 0) + dur;
+    if (t.goalId && !t.date) (goalDays[t.goalId] ||= []).push(day);
     const b = { id: t.id, item: t, start: slot.s, end, type: 'flex', part: left > 0 ? left : 0, carried: !!(t.date && t.date < day) || (!t.date && day !== today && pool.includes(t)) };
     blocks.push(b);
     placedFlex.push(b);
@@ -297,6 +318,15 @@ export function planDays(state, now = Date.now(), nDays = 7) {
   const projectDue = {};
   for (const g of state.goals || []) if (g.projectId && g.due && (!projectDue[g.projectId] || g.due < projectDue[g.projectId])) projectDue[g.projectId] = g.due;
   const prefs = { ...state.prefs, projectDue };
+  pool.pace = paceOf(state, today);
+  // le sessioni fatte negli ultimi giorni contano nel ritmo
+  pool.goalDays = {};
+  const weekAgo = addDays(today, -7);
+  for (const x of items) {
+    if (!x.goalId || x.status !== 'done' || !x.doneAt || !pool.pace[x.goalId] || x.habitId) continue;
+    const d = dateKey(new Date(x.doneAt));
+    if (d > weekAgo && d <= today) (pool.goalDays[x.goalId] ||= []).push(d);
+  }
   for (let i = 0; i < nDays; i++) {
     const day = addDays(today, i);
     days[day] = planDay(day, items, prefs, now, pool, state.recurring, state.anchors || {});
@@ -305,6 +335,23 @@ export function planDays(state, now = Date.now(), nDays = 7) {
   const lastDay = addDays(today, nDays - 1);
   if (pool.length) days[lastDay].unscheduled.push(...pool.map((item) => ({ item, reason: 'non entra nei prossimi giorni' })));
   return days;
+}
+
+/**
+ * Il ritmo di ogni obiettivo con scadenza: sessioni rimaste diviso settimane rimaste.
+ * In 7 giorni di fila non si va oltre 1,5 volte quel ritmo (salvo nelle ultime due settimane, vedi planDay).
+ * { goalId: { cap, due } }
+ */
+export function paceOf(state, today) {
+  const out = {};
+  for (const g of state.goals || []) {
+    if (!g.due || g.due < today || g.archivedAt) continue;
+    const open = (state.items || []).filter((x) => x.goalId === g.id && x.kind === 'task' && !x.habitId && x.status !== 'done').length;
+    if (!open) continue;
+    const weeks = Math.max(1, (daysBetween(today, g.due) + 1) / 7);
+    out[g.id] = { cap: Math.max(1, Math.ceil((1.5 * open) / weeks)), due: g.due };
+  }
+  return out;
 }
 
 /** Posizione (giorno + orario) di ogni attività, per mostrare cosa è cambiato. */

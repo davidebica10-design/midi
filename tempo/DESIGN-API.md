@@ -61,7 +61,7 @@ Il blocco in corso **non** compare anche fra le `cards`.
 | `normal` | giornata con attività e tempo libero | carte |
 | `full` | qualcosa non entra o meno di 30 min liberi | carte + carte `unscheduled` |
 | `off` | giorno di stacco senza attività | `emptyText`: «Oggi stacchi: niente progetti.» |
-| `goal-late` | un obiettivo non entra prima della scadenza (oggi) | carte + osservazione `fit-…` con «Sposta al…» / «Solo l'essenziale» |
+| `goal-late` | un obiettivo non entra prima della scadenza da almeno due giorni (oggi) | carte + osservazione `fit-…` con «Sposta al…» / «Solo l'essenziale» |
 | `past` | giorno passato | solo carte fatte |
 
 Stati dell'ambiente, da disegnare anche sopra gli altri:
@@ -78,12 +78,13 @@ Al massimo 2 al giorno; quelle già mostrate restano fino a sera.
 
 | id | Testo (esempio) | Azioni (`act`) |
 | --- | --- | --- |
-| `fit-<goal>` | «Le sessioni per l'EP non entrano tutte entro il 30 novembre…» | `extend`, `trim` |
+| `fit-<goal>` | «Le sessioni per l'EP non entrano tutte entro il 30 novembre…» (solo se il ritardo dura da 2 giorni, mai durante una sessione di quell'obiettivo; «Sposta al…» mai prima di 7 giorni da oggi) | `extend`, `trim` |
+| `past-<goal>` | «L'EP doveva uscire il 30 settembre. Lo chiudiamo o scegliamo una nuova data?» | `goal-done`, `goal-date` (apre la scelta della data), `goal-remove` |
 | `skip-<project>` | «Questa settimana hai saltato 4 sessioni di EP…» | `recover`, `reduce` |
 | `due-<goal>` | «L'EP: entro quando vuoi arrivarci?» | `due` (2 settimane, 1 mese, 3 mesi, nessuna) |
 | `learn-<key>` | ««Beat» lo chiudi in circa 70 minuti, non 45: ho aggiornato le stime.» | `learn-off` |
-| `slot-<fascia>` | «Le sessioni del mattino le salti spesso (1 su 5)… Le sposto alla sera?» | `slot-move`, `slot-keep` |
-| `day-<n>` | «Il lunedì salti quasi sempre le sessioni… Lo tengo libero dai progetti?» | `day-off`, `slot-keep` |
+| `slot-<fascia>` | «Le sessioni del mattino le salti spesso (1 su 9)… Le sposto alla sera?» (almeno 8 sessioni nella fascia; la fascia proposta ha dati e non è piena di impegni fissi) | `slot-move`, `slot-keep` |
+| `day-<n>` | «Il lunedì salti quasi sempre le sessioni… Lo tengo libero dai progetti?» (almeno 8 sessioni in 4 settimane; mai se restano 3 giorni o meno per i progetti) | `day-off` (per 4 settimane: `prefs.restDays`), `slot-keep` |
 | `carry-<item>` / `behind-<item>` | «Hai già fatto 40 minuti, non riparti da zero…» | — |
 | `goal-<goal>` | «Far uscire l'EP: tra 8 settimane. 3 sessioni fatte su 22.» | — |
 | `done-<goal>` | «Le sessioni per l'EP sono finite. Obiettivo raggiunto?» | `goal-done`, `goal-more` |
@@ -131,7 +132,7 @@ Stati della cella: passato · oggi · selezionato · libero · con sessioni (1, 
 | `goals[]` | `{ id, title, project, due, dueDate («30 novembre»), dueText («tra 8 settimane», «senza scadenza», «scaduto»), sessions: { done, total }, late, habit }` |
 | `projects[]` | `{ id, name, color, due }` |
 | `habits[]` | `{ id, title, perWeek, duration, text }` («Palestra: 3 volte a settimana · 1 h») |
-| `constraints` | `recurring[] { id, title, start, end, weekdays }`, `offDays`, `freeDays`, `notes[]` |
+| `constraints` | `recurring[] { id, title, start, end, weekdays }`, `offDays`, `freeDays`, `restDays[] { wd, until, text }` (giorni liberati dal companion, si tolgono con `data-restday`), `notes[]` |
 | `preferences` | `focusWindow, focusLabel («la sera»), maxBlock, buffer, decompress, dayStart, dayEnd, slack, windows[], notes[]` |
 | `learned[]` | `{ key, text, active, toggle, disabled }`: ciò che il companion ha imparato, attivabile e dimenticabile |
 

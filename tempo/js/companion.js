@@ -1,7 +1,9 @@
 // Il companion: guarda il piano, il contesto e la storia e dice cosa fare adesso.
 // È deterministico (funziona anche senza AI); l'AI aggiunge solo il linguaggio naturale.
 import { fmtMin, dateKey, addDays, daysBetween, weekday, dayLabel } from './scheduler.js';
-import { projectOf } from './store.js';
+import { projectOf, applyOps } from './store.js';
+import { updateDurations } from './learn.js';
+import { goalInProgress } from './goals.js';
 
 const nowMinOf = (now) => { const d = new Date(now); return d.getHours() * 60 + d.getMinutes(); };
 const dur = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ' ' + (m % 60) + "'" : ''}` : `${m} minuti`);
@@ -114,11 +116,15 @@ export function briefing(state, plan, now, extra = {}) {
   };
   const nameOf = (g) => { const pr = g.projectId ? projectOf(state, g.projectId) : null; return pr ? (pr.name === 'EP' ? "l'EP" : pr.name) : `«${g.title}»`; };
 
-  // 1. un obiettivo che non ci sta prima della scadenza
+  // 1. un obiettivo che non ci sta prima della scadenza (solo se il ritardo dura da due giorni,
+  //    mai mentre stai lavorando proprio a quell'obiettivo)
   for (const g of state.goals || []) {
     const fit = extra.fits?.[g.id];
-    if (!g.due || !fit || !fit.late) continue;
-    const to = fit.lastDay && fit.lastDay > g.due ? fit.lastDay : addDays(g.due, 14);
+    if (!g.due || g.due < t || !fit || !fit.late) continue;
+    if (!g.lateSince || g.lateSince >= t || goalInProgress(state, g, plan, now)) continue;
+    // la nuova data: mai nel passato, mai a meno di una settimana da oggi
+    let to = fit.lastDay && fit.lastDay > g.due ? fit.lastDay : addDays(g.due, 14);
+    if (to < addDays(t, 7)) to = addDays(t, 7);
     const optional = state.items.some((x) => x.goalId === g.id && x.optional && x.status !== 'done');
     out.push({
       id: 'fit-' + g.id,
@@ -127,6 +133,18 @@ export function briefing(state, plan, now, extra = {}) {
         { label: `Sposta al ${nice(to)}`, act: 'extend', arg: `${g.id}|${to}` },
         ...(optional ? [{ label: 'Solo l\'essenziale', act: 'trim', arg: g.id }] : []),
       ],
+    });
+  }
+  // 1b. la scadenza è già passata e ci sono ancora sessioni aperte: chiudiamo o scegliamo una nuova data?
+  for (const g of state.goals || []) {
+    if (!g.due || g.due >= t || (state.habits || []).some((h) => h.goalId === g.id)) continue;
+    if (!state.items.some((x) => x.goalId === g.id && x.kind === 'task' && x.status !== 'done')) continue;
+    const name = nameOf(g);
+    const head = /\buscire\b/i.test(g.title) ? `${name.charAt(0).toUpperCase() + name.slice(1)} doveva uscire il ${nice(g.due)}.` : `La scadenza per ${name} era il ${nice(g.due)}.`;
+    out.push({
+      id: 'past-' + g.id, goalId: g.id,
+      text: `${head} Lo chiudiamo o scegliamo una nuova data?`,
+      actions: [{ label: 'È fatto', act: 'goal-done', arg: g.id }, { label: 'Nuova data', act: 'goal-date', arg: g.id }, { label: 'Toglilo', act: 'goal-remove', arg: g.id }],
     });
   }
   // 2. sessioni saltate
@@ -205,6 +223,99 @@ export function pickObservations(cands, seen, today, max = 2) {
   return { shown: shown.slice(0, max), seen: s };
 }
 
+export const REST_DAYS_FOR = 28; // un giorno liberato dal companion dura 4 settimane
+const longDate = (d) => new Date(d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
+
+/**
+ * La risposta a un'osservazione: cambia lo stato e dice cosa è successo.
+ * La usa l'app (dentro commit, quindi si può annullare) e la usano le simulazioni.
+ * Restituisce { label, toast } oppure null se l'azione non riguarda lo stato.
+ */
+export function answerObservation(state, act, arg, { now, plan = {} }) {
+  const t = dateKey(new Date(now));
+  const goalOf = (id) => (state.goals || []).find((x) => x.id === id);
+  if (act === 'recover') {
+    // sabato si aggiunge tempo: le sessioni già in programma nei prossimi giorni restano dove sono
+    const sat = nextSaturday(t);
+    const soon = new Set([0, 1, 2].flatMap((k) => (plan[addDays(t, k)]?.blocks || []).map((b) => b.id)));
+    const later = state.items.filter((x) => x.project === arg && x.kind === 'task' && x.status !== 'done' && x.start == null && !soon.has(x.id)).slice(0, 2);
+    const pr = projectOf(state, arg);
+    if (later.length) applyOps(state, later.map((x) => ({ action: 'move', id: x.id, date: sat })), now);
+    else applyOps(state, [{ action: 'add', kind: 'task', title: `Recupero ${pr?.name || ''}`.trim(), date: sat, duration_min: Math.min(state.prefs.maxBlock || 120, 120), energy: 3, priority: 2, project: arg }], now);
+    state.log = (state.log || []).filter((e) => !(e.type === 'skip' && e.project === arg));
+    return { label: 'Recupero sabato', toast: `Sabato recuperi ${pr?.name || 'il progetto'}` };
+  }
+  if (act === 'due') {
+    const [gid, v] = String(arg).split('|');
+    const g = goalOf(gid);
+    if (!g) return null;
+    const [y, m, d] = t.split('-').map(Number);
+    const due = v === '0' ? null : v.startsWith('m') ? dateKey(new Date(y, m - 1 + +v.slice(1), d)) : addDays(t, +v);
+    g.dueAnswered = true;
+    if (due) applyOps(state, [{ action: 'set_goal', id: g.id, title: g.title, deadline: due }], now);
+    return { label: 'Scadenza', toast: due ? `Scadenza: ${longDate(due)}` : 'Nessuna scadenza' };
+  }
+  if (act === 'extend') {
+    const [gid, to] = String(arg).split('|');
+    const g = goalOf(gid);
+    if (!g) return null;
+    applyOps(state, [{ action: 'set_goal', id: g.id, title: g.title, deadline: to }], now);
+    return { label: 'Scadenza spostata', toast: `Nuova scadenza: ${longDate(to)}` };
+  }
+  if (act === 'trim') {
+    const n = state.items.filter((x) => x.goalId === arg && x.optional && x.status !== 'done').length;
+    state.items = state.items.filter((x) => !(x.goalId === arg && x.optional && x.status !== 'done'));
+    return { label: 'Solo l\'essenziale', toast: `${n} ${n === 1 ? 'sessione facoltativa tolta' : 'sessioni facoltative tolte'}` };
+  }
+  if (act === 'goal-remove') {
+    const g = goalOf(arg);
+    if (!g) return null;
+    // via l'obiettivo, le sue sessioni ancora aperte e le sue abitudini; quelle fatte restano nella storia
+    state.goals = state.goals.filter((x) => x.id !== arg);
+    state.items = state.items.filter((x) => !(x.goalId === arg && x.status !== 'done'));
+    state.habits = (state.habits || []).filter((h) => h.goalId !== arg);
+    return { label: 'Obiettivo tolto', toast: `«${g.title}» tolto` };
+  }
+  if (act === 'goal-done') {
+    const g = goalOf(arg);
+    state.goals = (state.goals || []).filter((x) => x.id !== arg);
+    return { label: 'Obiettivo raggiunto', toast: g ? `«${g.title}» archiviato` : 'Archiviato' };
+  }
+  if (act === 'learn-off') {
+    const d = state.learned?.durations?.[arg];
+    if (d) d.disabled = true;
+    updateDurations(state);
+    return { label: 'Stime come prima', toast: 'Ok, tengo le stime come prima' };
+  }
+  if (act === 'slot-move') {
+    const [from, to] = String(arg).split('|');
+    state.prefs.focusWindow = to;
+    for (const x of state.items) if (x.window === from && x.status !== 'done' && x.kind === 'task') x.window = to;
+    ((state.learned ||= {}).slots ||= {})[from] = now;
+    return { label: 'Fascia spostata', toast: `Le sessioni vanno ${to === 'pomeriggio' ? 'al pomeriggio' : `alla ${to}`}` };
+  }
+  if (act === 'slot-keep') {
+    ((state.learned ||= {}).slots ||= {})[arg] = now;
+    return { label: 'Fascia confermata', toast: 'Ok, lascio così', plain: true };
+  }
+  if (act === 'day-off') {
+    // per 4 settimane, non per sempre: poi si torna a guardare i dati
+    const wd = +arg;
+    const until = addDays(t, REST_DAYS_FOR);
+    state.prefs.restDays = [...(state.prefs.restDays || []).filter((r) => r.wd !== wd), { wd, until }];
+    ((state.learned ||= {}).slots ||= {})['d' + wd] = now;
+    return { label: 'Giorno libero dai progetti', toast: `Fatto: niente progetti quel giorno fino al ${longDate(until)}` };
+  }
+  if (act === 'reduce') {
+    const g = goalOf(arg);
+    if (!g) return null;
+    if (g.due) g.due = addDays(g.due, 14);
+    state.log = (state.log || []).filter((e) => !(e.type === 'skip' && e.project === g.projectId));
+    return { label: 'Obiettivo alleggerito', toast: 'Traguardo spostato di 2 settimane' };
+  }
+  return null;
+}
+
 /** Prossimo sabato (o oggi se è sabato) */
 export function nextSaturday(today) {
   const w = weekday(today);
@@ -249,6 +360,7 @@ export function companionContext(state, plan, now) {
     sessione_massima_min: P.maxBlock,
     decompressione_min: P.decompress,
     giorni_di_riposo: (P.offDays || []).map((d) => ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'][d]),
+    giorni_liberati_a_tempo: (P.restDays || []).filter((r) => r.until >= t).map((r) => `${['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'][r.wd]} fino al ${r.until}`),
     disponibilita_speciali: Object.entries(P.availability || {}).filter(([d]) => d >= t).map(([d, w]) => `${d}: ${w.start != null ? fmtMin(w.start) : 'inizio'}–${w.end != null ? fmtMin(w.end) : 'fine'}`),
     sessioni_saltate_questa_settimana: Object.entries(skips).map(([pid, n]) => `${projectOf(state, pid)?.name || pid}: ${n}`),
     consiglio_adesso: adv ? `${adv.title} ${adv.why || ''}`.trim() : null,

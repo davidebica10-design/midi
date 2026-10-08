@@ -3,10 +3,10 @@ import { glowSoon, bindCards, dragging, setActPalette, flipCapture, flipPlay, bu
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState } from './store.js';
-import { nowAdvice, briefing, pickObservations, nextSaturday, contextOps } from './companion.js';
-import { goalFit, planSummary, horizonFor } from './goals.js';
+import { nowAdvice, briefing, pickObservations, contextOps, answerObservation } from './companion.js';
+import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
 import { validatePlan } from './templates.js';
-import { learnedObservations, learnedList, forgetLearned, updateDurations } from './learn.js';
+import { learnedObservations, learnedList, forgetLearned, updateDurations, dropRestDay } from './learn.js';
 import * as vm from './viewmodel.js';
 import { plural, windowLabel, durLabel } from './format.js';
 import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout, askSystem, claudeAsk } from './ai.js';
@@ -39,6 +39,7 @@ function goalFits() {
   const goals = (state.goals || []).filter((g) => state.items.some((x) => x.goalId === g.id && x.status !== 'done'));
   const long = goals.length ? planDays(state, now, horizonFor(state, now)) : {};
   const fits = Object.fromEntries(goals.map((g) => [g.id, goalFit(state, g, now, long)]));
+  trackLate(state, fits, now, plan); // «non entra» solo se il ritardo dura da due giorni
   fitCache = { rev: planRev, fits, long };
   return fits;
 }
@@ -1308,6 +1309,35 @@ function openRestSheet() {
   showSheet();
 }
 
+/** Una nuova scadenza per un obiettivo: tre scelte rapide o un giorno preciso. */
+function openGoalDateSheet(gid) {
+  const g = (state.goals || []).find((x) => x.id === gid);
+  if (!g) return;
+  sheetMode = 'goal-date';
+  ed = null; red = null;
+  const t = today();
+  const [y, m, d] = t.split('-').map(Number);
+  const opts = [['Tra 2 settimane', addDays(t, 14)], ['Tra un mese', dateKey(new Date(y, m, d))], ['Tra 3 mesi', dateKey(new Date(y, m + 2, d))]];
+  $('#sheet-form').innerHTML = `
+    <h2 id="sheet-title" class="sr-only">Nuova data</h2>
+    <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">${esc(g.title)}</div>
+      <div class="ed-sub">Scegli la nuova scadenza: ridistribuisco le sessioni fino a lì.</div><div class="ed-foot"><span>Obiettivo</span></div></div>
+    <section class="ed-row"><span class="ed-k">Nuova data</span><div class="chips-x">
+      ${opts.map(([l, v]) => `<button type="button" class="ch" data-gdate="${v}" data-gid="${esc(g.id)}">${l}</button>`).join('')}
+      <label class="ch ch-in"><span>Scegli il giorno</span><input type="date" id="gd-date" data-gid="${esc(g.id)}" min="${addDays(t, 1)}" aria-label="Scegli il giorno"></label>
+    </div></section>
+    <div class="ed-actions"><button type="button" class="btn ed-save" data-sheet="close">Chiudi</button></div>`;
+  $('#sheet-form').dataset.id = '';
+  showSheet();
+}
+function setGoalDate(gid, date) {
+  if (!date || date <= today()) return;
+  let res = null;
+  commit('Scadenza spostata', () => { res = answerObservation(state, 'extend', `${gid}|${date}`, { now: Date.now(), plan }); });
+  closeSheet();
+  if (res) toastUndo(res.toast);
+}
+
 /** Aggiorna anteprima e scelte dell'editor senza ridisegnarlo (il fuoco resta dov'è). */
 let ed = null;
 function renderEditor() {
@@ -1431,81 +1461,15 @@ function quickOp(action, id, extra = {}, opts = {}) {
   toastUndo(`${label}: ${it.title}`);
 }
 
-/** Le risposte alle osservazioni del companion. */
+/** Le risposte alle osservazioni del companion (la logica sta in companion.js: answerObservation). */
 function briefAction(act, arg) {
-  if (act === 'recover') {
-    // sabato si aggiunge tempo: le sessioni già in programma nei prossimi giorni restano dove sono
-    const sat = nextSaturday(today());
-    const soon = new Set([0, 1, 2].flatMap((k) => (plan[addDays(today(), k)]?.blocks || []).map((b) => b.id)));
-    const later = state.items.filter((x) => x.project === arg && x.kind === 'task' && x.status !== 'done' && x.start == null && !soon.has(x.id)).slice(0, 2);
-    const pr = projectOf(state, arg);
-    commit('Recupero sabato', () => {
-      if (later.length) applyOps(state, later.map((x) => ({ action: 'move', id: x.id, date: sat })));
-      else applyOps(state, [{ action: 'add', kind: 'task', title: `Recupero ${pr?.name || ''}`.trim(), date: sat, duration_min: Math.min(state.prefs.maxBlock || 120, 120), energy: 3, priority: 2, project: arg }]);
-      state.log = (state.log || []).filter((e) => !(e.type === 'skip' && e.project === arg));
-    });
-    toastUndo(`Sabato recuperi ${pr?.name || 'il progetto'}`);
-  }
-  if (act === 'due') {
-    const [gid, v] = arg.split('|');
-    const g = state.goals.find((x) => x.id === gid);
-    if (!g) return;
-    const t = today();
-    const [y, m, d] = t.split('-').map(Number);
-    const due = v === '0' ? null : v.startsWith('m') ? dateKey(new Date(y, m - 1 + +v.slice(1), d)) : addDays(t, +v);
-    commit('Scadenza', () => { g.dueAnswered = true; if (due) applyOps(state, [{ action: 'set_goal', id: g.id, title: g.title, deadline: due }]); });
-    toastUndo(due ? `Scadenza: ${dateOf(due).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}` : 'Nessuna scadenza');
-  }
-  if (act === 'extend') {
-    const [gid, to] = arg.split('|');
-    const g = state.goals.find((x) => x.id === gid);
-    if (!g) return;
-    commit('Scadenza spostata', () => applyOps(state, [{ action: 'set_goal', id: g.id, title: g.title, deadline: to }]));
-    toastUndo(`Nuova scadenza: ${dateOf(to).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}`);
-  }
-  if (act === 'trim') {
-    const n = state.items.filter((x) => x.goalId === arg && x.optional && x.status !== 'done').length;
-    commit('Solo l\'essenziale', () => { state.items = state.items.filter((x) => !(x.goalId === arg && x.optional && x.status !== 'done')); });
-    toastUndo(`${n} ${n === 1 ? 'sessione facoltativa tolta' : 'sessioni facoltative tolte'}`);
-  }
-  if (act === 'goal-done') {
-    const g = state.goals.find((x) => x.id === arg);
-    commit('Obiettivo raggiunto', () => { state.goals = state.goals.filter((x) => x.id !== arg); });
-    toastUndo(g ? `«${g.title}» archiviato` : 'Archiviato');
-  }
-  if (act === 'goal-more') { $('#input').focus(); toast('Dimmi il prossimo passo: lo metto al posto giusto.'); }
-  if (act === 'backup') exportData();
-  if (act === 'learn-off') {
-    commit('Stime come prima', () => { const d = state.learned.durations[arg]; if (d) d.disabled = true; updateDurations(state); });
-    toastUndo('Ok, tengo le stime come prima');
-  }
-  if (act === 'slot-move') {
-    const [from, to] = arg.split('|');
-    commit('Fascia spostata', () => {
-      state.prefs.focusWindow = to;
-      for (const x of state.items) if (x.window === from && x.status !== 'done' && x.kind === 'task') x.window = to;
-      (state.learned.slots ||= {})[from] = Date.now();
-    });
-    toastUndo(`Le sessioni vanno ${to === 'pomeriggio' ? 'al pomeriggio' : `alla ${to}`}`);
-  }
-  if (act === 'slot-keep') { commit('Fascia confermata', () => { (state.learned.slots ||= {})[arg] = Date.now(); }); toast('Ok, lascio così'); }
-  if (act === 'day-off') {
-    const wd = +arg;
-    commit('Giorno libero dai progetti', () => {
-      applyOps(state, [{ action: 'set_pref', pref_key: 'off_days', pref_value: [...new Set([...(state.prefs.offDays || []), wd])].join(',') }]);
-      (state.learned.slots ||= {})['d' + wd] = Date.now();
-    });
-    toastUndo('Fatto: quel giorno niente progetti');
-  }
-  if (act === 'reduce') {
-    const g = (state.goals || []).find((x) => x.id === arg);
-    if (!g) return;
-    commit('Obiettivo alleggerito', () => {
-      if (g.due) g.due = addDays(g.due, 14);
-      state.log = (state.log || []).filter((e) => !(e.type === 'skip' && e.project === g.projectId));
-    });
-    toastUndo('Traguardo spostato di 2 settimane');
-  }
+  if (act === 'goal-more') { $('#input').focus(); toast('Dimmi il prossimo passo: lo metto al posto giusto.'); return; }
+  if (act === 'backup') { exportData(); return; }
+  if (act === 'goal-date') { openGoalDateSheet(arg); return; }
+  let res = null;
+  const undoId = commit('Risposta al companion', () => { res = answerObservation(state, act, arg, { now: Date.now(), plan }); });
+  if (!res) { popUndo(state, undoId); replan(); renderAll(); return; }
+  if (res.plain) toast(res.toast); else toastUndo(res.toast);
 }
 
 // ---------------------------------------------------------------- presentazione
@@ -1636,6 +1600,7 @@ function renderSettings() {
         ${state.recurring.map((r) => `<div class="row"><span class="lbl">${esc(r.title)}<small>${fmtMin(r.start)}–${fmtMin(r.end)} · ${r.weekdays.map((d) => wd[d]).join(' ')}</small></span><button class="x" data-delrec="${esc(r.id)}" aria-label="Elimina">×</button></div>`).join('')}
         <div class="row"><span class="lbl">Giorni in cui stacchi<small>niente lavoro sui progetti</small></span></div>
         <div class="row days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button class="dchip${(P.offDays || []).includes(d) ? ' on' : ''}" data-offday="${d}" aria-pressed="${(P.offDays || []).includes(d)}" aria-label="${['Domenica', 'Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato'][d]}">${wd[d]}</button>`).join('')}</div>
+        ${ctxv.constraints.restDays.map((r) => `<div class="row"><span class="lbl">${esc(r.text)}<small>l'ho proposto io: poi torno a guardare come va</small></span><button class="x" data-restday="${r.wd}" aria-label="Togli: torna un giorno per i progetti">×</button></div>`).join('')}
         ${state.memory.filter((m) => m.category === 'vincolo').map((m) => `<div class="row"><div class="mem-item"><span>${esc(m.text)}</span></div><button class="x" data-forget="${esc(m.id)}" aria-label="Dimentica">×</button></div>`).join('')}
         <div class="row"><input type="text" class="wide" id="vin-new" placeholder="Es. lavoro 9–18:30" enterkeyhint="done"><button class="btn" id="vin-add">Aggiungi</button></div>
       </div>
@@ -1990,6 +1955,7 @@ function bind() {
   $('#sheet-backdrop').addEventListener('click', closeSheet);
   $('#sheet-form').addEventListener('submit', (e) => { e.preventDefault(); if (sheetMode === 'rec') saveRec(); else if (sheetMode === 'item') sheetSave(); });
   $('#sheet-form').addEventListener('change', (e) => {
+    if (e.target.id === 'gd-date' && e.target.value) { setGoalDate(e.target.dataset.gid, e.target.value); return; }
     if (!ed) return;
     const id = e.target.id;
     if (id === 'ed-date' && e.target.value) ed.date = e.target.value;
@@ -2017,6 +1983,9 @@ function bind() {
     if (rc && red) { red.color = rc.dataset.rc || null; renderRec(); return; }
     const rd = e.target.closest('[data-rd]');
     if (rd && red) { const d = +rd.dataset.rd; red.weekdays = red.weekdays.includes(d) ? red.weekdays.filter((x) => x !== d) : [...red.weekdays, d]; renderRec(); return; }
+    // nuova scadenza di un obiettivo
+    const gd = e.target.closest('[data-gdate]');
+    if (gd) { setGoalDate(gd.dataset.gid, gd.dataset.gdate); return; }
     // pausa dopo il lavoro
     const dec = e.target.closest('[data-dec]');
     if (dec) {
@@ -2093,6 +2062,10 @@ function bind() {
       state.items.forEach((x) => { if (x.project === tt.dataset.delproj) x.project = null; });
       state.goals.forEach((g) => { if (g.projectId === tt.dataset.delproj) g.projectId = null; });
     });
+    if (tt?.dataset.restday) {
+      commit('Giorno di nuovo per i progetti', () => dropRestDay(state, +tt.dataset.restday));
+      toastUndo('Quel giorno torna ai progetti');
+    }
     if (tt?.dataset.offday) {
       const d = +tt.dataset.offday;
       const o = new Set(state.prefs.offDays || []);
