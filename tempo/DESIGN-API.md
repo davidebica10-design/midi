@@ -144,7 +144,15 @@ Stati: nessun obiettivo · obiettivo senza scadenza · obiettivo in ritardo (`la
 
 Cinque passi: `{ key (null | goals | constraints | projects | prefs), kick, q, sub, placeholder, examples[] }`.
 
+Dopo l'ultima domanda, prima di applicare niente, il riepilogo `contextReview(answers, today, state, now)` (companion.js):
+`{ ops, understood[], missed[{ key, text }], week[{ day, items[{ title, start, end, fixed }] }] }`.
+Si mostrano le voci capite («Ogni settimana · Lezioni · lun–gio 9:00–13:00»), le frasi non capite («Non ho capito: …», da riscrivere con «Riprova») e i primi 7 giorni del piano. Solo con «Va bene, costruisci le giornate» si applica.
+
 Alla fine viene mostrata una sola nota di riepilogo, con Annulla: «Ho messo 22 sessioni per l'EP da qui al 30 novembre. Si parte stasera alle 19:15 con beat 01.»
+
+### Risposta della barra
+
+Ogni risposta che cambia qualcosa elenca cosa è stato capito, voce per voce (`understoodOf(ops)` in parse.js): «Impegno · Dentista · giovedì 15 alle 17:00», «Fatto · Spesa», «Disponibilità · oggi dalle 18:45 alle 20:45». Il tasto «Non è questo» annulla quella modifica. Le frasi che non diventano niente di sensato non creano attività: la risposta dice «Non ho capito «…»» e propone una forma da scrivere.
 
 ---
 

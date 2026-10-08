@@ -107,3 +107,167 @@ test('commenti e richieste non diventano attività', () => {
   say(s, 'Organizzami la settimana');
   assert.equal(s.items.length, 2);
 });
+
+// ---------------------------------------------------------------- Fase 3: frasi da far funzionare (3.2)
+// martedì 13 ottobre 2026 alle 10:00
+const NOW13 = new Date(2026, 9, 13, 10, 0).getTime();
+const base13 = () => {
+  const s = freshState();
+  applyOps(s, [{ action: 'add_project', title: 'EP' }, { action: 'add', kind: 'task', title: 'Beat 03', duration_min: 120, project: 'EP' },
+    { action: 'add', kind: 'task', title: 'Spesa', duration_min: 30 }, { action: 'add', kind: 'task', title: 'Relazione', duration_min: 240 },
+    { action: 'add', kind: 'task', title: 'Lavatrice', duration_min: 20 }, { action: 'add', kind: 'task', title: 'Report', duration_min: 60 },
+    { action: 'add', kind: 'event', title: 'Call con Luca', date: '2026-10-15', start_time: '16:00', end_time: '17:00' },
+    { action: 'add_recurring', title: 'Lavoro', start_time: '09:00', end_time: '18:00', weekdays: [1, 2, 3, 4, 5] }], NOW13);
+  return s;
+};
+/** Una frase sullo stato di partenza: niente attività inventate (i titoli di partenza restano quelli). */
+const say13 = (text) => {
+  const s = base13();
+  const before = s.items.map((x) => x.id);
+  const r = say(s, text, NOW13);
+  const added = s.items.filter((x) => !before.includes(x.id));
+  return { s, r, added, tasks: added.filter((x) => x.kind === 'task'), events: added.filter((x) => x.kind === 'event') };
+};
+const busyAllDay = (s, day) => s.items.some((x) => x.kind === 'event' && x.date === day && x.start <= s.prefs.dayStart && x.start + x.duration >= s.prefs.dayEnd - 1);
+
+test('3.2 «giovedi dentista 17.00» → impegno Dentista giovedì 15 alle 17:00', () => {
+  const { added } = say13('giovedi dentista 17.00');
+  assert.deepEqual(added.map((x) => [x.kind, x.title, x.date, x.start]), [['event', 'Dentista', '2026-10-15', 1020]]);
+});
+
+test('3.2 «lunedi h 13 dentista» → impegno Dentista lunedì 19 alle 13:00', () => {
+  const { added } = say13('lunedi h 13 dentista');
+  assert.deepEqual(added.map((x) => [x.kind, x.title, x.date, x.start]), [['event', 'Dentista', '2026-10-19', 780]]);
+});
+
+for (const text of ['stasera ho solo 2 ore', 'stasera ho tipo un paio d ore']) {
+  test(`3.2 «${text}» → disponibilità di oggi: 2 ore la sera`, () => {
+    const { s, added } = say13(text);
+    assert.deepEqual(added.map((x) => x.title), []);
+    const av = s.prefs.availability['2026-10-13'];
+    assert.ok(av, 'disponibilità di oggi');
+    assert.equal(av.end - av.start, 120);
+    assert.ok(av.start >= 18 * 60, `dalle ${av.start}`);
+  });
+}
+
+test('3.2 «oggi libero solo 15-19» → disponibilità di oggi 15:00–19:00', () => {
+  const { s, added } = say13('oggi libero solo 15-19');
+  assert.deepEqual(added.map((x) => x.title), []);
+  assert.deepEqual(s.prefs.availability['2026-10-13'], { start: 900, end: 1140 });
+});
+
+test('3.2 «domani non lavoro» → Lavoro saltato domani', () => {
+  const { s, added } = say13('domani non lavoro');
+  assert.deepEqual(added.map((x) => x.title), []);
+  assert.deepEqual(s.recurring.find((r) => r.title === 'Lavoro').skip, ['2026-10-14']);
+});
+
+test('3.2 «dal 23 al 27 dicembre sono dai miei» → giornate occupate dal 23 al 27 dicembre', () => {
+  const { s, tasks } = say13('dal 23 al 27 dicembre sono dai miei');
+  assert.deepEqual(tasks.map((x) => x.title), []);
+  for (let d = 23; d <= 27; d++) assert.ok(busyAllDay(s, `2026-12-${d}`), `il ${d} occupato`);
+  assert.ok(!busyAllDay(s, '2026-12-22') && !busyAllDay(s, '2026-12-28'));
+});
+
+test('3.2 «la settimana prossima sono in ferie» → occupato da lunedì 19 a domenica 25', () => {
+  const { s, tasks } = say13('la settimana prossima sono in ferie');
+  assert.deepEqual(tasks.map((x) => x.title), []);
+  for (let d = 19; d <= 25; d++) assert.ok(busyAllDay(s, `2026-10-${d}`), `il ${d} occupato`);
+  assert.ok(!busyAllDay(s, '2026-10-18') && !busyAllDay(s, '2026-10-26'));
+});
+
+test('3.2 «weekend al mare» → sabato e domenica occupati', () => {
+  const { s, tasks } = say13('weekend al mare');
+  assert.deepEqual(tasks.map((x) => x.title), []);
+  assert.ok(busyAllDay(s, '2026-10-17') && busyAllDay(s, '2026-10-18'));
+});
+
+for (const text of ['lezioni dal lunedì al giovedì dalle 9 alle 13', 'lezioni lun-gio 9-13']) {
+  test(`3.2 «${text}» → ricorrente lun–gio 9:00–13:00`, () => {
+    const { s, added } = say13(text);
+    assert.deepEqual(added.map((x) => x.title), []);
+    const r = s.recurring.find((x) => x.title === 'Lezioni');
+    assert.ok(r, s.recurring.map((x) => x.title).join('|'));
+    assert.deepEqual([r.weekdays, r.start, r.end], [[1, 2, 3, 4], 540, 780]);
+  });
+}
+
+test('3.2 «palestra mar e gio alle 19» → ricorrente martedì e giovedì alle 19:00', () => {
+  const { s, added } = say13('palestra mar e gio alle 19');
+  assert.deepEqual(added.map((x) => x.title), []);
+  const r = s.recurring.find((x) => x.title === 'Palestra');
+  assert.ok(r);
+  assert.deepEqual([r.weekdays, r.start], [[2, 4], 1140]);
+});
+
+test('3.2 «correre 3 volte a sett» → abitudine 3 volte a settimana', () => {
+  const { s, tasks } = say13('correre 3 volte a sett');
+  assert.ok(tasks.every((x) => x.habitId), tasks.map((x) => x.title).join('|'));
+  assert.deepEqual(s.habits.map((h) => [h.title, h.perWeek]), [['Correre', 3]]);
+});
+
+test('3.2 «spesa fatta» → Spesa segnata come fatta', () => {
+  const { s, added } = say13('spesa fatta');
+  assert.deepEqual(added.map((x) => x.title), []);
+  assert.equal(s.items.find((x) => x.title === 'Spesa').status, 'done');
+});
+
+test('3.2 «fatti 30 min di beat» → 30 minuti su Beat 03', () => {
+  const { s, added } = say13('fatti 30 min di beat');
+  assert.deepEqual(added.map((x) => x.title), []);
+  assert.equal(s.items.find((x) => x.title === 'Beat 03').spent, 30);
+});
+
+test('3.2 «la call di giovedi spostala alle 17» → Call con Luca alle 17:00', () => {
+  const { s, added } = say13('la call di giovedi spostala alle 17');
+  assert.deepEqual(added.map((x) => x.title), []);
+  const c = s.items.find((x) => x.title === 'Call con Luca');
+  assert.deepEqual([c.date, c.start], ['2026-10-15', 1020]);
+});
+
+test('3.2 «report urgentissimo» → Report con priorità alta', () => {
+  const { s, added } = say13('report urgentissimo');
+  assert.deepEqual(added.map((x) => x.title), []);
+  assert.equal(s.items.find((x) => x.title === 'Report').priority, 3);
+});
+
+test('3.2 «esame storia il 20/1» → obiettivo «Esame di storia» entro il 20 gennaio 2027', () => {
+  const { s } = say13('esame storia il 20/1');
+  assert.deepEqual(s.goals.map((g) => [g.title, g.due]), [['Esame di storia', '2027-01-20']]);
+});
+
+test('3.2 «vorrei imparare lo spagnolo entro giugno» → obiettivo entro il 30 giugno 2027', () => {
+  const { s } = say13('vorrei imparare lo spagnolo entro giugno');
+  assert.equal(s.goals.length, 1);
+  assert.equal(s.goals[0].due, '2027-06-30');
+});
+
+// ---------------------------------------------------------------- 3.1 il parser non inventa
+for (const [text, hint] of [
+  ['al solito posto', /Non ho capito/],
+  ['non so', /Non ho capito/],
+  ['solo stasera', /Non ho capito/],
+  ['libero domani', /Non ho capito/],
+  ['h boh', /Non ho capito/],
+  ['tutto fatto ok', /Non ho capito/],
+  ['lavatrice stesa', /Lavatrice/],
+  ['relazione consegnata', /Relazione/],
+]) {
+  test(`3.1 «${text}»: niente attività inventate, dice cosa non ha capito`, () => {
+    const { r, added } = say13(text);
+    assert.deepEqual(added.map((x) => x.title), []);
+    assert.match(r.reply, hint);
+    assert.match(r.reply, /«/, 'propone una forma da scrivere');
+  });
+}
+
+test('3.1 la risposta della barra dice cosa ha capito, voce per voce', () => {
+  const s = base13();
+  const r = say(s, 'giovedi dentista 17.00, spesa fatta e lavatrice domani', NOW13);
+  assert.deepEqual(r.understood, [
+    'Impegno · Dentista · giovedì 15 alle 17:00',
+    'Fatto · Spesa',
+    'Spostata · Lavatrice · domani',
+  ]);
+});

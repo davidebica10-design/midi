@@ -3,7 +3,8 @@ import { glowSoon, bindCards, dragging, setActPalette, flipCapture, flipPlay, bu
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState } from './store.js';
-import { nowAdvice, briefing, pickObservations, contextOps, answerObservation } from './companion.js';
+import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps } from './companion.js';
+import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
 import { validatePlan } from './templates.js';
 import { learnedObservations, learnedList, forgetLearned, updateDurations, dropRestDay } from './learn.js';
@@ -155,12 +156,15 @@ async function send(text) {
   const before = plan;
   const itemsBefore = JSON.parse(JSON.stringify(state.items));
   let draft = null, log = [], confirm = false;
+  const understood = [];
 
   const hooks = {
     apply(input) {
       draft ||= draftOf();
+      const known = { items: [...itemsBefore, ...draft.items], recurring: [...state.recurring, ...draft.recurring] };
       const res = applyOps(draft, input.ops);
       log.push(...res.log);
+      try { understood.push(...understoodOf(input.ops, { items: [...known.items, ...draft.items], recurring: [...known.recurring, ...draft.recurring] }, today())); } catch {}
       const deletesFixed = input.ops.some((o) => (o.action === 'delete' && itemsBefore.find((x) => x.id === o.id)?.kind === 'event') || o.action === 'remove_recurring');
       confirm ||= !!input.requires_confirmation || deletesFixed;
       const p = planDays(draft, Date.now(), 7);
@@ -190,7 +194,7 @@ async function send(text) {
   try {
     const out = await withTimeout((signal) => runTurn({ state, plan, now: Date.now(), userText: aiText, hooks, chat: prior, signal }), AI_TIMEOUT * 2);
     removeMsg(typing.id);
-    if (draft) finishChange({ text: out.text, draft, log, confirm, before, itemsBefore });
+    if (draft) finishChange({ text: out.text, draft, log, confirm, before, itemsBefore, understood });
     else addMsg({ role: 'assistant', text: out.text });
   } catch (e) {
     removeMsg(typing.id);
@@ -215,7 +219,7 @@ function baseTurn(text, aiError = null) {
   const note = aiError ? `${aiError.code === 'timeout' ? 'L\'AI non risponde' : 'L\'AI ha avuto un problema'}: ho usato la modalità base. ` : '';
   const draft = draftOf();
   const res = applyOps(draft, r.ops);
-  finishChange({ text: note + r.reply + (res.errors.length ? '\n' + res.errors.join('\n') : ''), draft, log: res.log, confirm: r.confirm, before, itemsBefore });
+  finishChange({ text: note + r.reply + (res.errors.length ? '\n' + res.errors.join('\n') : ''), draft, log: res.log, confirm: r.confirm, before, itemsBefore, understood: r.understood });
 }
 
 const title = (s, id) => (s.items.find((x) => x.id === id) || {}).title || (String(id).startsWith('rec:') ? 'ricorrente' : id);
@@ -243,7 +247,7 @@ function removeMsg(id) {
   renderChat();
 }
 
-function finishChange({ text, draft, log, confirm, before, itemsBefore }) {
+function finishChange({ text, draft, log, confirm, before, itemsBefore, understood = [] }) {
   const after = planDays(draft, Date.now(), 7);
   const moved = diffPlans(before, after, itemsBefore, draft.items, today());
   // dove sono finite le attività nuove
@@ -257,17 +261,19 @@ function finishChange({ text, draft, log, confirm, before, itemsBefore }) {
     }
     placed.push(`↦ ${it.title}: ${where || 'non entra nei prossimi giorni'}`);
   }
-  const changes = [...log, ...placed, ...moved.map((m) => '↦ ' + m)];
+  // cosa ho capito, voce per voce («Impegno · Dentista · giovedì 15 alle 17:00»); poi dove sono finite le cose nuove
+  const said = understood.length > 0;
+  const changes = said ? [...understood, ...placed] : [...log, ...placed, ...moved.map((m) => '↦ ' + m)];
   if (!changes.length) { addMsg({ role: 'assistant', text }); return; }
   if (confirm) {
-    const msg = addMsg({ role: 'assistant', text, changes, applied: null });
+    const msg = addMsg({ role: 'assistant', text, changes, applied: null, said });
     pending = { draft, msgId: msg.id };
     renderChat();
     return;
   }
   markChanged(itemsBefore, draft.items);
   const undoId = commit(log[0] || 'Modifica', () => Object.assign(state, pick(draft)));
-  addMsg({ role: 'assistant', text, changes, applied: true, undoId });
+  addMsg({ role: 'assistant', text, changes, applied: true, undoId, said });
 }
 
 function applyPending() {
@@ -396,6 +402,12 @@ function renderMiniSummary() {
 }
 
 function renderChat() { renderReply(); }
+/** «Impegno · Dentista · giovedì 15 alle 17:00» → la prima parola come etichetta. */
+function saidLine(c) {
+  const i = c.indexOf(' · ');
+  if (i < 0 || /^[↦+~−✓◎⟳☆◷↷▶↺◐▣]/.test(c)) return esc(c);
+  return `<span class="r-k">${esc(c.slice(0, i))}</span>${esc(c.slice(i + 3))}`;
+}
 
 function renderReply() {
   const el = $('#reply');
@@ -413,11 +425,11 @@ function renderReply() {
     body = `<div class="r-text">${esc(m.text)}</div>`;
     if (m.changes?.length) {
       const shown = m.changes.slice(0, 4);
-      body += `<ul class="r-changes">${shown.map((c) => `<li>${esc(c)}</li>`).join('')}${m.changes.length > 4 ? `<li class="more">e altre ${m.changes.length - 4} modifiche</li>` : ''}</ul>`;
+      body += `<ul class="r-changes${m.said ? ' said' : ''}">${shown.map((c) => `<li>${saidLine(c)}</li>`).join('')}${m.changes.length > 4 ? `<li class="more">e altre ${m.changes.length - 4} modifiche</li>` : ''}</ul>`;
       if (m.applied === null && pending?.msgId === m.id) body += `<div class="r-actions"><button class="btn primary" data-act="apply">Applica</button><button class="btn" data-act="discard">Lascia com'è</button></div>`;
       else if (m.applied === false) body += `<div class="r-note">Non applicate.</div>`;
       else if (m.undone) body += `<div class="r-note">Annullate.</div>`;
-      else if (m.undoId && undoExists(m.undoId)) body += `<div class="r-actions"><button class="btn" data-act="undo" data-id="${esc(m.undoId)}">Annulla</button></div>`;
+      else if (m.undoId && undoExists(m.undoId)) body += `<div class="r-actions"><button class="btn" data-act="undo" data-id="${esc(m.undoId)}">${m.said ? 'Non è questo' : 'Annulla'}</button></div>`;
     }
   }
   el.innerHTML = `<div class="reply-card${m.error ? ' error' : ''}${isNew ? ' anim' : ''}">${m.pending ? '' : '<button type="button" class="r-x" data-act="dismiss" aria-label="Chiudi">×</button>'}${body}</div>`;
@@ -1513,14 +1525,50 @@ function closeOnboarding() {
   state.onboarded = true;
   save(state);
 }
-async function finishOnboarding() {
+// Dopo le domande: cosa ho capito, cosa no (da riscrivere), i primi 7 giorni. Solo allora si applica.
+let onbReview = null;
+async function reviewOnboarding() {
   onbSave();
-  const ops = contextOps(onbAns, today(), state.prefs.offDays);
+  let r = contextReview(onbAns, today(), state, Date.now());
+  if (!r.ops.some((o) => o.action !== 'remember') && !r.missed.length) { closeOnboarding(); return; }
+  onbReview = { ...r, loading: aiMode() !== 'base' && r.ops.some((o) => o.action === 'plan_goal') };
+  renderReview();
+  if (onbReview.loading) {
+    // con un'AI attiva le sessioni degli obiettivi le propone l'AI: l'anteprima mostra quelle vere
+    await aiPlans(r.ops);
+    if (!onbReview) return;
+    r = contextReview(onbAns, today(), state, Date.now(), r.ops);
+    onbReview = { ...r, loading: false };
+    renderReview();
+  }
+}
+const reviewDay = (k) => (k === today() ? 'Oggi' : k === addDays(today(), 1) ? 'Domani' : cap(dateOf(k).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric' })));
+function renderReview() {
+  const r = onbReview;
+  $('#onb-dots').innerHTML = ONB.map(() => '<i></i>').join('') + '<i class="on"></i>';
+  $('#onb-skip').textContent = 'Indietro';
+  const body = $('#onb-body');
+  body.classList.add('review');
+  body.innerHTML = `<div class="onb-k">Ecco cosa ho capito</div><h2 class="onb-q">Controlla, poi partiamo.</h2>
+    <ul class="onb-list">${r.understood.map((l) => `<li>${saidLine(l)}</li>`).join('') || '<li>Niente di concreto, per ora.</li>'}</ul>
+    ${r.missed.length ? `<div class="onb-k2">Non ho capito</div>${r.missed.map((m, i) => `<div class="onb-miss"><p>Non ho capito: «${esc(m.text)}». Riscrivila, oppure lasciala: resta tra le note.</p>
+      <div class="onb-redo"><textarea rows="2" id="onb-miss-${i}" aria-label="Riscrivi: ${esc(m.text)}">${esc(m.text)}</textarea><button type="button" class="btn" data-redo="${i}">Riprova</button></div></div>`).join('')}` : ''}
+    <div class="onb-k2">I prossimi 7 giorni</div>
+    ${r.loading ? '<p class="onb-sub">Preparo le sessioni…</p>' : `<div class="onb-week">${r.week.map((d) => `<div class="ow-day"><b>${esc(reviewDay(d.day))}</b><span>${d.items.length ? d.items.slice(0, 4).map((x) => `${fmtMin(x.start)} ${esc(x.title)}`).join(' · ') + (d.items.length > 4 ? ` · +${d.items.length - 4}` : '') : 'Libero'}</span></div>`).join('')}</div>`}`;
+  animateIn(body, 900);
+  $('#onb-next').textContent = 'Va bene, costruisci le giornate';
+  $('#onb-next').disabled = !!r.loading;
+}
+function leaveReview() {
+  onbReview = null;
+  $('#onb-body').classList.remove('review');
+  $('#onb-next').disabled = false;
+}
+async function finishOnboarding() {
+  const ops = onbReview?.ops || [];
+  leaveReview();
   closeOnboarding();
   if (!ops.length) return;
-  busy = true; renderComposer();
-  const typing = addMsg({ role: 'assistant', pending: true });
-  try { await aiPlans(ops); } finally { removeMsg(typing.id); busy = false; renderComposer(); }
   const goalsBefore = new Set(state.goals.map((g) => g.id));
   let res;
   const undoId = commit('Il tuo contesto', () => { res = applyOps(state, ops); });
@@ -2108,12 +2156,24 @@ function bind() {
 
   // presentazione
   $('#onb-next').addEventListener('click', () => {
+    if (onbReview) { if (!onbReview.loading) finishOnboarding(); return; }
     onbSave();
     if (onbStep < ONB.length - 1) { onbStep++; renderOnb(); setTimeout(() => $('#onb-in')?.focus({ preventScroll: true }), 350); }
-    else finishOnboarding();
+    else reviewOnboarding();
   });
-  $('#onb-skip').addEventListener('click', () => { if (onbStep === 0) closeOnboarding(); else finishOnboarding(); });
+  $('#onb-skip').addEventListener('click', () => {
+    if (onbReview) { leaveReview(); onbStep = ONB.length - 1; renderOnb(); return; }
+    if (onbStep === 0) closeOnboarding(); else reviewOnboarding();
+  });
   $('#onb-body').addEventListener('click', (e) => {
+    // una frase non capita, riscritta: si rifà il riepilogo
+    const redo = e.target.closest('[data-redo]');
+    if (redo && onbReview) {
+      const m = onbReview.missed[+redo.dataset.redo];
+      const v = $('#onb-miss-' + redo.dataset.redo).value.trim();
+      if (m && v && v !== m.text) { onbAns[m.key] = String(onbAns[m.key] || '').replace(m.text, v); reviewOnboarding(); }
+      return;
+    }
     const b = e.target.closest('[data-ex]');
     if (!b) return;
     const inp = $('#onb-in');

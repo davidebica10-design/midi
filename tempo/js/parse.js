@@ -16,6 +16,39 @@ const numOf = (w) => {
   return isNaN(+x) ? NUMW[x] ?? null : +x;
 };
 
+// ---------------------------------------------------------------- frasi scritte di fretta
+const WD_ABBR = { lun: 'lunedì', mar: 'martedì', mer: 'mercoledì', gio: 'giovedì', ven: 'venerdì', sab: 'sabato', dom: 'domenica' };
+const WD_ANY = '(?:luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)';
+/**
+ * Riscrive le forme abbreviate in quelle che il resto del parser conosce:
+ * «lun-gio» → «dal lunedì al giovedì», «h 13» → «alle 13», «17.00» → «alle 17.00», «15-19» → «dalle 15 alle 19»,
+ * «un paio d ore» → «2 ore», «3 volte a sett» → «3 volte a settimana».
+ */
+export function normalizeText(text) {
+  let t = ap(text);
+  // giorni abbreviati: solo se si parla di giorni (almeno due nominati, oppure seguiti da un orario)
+  const ABBR = /\b(lun|mar|mer|gio|ven|sab|dom)\b\.?/gi;
+  const named = (t.match(ABBR) || []).length + (lower(t).match(new RegExp(WD_ANY, 'g')) || []).length;
+  t = t.replace(/\b(lun|mar|mer|gio|ven|sab|dom)\b\.?(?=(\s*(?:[-–,]|e\b)\s*\w)|\s+(?:\d|alle\b|h\b|ore\b|dalle\b))?/gi, (w, a, after, off, all) => {
+    if (named < 2 && (!/^\s+(?:\d|alle|h|ore|dalle)/i.test(all.slice(off + w.length)) || !/(?:^|[,;]|\b(?:il|ogni|di|da|dal|entro|per)\b)\s*$/i.test(all.slice(0, off)))) return w;
+    return WD_ABBR[a.toLowerCase()];
+  });
+  // «lunedì-giovedì» → «dal lunedì al giovedì»
+  t = t.replace(new RegExp(`\\b(${WD_ANY})\\s*[-–]\\s*(${WD_ANY})`, 'gi'), 'dal $1 al $2');
+  // «h 13», «h13» → «alle 13» (non «2 h»)
+  t = t.replace(/(?<![\d]\s?)\bh\s?(\d{1,2}(?:[:.]\d{2})?)\b/gi, 'alle $1');
+  // «15-19», «9-13» → «dalle 15 alle 19» (non le date «23-27 dicembre» né «3-4 ore»)
+  t = t.replace(/(?<!(?:dalle|alle|\/|\d)\s*)\b([01]?\d|2[0-4])(?:[:.]([0-5]\d))?\s*[-–]\s*([01]?\d|2[0-4])(?:[:.]([0-5]\d))?\b(?!\s*(?:\/|ore\b|or[ae]\b|h\b|min|minuti|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre))/gi,
+    (w, a, am, b, bm) => `dalle ${a}${am ? ':' + am : ''} alle ${b}${bm ? ':' + bm : ''}`);
+  // un orario da solo («dentista 17.00») → «alle 17.00»
+  t = t.replace(/(?<!\b(?:alle|dalle|ore|le|all'|verso)\s*|[\d/:.\-–]\s*)\b([01]?\d|2[0-3])[:.]([0-5]\d)\b(?!\s*(?:ore\b|h\b|min|minuti|%|€|euro|[/\d]))/gi, 'alle $1:$2');
+  // «un paio d ore», «un paio di ore» → «2 ore»
+  t = t.replace(/\b(?:un\s+)?paio\s+d(?:'|i\s+|\s+)?(or[ae]|orette)\b/gi, '2 ore');
+  // «a sett», «alla sett.» → «a settimana»
+  t = t.replace(/\b(a|alla|per|ogni|la|questa|prossima)\s+sett\b\.?/gi, '$1 settimana');
+  return t;
+}
+
 // ---------------------------------------------------------------- durate
 const DUR_H = /(?:\b(?:circa|almeno|massimo|max|tipo)\s+)?(\d+(?:[.,]\d+)?|un'?|una|uno|mezz'?|due|tre|quattro|cinque|sei|sette|otto)\s*(ore|ora|oretta|orette|h)\b(?:\s*e\s*(mezza|un quarto|\d+)(?:\s*(?:min|minuti)\b)?)?/i;
 const DUR_M = /(?:\b(?:circa|almeno|massimo|max|tipo)\s+)?(\d+|dieci|quindici|venti|trenta|quaranta|cinquanta)\s*(?:min|minuti|m)\b/i;
@@ -128,6 +161,13 @@ function windowOf(text) {
 const WD_WORD = '(?:domenic[ah]e?|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabat[oi])';
 const REC_RE = new RegExp(`(?:^|\\s)(?:ogni|tutti\\s+i|tutte\\s+le|il|i|la|le)\\s+${WD_WORD}(?![a-zà-ù])`, 'i');
 const isRecurring = (text) => REC_RE.test(lower(text));
+const WD_RANGE = new RegExp(`\\bda[l]?\\s+${WD_WORD}\\s+(?:al|a)\\s+${WD_WORD}`, 'i');
+/** Più giorni della settimana (o un intervallo) con un orario e senza «prossimo»/«questa settimana»: è ogni settimana. */
+const isWeeklyList = (text) => {
+  const t = lower(text);
+  if (/\b(?:prossim[oa]|questa\s+settimana|settimana\s+prossima|oggi|domani|dopodomani|stasera)\b/.test(t) || /\b\d{1,2}\s*(?:\/|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)/.test(t)) return false;
+  return WD_RANGE.test(t) || weekdaysIn(text).length >= 2;
+};
 const WD_ONE = new RegExp(`(?:^|\\s)(${WD_WORD})(?![a-zà-ù])(\\s+prossim[oa])?`, 'i');
 const DATE_WORDS = new RegExp([
   `(?:\\b(?:ogni|tutti\\s+i|tutte\\s+le|il|i|la|le|di|del|della|questo|questa|per|entro|da|dal|al|a)\\s+)?${WD_WORD}(?![a-zà-ù])(?:\\s+(?:prossim[oa]|e|,)(?![a-zà-ù]))*`,
@@ -223,7 +263,7 @@ export function goalCategory(text) {
   if (/\b(ep|singol[oi]|album|disco|mixtape|brani|tracce|canzon[ei]|uscita)\b/.test(t)) return 'music';
   if (/\b(portfolio|sito|showreel|book|mostra|libro|romanzo|video|cortometraggio|collezione|progetto creativo)\b/.test(t)) return 'creative';
   if (/\b(palestra|allenament\w*|correre|corsa|maratona|in forma|dimagrir\w*|chili|peso|nuoto|yoga|sport)\b/.test(t)) return 'fitness';
-  if (/\b(esame|esami|studiar\w*|studio|tesi|certificazion\w*|corso|lingua|inglese|test)\b/.test(t)) return 'study';
+  if (/\b(esame|esami|appello|concorso|studiar\w*|studio|tesi|certificazion\w*|corso|lingu\w*|inglese|spagnolo|francese|tedesco|cinese|giapponese|russo|portoghese|arabo|imparar\w*|patente|test)\b/.test(t)) return 'study';
   return 'generic';
 }
 const inferredProject = (text) => {
@@ -240,7 +280,7 @@ const LEAD = /^(?:(?:sul|sulla|sullo|sui|sulle|al|alla|allo|ai|alle|per|di|del|d
 const CHAT = /^(?:allora|ah|ahh|oh|ok|okay|ecco|beh|be'|insomma|dunque|comunque|cioè|cioe|tipo|senti|ciao|ehi|hey|poi|e)\b[\s,]*/i;
 // frasi che commentano e basta: niente da mettere in programma
 const COMMENT = /^(?:(?:allora|ah|beh|insomma|ok)\s+)?(?:questa\s+settimana\s+|oggi\s+|domani\s+)?(?:è|sarà|e')\s+(?:un\s+casino|pesante|dura|piena|un\s+delirio|tosta|intensa|tranquilla)\b|^(?:che\s+(?:settimana|giornata|casino))|^(?:sono|sarò)\s+(?:pien[oa]|incasinat[oa]|sommers[oa])\b/i;
-const FILLER = /\b(?:mi\s+servono|mi\s+serve|ci\s+metto|ci\s+vogliono|ci\s+vuole|servono|serve|circa|più\s+o\s+meno|piu\s+o\s+meno|tipo|almeno|al\s+massimo|in\s+tutto|in\s+totale|di\s+tempo|stimo|direi|ancora|mi\s+mancano|mi\s+manca|mancano|manca)\b/gi;
+const FILLER = /\b(?:urgentissim[oaie]|urgent[ei]|importantissim[oaie]|prioritari[oaie]|mi\s+servono|mi\s+serve|ci\s+metto|ci\s+vogliono|ci\s+vuole|servono|serve|circa|più\s+o\s+meno|piu\s+o\s+meno|tipo|almeno|al\s+massimo|in\s+tutto|in\s+totale|di\s+tempo|stimo|direi|ancora|mi\s+mancano|mi\s+manca|mancano|manca)\b/gi;
 
 function cleanTitle(raw, projectName) {
   let s = ap(raw);
@@ -290,13 +330,17 @@ export function findSimilarTask(title, items) {
  * Le parti che sono solo una durata o solo un giorno si attaccano a quella vicina.
  */
 const NEXT = `(?:(?:poi|anche|inoltre|dopo\\s+di\\s+che)\\s+)*(?:devo|dovrei|voglio|vorrei|ho\\b|c'[eè]|vado|andare|aggiungi|metti|segna|sposta|togli|elimina|cancella|ricordami|ricorda|dopo|prima\\s+di|alle|dalle|domani|dopodomani|oggi|stasera|stamattina|stanotte|la\\s+sera|la\\s+mattina|il\\s+pomeriggio|nel\\s+pomeriggio|in\\s+serata|ogni|il\\s+\\d|${WD_WORD}|(?:il|la|i|le)\\s+${WD_WORD}|mi\\s+svegli|vado\\s+a\\s+(?:dormire|letto)|non\\s+posso|sono\\b|esco|[a-zà-ù]{3,}(?:are|ere|ire)\\b)`;
-const SPLIT = new RegExp(`\\s*,\\s*|(?<!\\d)\\s*:\\s*|\\s*:(?!\\d)\\s*|\\s+(?:quindi|allora|così|cosi)\\s+|\\s+(?:e\\s+poi|poi|e|ed)\\s+(?=${NEXT})`, 'i');
+const SPLIT = new RegExp(`\\s*,\\s*|(?<!\\d)\\s*:\\s*|\\s*:(?!\\d)\\s*|\\s+(?:quindi|allora|così|cosi)\\s+|\\s+(?:e\\s+poi|poi|e|ed)\\s+(?=${NEXT})|(?<=\\b(?:fatt|finit|completat|consegnat)[aoei])\\s+e\\s+`, 'i');
+const ENDS_WD = new RegExp(`${WD_WORD}$`, 'i');
+/** «giovedì alle 19» dopo «palestra martedì»: è lo stesso impegno in due giorni, non una cosa nuova. */
+const dayAndTime = (p) => ENDS_WD.test(lower(p).replace(/\s*(?:alle|dalle)\s+\d.*$/, '')) && !!timeOf(p) && !tidy(lower(p).replace(DATE_WORDS, ' ').replace(new RegExp(AT_RE.source, 'gi'), ' ').replace(/[^a-zà-ù]/g, ''));
 function clausesOf(sentence) {
   const raw = ap(sentence).split(SPLIT).map((x) => tidy(x)).filter(Boolean);
   const out = [];
   let pendingDay = '';
   for (const p of raw) {
     if (isModifier(p) && out.length && !isOnlyDay(p)) { out[out.length - 1] += ', ' + p; continue; }
+    if (out.length && dayAndTime(p) && ENDS_WD.test(lower(out.at(-1))) && !timeOf(out.at(-1))) { out[out.length - 1] += ' e ' + p; continue; }
     if (isOnlyDay(p)) { pendingDay += p + ' '; continue; }
     out.push(pendingDay + p);
     pendingDay = '';
@@ -326,8 +370,8 @@ export function structuredOps(sentence, ctx = {}) {
 
   // abitudine con frequenza («3 volte a settimana», «ogni lunedì, mercoledì e venerdì» senza orario)
   const hb = t.match(HABIT_RE);
-  const recDays = isRecurring(t) ? weekdaysIn(sentence) : [];
   const tm0 = timeOf(sentence);
+  const recDays = isRecurring(t) || (tm0 && isWeeklyList(sentence)) ? weekdaysIn(sentence) : [];
   const isWork = /\b(?:lavor\w*|ufficio|turno)\b/.test(t) && !/\bnon\s+lavor/.test(t);
   if (hb || (recDays.length >= 2 && !tm0 && /\bogni\b/.test(t) && !isWork)) {
     const per = hb ? (hb[2] ? 7 : numOf(hb[1])) : recDays.length;
@@ -395,7 +439,8 @@ export function structuredOps(sentence, ctx = {}) {
   // giorni di stacco / giorni liberi
   const after = work ? t.slice(t.indexOf(work[0]) + work[0].length) : t;
   const days = weekdaysIn(after);
-  if (days.length && offWords.test(after)) {
+  const oneDayOff = days.length === 1 && !isRecurring(after) && /\bnon\s+(?:lavor|vado)/.test(after);
+  if (days.length && offWords.test(after) && !oneDayOff) {
     const next = [...new Set([...(ctx.offDays || []), ...days])].sort();
     ctx.offDays = next;
     ops.push(op({ action: 'set_pref', pref_key: 'off_days', pref_value: next.join(',') }));
@@ -431,7 +476,9 @@ const parseHMs = (v) => { const [h, m] = String(v).split(':').map(Number); retur
 // ---------------------------------------------------------------- obiettivi
 /** Una frase-obiettivo → set_goal + piano. force = siamo nella domanda "Obiettivi". */
 export function goalOps(sentence, ctx, today, force = false) {
-  const due = parseDue(sentence, today);
+  let due = parseDue(sentence, today);
+  // «esame storia il 20/1»: il giorno dell'esame è la scadenza
+  if (!due && /^(?:(?:l'|il\s+|un\s+|lo\s+)?(?:esame|appello|concorso|discussione|patente))\b/i.test(tidy(lower(sentence).replace(DATE_WORDS, ' ')))) { const d = dateOf(sentence, today); if (d) due = { due: d.date, match: d.match }; }
   const horizon = due ? daysBetween(today, due.due) : null;
   const intent = /^(?:voglio|vorrei|il\s+mio\s+obiettivo|obiettivo|devo\s+riuscire)/i.test(ap(sentence).trim());
   const cat = goalCategory(sentence);
@@ -442,6 +489,9 @@ export function goalOps(sentence, ctx, today, force = false) {
   if (due) title = title.replace(new RegExp(esc(due.match), 'i'), ' ');
   title = tidy(title);
   for (let i = 0; i < 2; i++) title = tidy(title.replace(INTENT, ''));
+  title = tidy(title.replace(/\s+(?:il|lo|la|l'|entro|per|del|di|a)$/i, ''));
+  // «Esame storia» → «Esame di storia»
+  title = title.replace(/^(esame|appello|concorso|test)\s+(?!di\b|del\b|della\b|dello\b|dei\b|delle\b|d'|dell')/i, '$1 di ');
   title = cap(title).slice(0, 120);
   if (!title) return null;
   const ops = [];
@@ -489,7 +539,7 @@ function taskOps(clause, state, today, nowMin, ctx, carry) {
   const until = pl.match(UNTIL_RE);
   const dur = parseDuration(rel ? pl.replace(rel[0], ' ') : clause);
   const named = findProject(clause, ctx.projects);
-  const prio = /assolutamente|important|urgente|priorit/.test(pl) ? 3 : null;
+  const prio = /assolutamente|important|urgent|priorit/.test(pl) ? 3 : null;
 
   // un fatto con una data, senza orario («tra due settimane parto per Londra»): diventa la scadenza di ciò che segue
   if (STATEMENT.test(cleanTitle(clause, null).replace(/^/, '')) || STATEMENT.test(tidy(lower(rest).replace(DATE_WORDS, ' ').replace(TIME_WORDS, ' ')))) {
@@ -520,10 +570,14 @@ function taskOps(clause, state, today, nowMin, ctx, carry) {
     return { ops, said, carry };
   }
   let title = singular(cleanTitle(rel ? rest.replace(new RegExp(esc(rel[0]), 'i'), ' ') : rest, named?.n));
+  // il titolo prima di togliere articoli e preposizioni: «al sono dai miei» resta riconoscibile
+  const raw = tidy(ap(rest).replace(DUR_ANY, ' ').replace(TIME_WORDS, ' ').replace(new RegExp(AT_RE.source, 'gi'), ' ').replace(DATE_WORDS, ' ').replace(FILLER, ' ').replace(CHAT, '').replace(INTENT, ''));
   if (/\b(?:ho\s+lavorato|lavoro|sto\s+lavorando)\s+fino\b/.test(pl)) title = 'Lavoro';
   // «lunedì alle 10, mercoledì alle 15»: senza titolo vale quello detto prima
   if ((!title || title.length < 2) && tm && carry.title) title = carry.title;
   if (!title || title.length < 2) return { ops, said, carry };
+  const bad = badTitle(raw, title, state, clause);
+  if (bad) return { ops, said, carry, miss: bad };
 
   // «lunedì e mercoledì lavoro fino alle 19»: lo stesso impegno in più giorni
   const many = !isRecurring(pl) && !isDue ? [...pl.matchAll(new RegExp(`(?:^|\\s)(${WD_WORD})(?![a-zà-ù])`, 'g'))].map((x) => dateOf(x[1], today)?.date).filter(Boolean) : [];
@@ -578,7 +632,9 @@ function commandOps(text, state, today, now) {
   // forme che vogliono dire «sposta»: «la riunione è stata spostata alle 11», «la spesa la faccio domani»
   let r0 = low.match(/^(.+?)\s+(?:è\s+stat[ao]\s+|è\s+|e'\s+|sono\s+stat[ei]\s+)?(?:spostat[aoei]|anticipat[aoei]|posticipat[aoei]|rimandat[aoei])\s+(?:a\s+|ad\s+|al\s+)?(.+)$/)
     || low.match(/^(.+?)\s+(?:la|lo|le|li)\s+(?:faccio|sposto|rimando|metto|facciamo)\s+(.+)$/)
-    || low.match(/^(.+?)\s+slitta\s+(?:a\s+|ad\s+|al\s+)?(.+)$/);
+    || low.match(/^(.+?)\s+slitta\s+(?:a\s+|ad\s+|al\s+)?(.+)$/)
+    // «la call di giovedì spostala alle 17»
+    || low.match(/^(.+?)\s+(?:spostal[aoei]|rimandal[aoei]|anticipal[aoei]|posticipal[aoei]|mettil[aoei]|fall[aoei])\s+(?:a\s+|ad\s+|al\s+)?(.+)$/);
   if (r0 && (dateOf(r0[2], today) || timeOf(r0[2].replace(/^(\d)/, 'alle $1')) || /^(?:alle|domani|dopodomani)/.test(r0[2]))) low = `sposta ${r0[1]} ${/^alle|^\d/.test(r0[2]) ? '' : 'a '}${r0[2]}`;
   /** L'attività di cui si parla: per titolo, preferendo quella del giorno nominato. */
   const find = (frag, all = false) => {
@@ -602,7 +658,7 @@ function commandOps(text, state, today, now) {
     if (!heavy.length) return { ops: [], reply: 'Oggi non hai attività pesanti in programma: tieni quelle leggere e fermati quando vuoi.' };
     return { ops: heavy.map((x) => op({ action: 'move', id: x.id, date: addDays(today, 1) })), reply: `Alleggerisco: ${heavy.map((x) => `«${x.title}»`).join(', ')} ${heavy.length === 1 ? 'passa' : 'passano'} a domani. Restano le cose leggere.`, confirm: true };
   }
-  if ((m = low.match(/^(?:ho\s+fatto|ho\s+lavorato|ho\s+passato)\s+(.+?)\s+(?:di|del|della|dello|dell'|sul|sulla|sull'|al|alla|all'|a|su)\s*(.+)$/)) && parseDuration(m[1])) {
+  if ((m = low.match(/^(?:ho\s+fatto|ho\s+lavorato|ho\s+passato|fatti|fatte|fatto|lavorato)\s+(.+?)\s+(?:di|del|della|dello|dell'|sul|sulla|sull'|al|alla|all'|a|su)\s*(.+)$/)) && parseDuration(m[1])) {
     const it = find(m[2]);
     const d = parseDuration(m[1]);
     return it ? { ops: [op({ action: 'progress', id: it.id, actual_min: d })], reply: `Segnati ${d} minuti su «${it.title}». Il resto lo rimetto in programma.` } : nf(m[2]);
@@ -617,6 +673,22 @@ function commandOps(text, state, today, now) {
     const it = find(m[1].replace(/^(?:la\s+carta\s+(?:di|del|della)?\s*)/, ''));
     const c = COLOR_WORDS[m[2]] || null;
     return it ? { ops: [op({ action: 'update', id: it.id, color: c })], reply: c ? `«${it.title}» ora è ${m[2]}. Anche il suo quadrante nel calendario.` : `«${it.title}» torna al colore normale.` } : nf(m[1]);
+  }
+  // «spesa fatta», «relazione consegnata»: il fatto detto dopo il nome
+  if ((m = low.match(/^(.+?)\s+(?:è\s+|e'\s+)?(?:fatt[aoei]|finit[aoei]|completat[aoei]|terminat[aoei]|consegnat[aoei]|chius[aoei])$/))) {
+    const it = find(m[1]);
+    if (it) return { ops: [op({ action: 'complete', id: it.id })], reply: `Segnato come fatto: «${it.title}».` };
+  }
+  // «report urgentissimo»
+  if ((m = low.match(/^(.+?)\s+(?:è\s+|e'\s+)?(?:urgentissim[oa]|urgente|importantissim[oa]|prioritari[oa])$/))) {
+    const it = find(m[1]);
+    if (it) return { ops: [op({ action: 'update', id: it.id, priority: 3 })], reply: `«${it.title}» ora ha la precedenza.` };
+  }
+  // «domani non lavoro», «giovedì non ho lezione»: l'impegno di ogni settimana saltato quel giorno
+  if ((m = lower(text).trim().match(new RegExp(`^(?:(oggi|domani|dopodomani|${WD_WORD})\\s+)?non\\s+(?:lavoro|vado\\s+(?:a|al|in)\\s+(?:lavoro|lavorare|ufficio)|ho\\s+(.+))$`))) && !isRecurring(text)) {
+    const r = m[2] ? findRec(m[2]) : (state.recurring || []).find((x) => /lavor|ufficio|turno/i.test(x.title));
+    const d = dateOf(text, today)?.date || today;
+    if (r) return { ops: [op({ action: 'remove_recurring', id: r.id, date: d })], reply: `${r.title}: ${niceDate(d, today)} lo salto.` };
   }
   // «la palestra è più importante della spesa», «il report è urgente», «la spesa può aspettare»
   if ((m = low.match(/^(.+?)\s+(?:è|e'|e)\s+(?:più\s+)?(?:importante|urgente|prioritari[ao]|la\s+priorità)\b/))) {
@@ -713,14 +785,212 @@ function commandOps(text, state, today, now) {
 // ---------------------------------------------------------------- ingresso
 const sentencesOf = (text) => ap(text).split(/\.(?!\d)|[;\n!?]+/).map((x) => x.trim()).filter(Boolean);
 const memoryOp = (note, category) => op({ action: 'remember', note: tidy(note), category });
-const UNAVAIL = /\b(?:non\s+ci\s+sono|non\s+ci\s+sar[oò]|sono\s+via|sar[oò]\s+via|sono\s+fuori|sar[oò]\s+fuori|non\s+sono\s+disponibil\w*|tutto\s+il\s+giorno\s+(?:a|in|da|fuori)|sono\s+(?:a|in)\s+[a-zà-ù]+\s+tutto\s+il\s+giorno)\b/i;
 const PREF = /^(?:non\s+voglio|non\s+mi\s+piace|preferisco|preferirei|mi\s+piace|odio|evito|cerco\s+di|di\s+solito|sono\s+una?\s+person)/i;
+
+// ---------------------------------------------------------------- giorni via, tempo a disposizione
+const AWAY = /\b(?:in\s+ferie|ferie|in\s+vacanza|vacanz[ae]|in\s+viaggio|in\s+trasferta|trasferta|via|fuori(?:\s+citt[aà])?|al\s+mare|in\s+montagna|dai\s+miei|dai\s+nonni|dai\s+suoceri|non\s+ci\s+sono|non\s+ci\s+sar[oò]|non\s+sono\s+disponibil\w*|malat[oa]|sono\s+(?:a|in|da)\s+[a-zà-ù]+)\b/i;
+const awayTitle = (t) => /ferie/.test(t) ? 'Ferie' : /vacanz/.test(t) ? 'Vacanza' : /\bmare\b/.test(t) ? 'Al mare' : /montagna/.test(t) ? 'In montagna'
+  : /dai\s+miei/.test(t) ? 'Dai miei' : /dai\s+nonni/.test(t) ? 'Dai nonni' : /dai\s+suoceri/.test(t) ? 'Dai suoceri' : /trasferta/.test(t) ? 'Trasferta' : /viaggio/.test(t) ? 'In viaggio' : /malat/.test(t) ? 'Malattia'
+  : (() => { const w = t.match(/\bsono\s+(a|in|da)\s+([a-zà-ù]+)/); return w ? `${cap(w[1])} ${cap(w[2])}` : /non\s+(?:ci\s+s|sono\s+disp)/.test(t) ? 'Non disponibile' : 'Via'; })();
+
+/** Il periodo nominato: «dal 23 al 27 dicembre», «la settimana prossima», «questa settimana», «il weekend», un giorno. */
+function periodOf(text, today) {
+  const t = lower(text);
+  const [y, mo, d] = today.split('-').map(Number);
+  const ahead = (M, D) => (M < mo || (M === mo && D < d) ? y + 1 : y);
+  let r = t.match(new RegExp(`\\bdal(?:l')?\\s+(\\d{1,2})(?:\\s+(${MONTH_RE}))?\\s+(?:al(?:l')?|a)\\s+(\\d{1,2})\\s+(${MONTH_RE})\\b`));
+  if (r) {
+    const M2 = MONTHS.indexOf(r[4]) + 1, M1 = r[2] ? MONTHS.indexOf(r[2]) + 1 : M2;
+    const Y1 = ahead(M1, +r[1]);
+    const a = dateKey(new Date(Y1, M1 - 1, +r[1])), b = dateKey(new Date(M2 < M1 ? Y1 + 1 : Y1, M2 - 1, +r[3]));
+    return b >= a ? { from: a, to: b, match: r[0] } : null;
+  }
+  r = t.match(/\bdal\s+(\d{1,2})\/(\d{1,2})\s+al\s+(\d{1,2})\/(\d{1,2})\b/);
+  if (r) {
+    const Y1 = ahead(+r[2], +r[1]);
+    const a = dateKey(new Date(Y1, +r[2] - 1, +r[1])), b = dateKey(new Date(+r[4] < +r[2] ? Y1 + 1 : Y1, +r[4] - 1, +r[3]));
+    return b >= a ? { from: a, to: b, match: r[0] } : null;
+  }
+  const monday = addDays(today, (8 - weekday(today)) % 7 || 7);
+  if ((r = t.match(/\b(?:la\s+)?(?:settimana\s+prossima|prossima\s+settimana)\b/))) return { from: monday, to: addDays(monday, 6), match: r[0] };
+  if ((r = t.match(/\bquesta\s+settimana\b/))) return { from: today, to: addDays(today, (7 - weekday(today)) % 7), match: r[0] };
+  if ((r = t.match(/\b(?:(?:il|questo|nel|per\s+il|lo)\s+)?(?:weekend|week-end|fine\s+settimana)\b/))) {
+    const sat = addDays(today, (6 - weekday(today) + 7) % 7);
+    return weekday(today) === 0 ? { from: today, to: today, match: r[0] } : { from: sat, to: addDays(sat, 1), match: r[0] };
+  }
+  const one = dateOf(text, today);
+  return one ? { from: one.date, to: one.date, match: one.match, single: true } : null;
+}
+
+/**
+ * «dal 23 al 27 dicembre sono dai miei», «la settimana prossima sono in ferie», «weekend al mare»:
+ * quei giorni sono occupati e gli impegni di ogni settimana (il lavoro) saltano.
+ */
+function awayOps(sentence, state, today) {
+  const t = lower(sentence);
+  if (timeOf(sentence) || !AWAY.test(t) || /\b(?:devo|dovrei|voglio|vorrei|bisogna|ho\s+da)\b/.test(t)) return null;
+  const p = periodOf(sentence, today);
+  if (!p) return null;
+  // un giorno solo: servono parole chiare («sono via», «non ci sono», «al mare»…), non un posto qualsiasi
+  if (p.single && !/\b(?:ferie|vacanz|via|fuori|mare|montagna|dai\s+miei|dai\s+nonni|non\s+ci\s+s|non\s+sono\s+disp|malat|tutto\s+il\s+giorno|trasferta)/.test(t)) return null;
+  // il resto della frase deve parlare solo di questo
+  const rest = tidy(t.replace(p.match, ' ').replace(AWAY, ' ').replace(DATE_WORDS, ' ').replace(TIME_WORDS, ' ').replace(/\b(?:io|sono|sar[oò]|saremo|siamo|vado|andiamo|parto|partiamo|staro|starò|resto|sto|e|a|al|in|da|dai|per|tutt[oa]|la|il|lo|giorno|giornata|tutta|ancora)\b/g, ' ').replace(/[^a-zà-ù ]/g, ' '));
+  if (rest.split(' ').filter((w) => w.length > 2).length > 1) return null;
+  const title = awayTitle(t);
+  const ops = [];
+  const P = state.prefs || {};
+  const days = [];
+  for (let d = p.from; d <= p.to && days.length < 31; d = addDays(d, 1)) days.push(d);
+  for (const d of days) {
+    ops.push(op({ action: 'add', kind: 'event', title, date: d, start_time: fmtMin(P.dayStart ?? 480), end_time: fmtMin(Math.min(P.dayEnd ?? 1380, 1439)) }));
+    for (const r of state.recurring || []) if ((r.weekdays || []).includes(weekday(d)) && !(r.skip || []).includes(d)) ops.push(op({ action: 'remove_recurring', id: r.id, date: d }));
+  }
+  const span = days.length === 1 ? niceDate(days[0], today) : `da ${niceLong(days[0], today)} a ${niceLong(days.at(-1), today)}`;
+  return { ops, said: [`${title} ${span}: niente in programma`] };
+}
+
+/** «stasera ho solo 2 ore», «domani pomeriggio ho un paio d'ore»: quel giorno usa solo quel tempo. */
+function availOps(sentence, state, today, nowMin) {
+  const t = lower(sentence);
+  if (!/\b(?:ho|avr[oò]|avrei|mi\s+restano|mi\s+rimangono|restano|rimangono)\b/.test(t)) return null;
+  const dur = parseDuration(sentence);
+  if (!dur || dur < 15) return null;
+  const rest = tidy(t.replace(DUR_ANY, ' ').replace(TIME_WORDS, ' ').replace(DATE_WORDS, ' ')
+    .replace(/\b(?:ho|avr[oò]|avrei|mi|restano|rimangono|solo|soltanto|tipo|circa|più\s+o\s+meno|al\s+massimo|massimo|libere|liberi|libero|libera|di\s+tempo|tempo|a\s+disposizione|disponibili|e|per\s+me)\b/g, ' ').replace(/[^a-zà-ù ]/g, ' '));
+  if (rest) return null;
+  const day = dateOf(sentence, today)?.date || today;
+  const win = windowOf(sentence);
+  const P = { ...state.prefs };
+  let start = win === 'sera' ? 18 * 60 : win === 'pomeriggio' ? 14 * 60 : win === 'mattina' ? (P.dayStart ?? 480) : day === today ? nowMin : (P.dayStart ?? 480);
+  // dopo gli impegni che sono già lì (e, dopo una giornata di lavoro, dopo la pausa per cena)
+  const fixed = [...(state.items || []).filter((x) => x.kind === 'event' && x.date === day && x.start != null).map((x) => [x.start, x.start + (x.duration || 30)]),
+    ...(state.recurring || []).filter((r) => (r.weekdays || []).includes(weekday(day)) && !(r.skip || []).includes(day)).map((r) => [r.start, r.end])].sort((a, b) => a[0] - b[0]);
+  for (const [a, b] of fixed) if (a <= start && start <= b) start = b + (b - a >= 240 && b >= 15 * 60 ? (P.decompress ?? 45) : 0);
+  if (day === today) start = Math.max(start, Math.ceil(nowMin / 5) * 5);
+  const end = Math.min(P.dayEnd ?? 1380, start + dur);
+  if (end - start < 15) return null;
+  return { ops: [op({ action: 'set_availability', date: day, start_time: fmtMin(start), end_time: fmtMin(end) })],
+    said: [`${win === 'sera' && day === today ? 'stasera' : niceDate(day, today)} hai ${durText(dur)}: dalle ${fmtMin(start)} alle ${fmtMin(end)} metto solo quello che ci sta`] };
+}
+
+// ---------------------------------------------------------------- titoli che non hanno senso
+const BAD_START = /^(?:al|non|solo|soltanto|libero|libera|h)\b/i;
+const BAD_WORD = /\b(?:fatt[aoie]|urgentissim\w*)\b/i;
+const PARTICIPLE = /^[a-zà-ù]+(?:at|it|ut|es|os|ers|ott|ess|ost)[aoie]$|^[a-zà-ù]+(?:al|el|il)[aoei]$/;
+/**
+ * Un titolo che non è una cosa da fare («Solo», «Non lavoro», «Al sono dai miei», «Lavatrice stesa»)
+ * → la frase per dire cosa non ho capito (altrimenti null).
+ */
+function badTitle(raw, title, state, clause) {
+  const what = tidy(ap(clause));
+  const generic = `Non ho capito «${what}»: non metto niente in programma. Prova così: «giovedì alle 17 dentista», «stasera ho 2 ore» oppure «ho finito la spesa».`;
+  if (BAD_START.test(raw) || BAD_START.test(title) || BAD_WORD.test(raw) || BAD_WORD.test(title)) return generic;
+  // un'attività che c'è già, seguita da un verbo: non è una cosa nuova
+  const st = strip(title);
+  for (const x of state.items || []) {
+    if (x.kind !== 'task' || x.status === 'done') continue;
+    const xt = strip(x.title);
+    if (!st.startsWith(xt + ' ')) continue;
+    const tail = st.slice(xt.length + 1).split(' ');
+    if (tail.length <= 2 && PARTICIPLE.test(tail[0])) {
+      const n = x.title.charAt(0).toLowerCase() + x.title.slice(1);
+      return `Non ho capito «${what}»: «${x.title}» c'è già. Se l'hai finita scrivi «ho finito ${n}», per spostarla «sposta ${n} a domani».`;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- cosa ho capito, voce per voce
+const WD_LONG = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+const MON = MONTHS;
+/** «oggi», «domani», «giovedì 15», «lunedì 2 novembre», «20 gennaio 2027» */
+function niceLong(d, today) {
+  const n = daysBetween(today, d);
+  if (n === 0) return 'oggi';
+  if (n === 1) return 'domani';
+  const [y, m, dd] = d.split('-').map(Number);
+  const yr = y !== +today.slice(0, 4) ? ` ${y}` : '';
+  if (n > 1 && n < 7) return `${WD_LONG[weekday(d)]} ${dd}`;
+  return `${WD_LONG[weekday(d)]} ${dd} ${MON[m - 1]}${yr}`;
+}
+const dateWithYear = (d, today) => { const [y, m, dd] = d.split('-').map(Number); return `${dd} ${MON[m - 1]}${y !== +today.slice(0, 4) ? ' ' + y : ''}`; };
+const shortDays = (ds) => {
+  const S = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
+  const o = [...ds].map(Number).sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+  const contiguous = o.length > 2 && o.every((d, i) => i === 0 || (o[i - 1] + 1) % 7 === d);
+  return contiguous ? `${S[o[0]]}–${S[o.at(-1)]}` : o.map((d) => S[d]).join(' e ');
+};
+const hmShort = (v) => { const [h, m] = String(v).split(':'); return `${+h}:${m || '00'}`; };
+
+/** Le operazioni in parole, una riga per voce: «Impegno · Dentista · giovedì 15 alle 17:00». */
+export function understoodOf(ops, state, today) {
+  const out = [];
+  const title = (id) => (state.items || []).find((x) => x.id === id)?.title || (state.recurring || []).find((r) => r.id === id)?.title || id;
+  const at = (d, t) => [d ? niceLong(d, today) : null, t ? `alle ${hmShort(t)}` : null].filter(Boolean).join(' ');
+  let run = null; // giorni interi di fila con lo stesso titolo: un periodo solo
+  const flush = () => {
+    if (!run) return;
+    out.push(run.to !== run.e.date ? `Impegno · ${run.e.title} · da ${niceLong(run.e.date, today)} a ${niceLong(run.to, today)}` : `Impegno · ${run.e.title} · ${at(run.e.date || today, run.e.start_time)}`);
+    run = null;
+  };
+  for (const o of ops || []) {
+    if (o.action === 'remove_recurring' && run && o.date) continue; // il lavoro saltato nei giorni via: è già detto dal periodo
+    if (o.action === 'add' && o.kind === 'event') {
+      if (run && run.e.title === o.title && run.e.start_time === o.start_time && o.date === addDays(run.to, 1)) { run.to = o.date; continue; }
+      flush();
+      run = { e: o, to: o.date };
+      continue;
+    }
+    flush();
+    switch (o.action) {
+      case 'add':
+        out.push(['Attività', o.title, o.date ? niceLong(o.date, today) : null, o.duration_min && !o.duration_is_estimate ? `${o.duration_min} min` : null, o.deadline ? `entro ${niceLong(o.deadline, today)}` : null].filter(Boolean).join(' · '));
+        break;
+      case 'complete': out.push(`Fatto · ${title(o.id)}`); break;
+      case 'progress': out.push(`Avanzamento · ${title(o.id)} · ${o.actual_min} min`); break;
+      case 'skip': out.push(`Saltata · ${title(o.id)}`); break;
+      case 'delete': out.push(`Tolta · ${title(o.id)}`); break;
+      case 'move': case 'update': {
+        const when = at(o.date, o.start_time);
+        if (when) out.push(`Spostata · ${title(o.id)} · ${when}`);
+        else if (o.priority === 3) out.push(`Priorità alta · ${title(o.id)}`);
+        else if (o.priority === 1) out.push(`Priorità bassa · ${title(o.id)}`);
+        else out.push(`Aggiornata · ${title(o.id)}`);
+        break;
+      }
+      case 'set_availability': out.push(`Disponibilità · ${niceLong(o.date || today, today)}${o.start_time ? ' dalle ' + hmShort(o.start_time) : ''}${o.end_time ? ' alle ' + hmShort(o.end_time) : ''}`); break;
+      case 'add_recurring': out.push(`Ogni settimana · ${o.title} · ${shortDays(o.weekdays || [])} ${hmShort(o.start_time)}–${hmShort(o.end_time)}`); break;
+      case 'remove_recurring': out.push(o.date ? `Saltato · ${title(o.id)} · ${niceLong(o.date, today)}` : `Tolto · ${title(o.id)} · tutte le settimane`); break;
+      case 'add_habit': out.push(`Abitudine · ${o.title} · ${+o.pref_value === 7 ? 'ogni giorno' : `${o.pref_value} volte a settimana`}`); break;
+      case 'set_goal': out.push(`Obiettivo · ${o.title}${o.deadline ? ` · entro il ${dateWithYear(o.deadline, today)}` : ''}`); break;
+      case 'add_project': out.push(`Progetto · ${o.title}`); break;
+      case 'set_pref': {
+        const v = String(o.pref_value ?? '');
+        const k = o.pref_key;
+        const days = () => v.split(',').filter((x) => x !== '').map(Number).filter((d) => d >= 0 && d <= 6).map((d) => WD_LONG[d]);
+        if (k === 'off_days' && v) out.push(`Stacchi · ${days().join(' e ')}`);
+        else if (k === 'free_days' && v) out.push(`Giorni liberi per i progetti · ${days().join(' e ')}`);
+        else if (k === 'focus_window') out.push(`Rendi di più · ${v === 'pomeriggio' ? 'il pomeriggio' : `la ${v}`}`);
+        else if (k === 'max_block_min') out.push(`Sessioni · al massimo ${durText(+v)}`);
+        else if (k === 'buffer_min') out.push(`Pause · ${v} min`);
+        else if (k === 'day_start') out.push(`Giornata · dalle ${hmShort(v)}`);
+        else if (k === 'day_end') out.push(`Giornata · fino alle ${hmShort(v)}`);
+        else if (k === 'decompress_min') out.push(`Pausa dopo il lavoro · ${v} min`);
+        break;
+      }
+      default: break;
+    }
+  }
+  flush();
+  return out;
+}
 
 /**
  * Modalità base: un messaggio scritto nella barra → { ops?, reply, confirm?, simple? }.
  * simple = un solo comando semplice (fatto, sposta, elimina…): non serve l'AI.
  */
 export function localParse(text, state, now) {
+  text = normalizeText(text);
   const today = dateKey(new Date(now));
   const d = new Date(now);
   const nowMin = d.getHours() * 60 + d.getMinutes();
@@ -734,26 +1004,12 @@ export function localParse(text, state, now) {
     return { ops: tired.ops, reply: tired.reply, confirm: true };
   }
   for (const s of sentences) {
-    // «mercoledì non ci sono, sono a Milano tutto il giorno»: la giornata è occupata
-    const un = UNAVAIL.test(s) && dateOf(s, today);
-    if (un && !timeOf(s)) {
-      const where = lower(s).match(/\bsono\s+(a|in)\s+([a-zà-ù]+)/);
-      const title = where ? `${cap(where[1])} ${cap(where[2])}` : 'Non disponibile';
-      ops.push(op({ action: 'add', kind: 'event', title, date: un.date, start_time: fmtMin(state.prefs?.dayStart ?? 480), end_time: fmtMin(state.prefs?.dayEnd ?? 1380) }));
-      said.push(`${niceDate(un.date, today)} non ci sei: niente in programma`);
-      clauses++;
-      continue;
-    }
-    // «il weekend vado al mare»: sabato e domenica sei via
-    if (/\b(?:weekend|week-end|fine\s+settimana)\b/i.test(s) && /\b(?:vado|vado\s+via|sono\s+(?:via|fuori|a|in|al|da)|parto|sar[oò]|staro|starò)\b/i.test(s) && !/\b(?:non\s+lavor|stacc|riposo|progett)/i.test(s) && !timeOf(s)) {
-      const sat = addDays(today, (6 - weekday(today) + 7) % 7);
-      const where = lower(s).match(/\b(?:vado|sono|starò|staro)\s+((?:al|alla|in|a|da|dai|dalla|dal)\s+[a-zà-ù']+(?:\s+[a-zà-ù']+)?)/);
-      const title = where ? cap(where[1]) : 'Via';
-      for (const dd of [sat, addDays(sat, 1)]) ops.push(op({ action: 'add', kind: 'event', title, date: dd, start_time: fmtMin(state.prefs?.dayStart ?? 480), end_time: fmtMin(state.prefs?.dayEnd ?? 1380) }));
-      said.push(`questo weekend sei via (${lower(title)}): niente in programma sabato e domenica`);
-      clauses++;
-      continue;
-    }
+    // «dal 23 al 27 dicembre sono dai miei», «mercoledì non ci sono», «weekend al mare»: quei giorni sono occupati
+    const away = awayOps(s, state, today);
+    if (away) { ops.push(...away.ops); said.push(...away.said); clauses++; structured++; continue; }
+    // «stasera ho solo 2 ore»: quel giorno uso solo quel tempo
+    const av = availOps(s, state, today, nowMin);
+    if (av) { ops.push(...av.ops); said.push(...av.said); clauses++; structured++; continue; }
     // la frase intera come vincolo o preferenza (il lavoro, i giorni di stacco, le abitudini…)
     const whole = !/^(?:ho\s+finito|fatto|sposta|togli|elimina|cancella|rimanda)/i.test(s.trim()) ? structuredOps(s, ctx) : null;
     if (whole && clausesOf(s).length === 1) { ops.push(...whole.ops, memoryOp(s, whole.category)); said.push(...whole.said); clauses++; structured++; continue; }
@@ -780,13 +1036,15 @@ export function localParse(text, state, now) {
       // un modo di essere, non una cosa da fare: lo ricordo
       if (PREF.test(c.trim())) { ops.push(memoryOp(c, 'preferenza')); said.push(`me lo ricordo: ${lower(c.trim()).replace(/[.]$/, '')}`); continue; }
       const g = goalOps(c, ctx, today);
-      if (g) { ops.push(...g.ops); said.push(`obiettivo «${g.title}»${g.due ? ' entro ' + niceDate(g.due, today) : ''}`); goalsMade++; continue; }
+      if (g) { ops.push(...g.ops); said.push(`obiettivo «${g.title}»${g.due ? ' entro il ' + dateWithYear(g.due, today) : ''}`); goalsMade++; continue; }
       const tk = taskOps(c, state, today, nowMin, ctx, carry);
+      if (tk.miss) { misses.push(tk.miss); continue; }
       ops.push(...tk.ops); said.push(...tk.said);
       carry = { nextWeek: carry.nextWeek, ...(tk.carry || carry) };
     }
   }
   if (goalsMade) confirm = true;
+  const understood = understoodOf(ops, state, today);
   if (!ops.length) {
     if (misses.length) return { reply: misses.join(' ') };
     return { reply: said.length ? cap(said.join(', ')) + '.' : 'Senza AI capisco frasi semplici: «Domani alle 16 call», «Stasera 2 ore sul beat 02», «Ho fatto 30 minuti del beat», «La domenica stacco». Per il resto scegli un\'AI gratuita in ⋯ → Assistente AI.' };
@@ -794,7 +1052,7 @@ export function localParse(text, state, now) {
   const reply = goalsMade ? `Ho preparato un piano per ${said.filter((x) => x.startsWith('obiettivo')).join(' e ')}. Guarda le sessioni e conferma.`
     : cap([...said, ...misses.map((x) => x.replace(/[.]$/, ''))].join(' · ')) + '.';
   // un solo comando o un solo vincolo chiaro: non serve l'AI
-  return { ops, reply, confirm, simple: clauses === 1 && (commands === 1 || structured === 1) };
+  return { ops, reply, confirm, understood, simple: clauses === 1 && (commands === 1 || structured === 1) && !misses.length };
 }
 
 /**
@@ -802,24 +1060,37 @@ export function localParse(text, state, now) {
  * answers: { goals, constraints, projects, prefs }
  */
 export function contextOps(answers, today, offDays = []) {
-  const ops = [];
-  const ctx = { projects: [], offDays: [...offDays] };
+  return contextParts(answers, today, { prefs: { offDays } }).ops;
+}
+
+/**
+ * Come contextOps, ma dice anche quali frasi non sono diventate niente di concreto:
+ * { ops, missed: [{ key, text }] }. Le frasi non capite restano comunque in memoria.
+ */
+export function contextParts(answers, today, state = {}) {
+  const ops = [], missed = [];
+  const ctx = { projects: [], offDays: [...(state.prefs?.offDays || [])], today };
   const projects = ap(answers.projects || '').split(/[,\n;]|\s+e\s+/).map((x) => tidy(x)).filter((x) => x && x.length < 40);
   for (const p of projects) { ops.push(op({ action: 'add_project', title: p })); ctx.projects.push({ name: p }); }
+  const st0 = { prefs: state.prefs || {}, recurring: state.recurring || [], items: state.items || [] };
   for (const key of ['constraints', 'prefs']) {
     for (const s of sentencesOf(answers[key])) {
-      const st = structuredOps(s, ctx);
+      const n = normalizeText(s);
+      const st = structuredOps(n, ctx) || awayOps(n, st0, today);
       if (st) ops.push(...st.ops);
+      else missed.push({ key, text: tidy(s) });
       ops.push(memoryOp(s, st?.category || (key === 'constraints' ? 'vincolo' : 'preferenza')));
     }
   }
   for (const s of sentencesOf(answers.goals)) {
-    const st = structuredOps(s, ctx);
+    const n = normalizeText(s);
+    const st = structuredOps(n, ctx);
     if (st && st.ops.some((o) => o.action === 'add_habit')) { ops.push(...st.ops); continue; }
-    const g = goalOps(s, ctx, today, true);
+    const g = goalOps(n, ctx, today, true);
     if (g) ops.push(...g.ops);
+    else missed.push({ key: 'goals', text: tidy(s) });
   }
-  return ops;
+  return { ops, missed };
 }
 
 /** Una nota di memoria che si può strutturare → le operazioni equivalenti (per la migrazione). */

@@ -64,3 +64,43 @@ test('le sessioni non entrano prima della scadenza: lo segnala', () => {
   const fit = goalFit(s, s.goals[0], NOW);
   assert.ok(fit.late > 0);
 });
+
+// ---------------------------------------------------------------- 3.3 l'onboarding non perde i vincoli
+import { contextReview } from '../js/companion.js';
+
+const STUDENT = {
+  goals: "Passare l'esame di diritto privato entro il 20 dicembre",
+  constraints: 'Lezioni dal lunedì al giovedì dalle 9 alle 13. Lavoro da casa quando posso.',
+  projects: '',
+  prefs: 'Studio meglio il pomeriggio.',
+};
+
+test('3.3 «Lezioni dal lunedì al giovedì dalle 9 alle 13» diventa un impegno di ogni settimana', () => {
+  const ops = contextOps(STUDENT, TODAY);
+  const rec = ops.find((o) => o.action === 'add_recurring');
+  assert.ok(rec, JSON.stringify(ops.map((o) => o.action)));
+  assert.deepEqual([rec.title, rec.weekdays, rec.start_time, rec.end_time], ['Lezioni', [1, 2, 3, 4], '09:00', '13:00']);
+  // il primo piano non mette lo studio durante le lezioni
+  const s = freshState({ onboarded: false });
+  applyOps(s, ops, NOW);
+  const plan = planDays(s, NOW, 7);
+  for (const [d, p] of Object.entries(plan)) {
+    if (![1, 2, 3, 4].includes(weekday(d))) continue;
+    for (const b of p.blocks.filter((x) => x.type === 'flex')) assert.ok(b.end <= 9 * 60 || b.start >= 13 * 60, `${d} ${b.item.title} ${b.start}`);
+  }
+});
+
+test('3.3 prima di applicare: cosa ho capito, cosa no, e i primi 7 giorni', () => {
+  const r = contextReview(STUDENT, TODAY, freshState({ onboarded: false }), NOW);
+  assert.ok(r.understood.includes('Ogni settimana · Lezioni · lun–gio 9:00–13:00'), r.understood.join(' | '));
+  assert.ok(r.understood.some((l) => /^Obiettivo · .*diritto privato.* · entro il 20 dicembre$/.test(l)), r.understood.join(' | '));
+  assert.ok(r.understood.includes('Rendi di più · il pomeriggio'), r.understood.join(' | '));
+  assert.deepEqual(r.missed, [{ key: 'constraints', text: 'Lavoro da casa quando posso' }]);
+  assert.equal(r.week.length, 7);
+  assert.ok(r.week.every((d) => d.day && Array.isArray(d.items)));
+  assert.ok(r.week.some((d) => d.items.some((x) => x.title === 'Lezioni')), 'le lezioni si vedono nella settimana');
+  // niente è stato applicato
+  const s = freshState({ onboarded: false });
+  contextReview(STUDENT, TODAY, s, NOW);
+  assert.equal(s.recurring.length, 0);
+});

@@ -208,7 +208,11 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
   const paceCap = (t) => {
     const pc = t.goalId && !t.date && pool.pace?.[t.goalId];
     if (!pc || daysBetween(day, pc.due) < 14) return Infinity; // nelle ultime due settimane si recupera
-    return pc.cap - (goalDays[t.goalId] || []).filter((d) => d > weekAgo).length;
+    const mine = goalDays[t.goalId] || [];
+    // sparse, non a grappoli: tra una sessione e l'altra almeno 7 ÷ tetto giorni
+    const last = mine.at(-1);
+    if (last && last !== day && daysBetween(last, day) < Math.max(1, Math.floor(7 / pc.cap))) return 0;
+    return pc.cap - mine.filter((d) => d > weekAgo).length;
   };
 
   for (const t of cands) {

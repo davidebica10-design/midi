@@ -1,6 +1,7 @@
 // Il companion: guarda il piano, il contesto e la storia e dice cosa fare adesso.
 // È deterministico (funziona anche senza AI); l'AI aggiunge solo il linguaggio naturale.
-import { fmtMin, dateKey, addDays, daysBetween, weekday, dayLabel } from './scheduler.js';
+import { fmtMin, dateKey, addDays, daysBetween, weekday, dayLabel, planDays } from './scheduler.js';
+import { contextParts, understoodOf } from './parse.js';
 import { projectOf, applyOps } from './store.js';
 import { updateDurations } from './learn.js';
 import { goalInProgress } from './goals.js';
@@ -324,6 +325,25 @@ export function nextSaturday(today) {
 
 // Presentazione iniziale: dal testo libero al contesto (senza AI) → parse.js
 export { contextOps } from './parse.js';
+
+/**
+ * Prima di applicare la presentazione: cosa ho capito (voce per voce), cosa no, e i primi 7 giorni del piano.
+ * Lo stato non cambia: si lavora su una copia. { ops, understood, missed, week: [{ day, items: [{ title, start, end, fixed }] }] }
+ */
+export function contextReview(answers, today, state, now, given = null) {
+  const parts = contextParts(answers, today, state);
+  const ops = given || parts.ops, missed = parts.missed;
+  const draft = JSON.parse(JSON.stringify(state));
+  applyOps(draft, JSON.parse(JSON.stringify(ops)), now);
+  const understood = understoodOf(ops, draft, today);
+  const plan = planDays(draft, now, 7);
+  const week = Object.keys(plan).sort().map((d) => ({
+    day: d,
+    items: plan[d].blocks.filter((b) => b.type !== 'done' && b.item.kind !== 'rest')
+      .map((b) => ({ title: b.item.title, start: b.start, end: b.end, fixed: b.type !== 'flex' })),
+  }));
+  return { ops, understood, missed, week };
+}
 
 // ------------------------------------------------------------------
 // Per l'AI: chi è l'utente e come deve parlare il companion
