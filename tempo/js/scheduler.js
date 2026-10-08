@@ -168,7 +168,7 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
   const work = fixed.find((b) => b.item.kind === 'event' && b.end - b.start >= 240 && b.end >= 15 * 60 && b.end <= 21 * 60);
   if (P.decompress > 0 && work && !win?.start && work.end + P.decompress + 30 < dayEnd && (!isToday || nowMin < work.end + P.decompress)
     && !fixed.some((b) => b !== work && b.start < work.end + P.decompress && b.end > work.end)) {
-    fixed.push({ id: 'rest:' + day, item: { id: 'rest:' + day, title: 'Cena / decompressione', kind: 'rest', energy: 1, priority: 2, duration: P.decompress }, start: work.end, end: work.end + P.decompress, type: 'rest' });
+    fixed.push({ id: 'rest:' + day, item: { id: 'rest:' + day, title: 'Cena e pausa', kind: 'rest', energy: 1, priority: 2, duration: P.decompress }, start: work.end, end: work.end + P.decompress, type: 'rest' });
   }
   blocks.push(...fixed);
 
@@ -312,7 +312,7 @@ export function planDay(day, items, prefs, now, pool, recurring, anchors = {}) {
 }
 
 /** Pianifica più giorni a partire da oggi; le attività senza data scorrono in avanti. */
-export function planDays(state, now = Date.now(), nDays = 7) {
+export function planDays(state, now = Date.now(), nDays = 7, { leftovers = true } = {}) {
   const today = dateKey(new Date(now));
   const items = state.items || [];
   const pool = items.filter((t) => t.kind === 'task' && t.status === 'todo' && t.start == null && (!t.date || t.date < today));
@@ -337,7 +337,7 @@ export function planDays(state, now = Date.now(), nDays = 7) {
   }
   // ciò che non entra in nessun giorno
   const lastDay = addDays(today, nDays - 1);
-  if (pool.length) days[lastDay].unscheduled.push(...pool.map((item) => ({ item, reason: 'non entra nei prossimi giorni' })));
+  if (leftovers && pool.length) days[lastDay].unscheduled.push(...pool.map((item) => ({ item, reason: 'non entra nei prossimi giorni' })));
   return days;
 }
 
@@ -356,6 +356,21 @@ export function paceOf(state, today) {
     out[g.id] = { cap: Math.max(1, Math.ceil((1.5 * open) / weeks)), due: g.due };
   }
   return out;
+}
+
+/**
+ * Il tick (ogni 30 secondi): ricalcola solo oggi. Se oggi entrano le stesse cose di prima (e per lo stesso tempo),
+ * i giorni dopo restano quelli già calcolati; altrimenti restituisce null e va rifatto tutto il piano.
+ */
+export function refreshToday(state, plan, now) {
+  const t = dateKey(new Date(now));
+  if (!plan?.[t]) return null;
+  const fresh = planDays(state, now, 1, { leftovers: false })[t];
+  // cosa entra oggi e quanto ne resta per i giorni dopo
+  const sig = (p) => [...p.blocks.filter((b) => b.type === 'flex' || b.type === 'doing' || b.type === 'current').map((b) => `${b.id}:${b.end - b.start}:${b.part || 0}`),
+    ...(p.deferred || []).map((x) => `>${x.id}`)].sort().join('|');
+  if (sig(fresh) !== sig(plan[t])) return null;
+  return { ...plan, [t]: fresh };
 }
 
 /** Posizione (giorno + orario) di ogni attività, per mostrare cosa è cambiato. */

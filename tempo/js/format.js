@@ -12,7 +12,11 @@ export const windowLabel = (w) => ({ mattina: 'la mattina', pomeriggio: 'il pome
 export const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 const dateOf = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
-/** "2026-11-30" → "30 novembre" */
-export const dateLong = (k) => dateOf(k).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
+/** "2026-11-30" → "30 novembre"; un altro anno lo dice: "2029-07-05" → "5 luglio 2029". today: 'YYYY-MM-DD' di riferimento. */
+export const dateLong = (k, today = null) => {
+  const s = dateOf(k).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
+  const ref = today ? +String(today).slice(0, 4) : new Date().getFullYear();
+  return +k.slice(0, 4) !== ref ? `${s} ${k.slice(0, 4)}` : s;
+};
 /** "2026-11-30" → "lunedì" */
 export const weekdayName = (k) => dateOf(k).toLocaleDateString('it-IT', { weekday: 'long' });

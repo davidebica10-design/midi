@@ -11,7 +11,7 @@ test('temi: icona e strumento dalle parole del titolo', () => {
   assert.equal(themeOf({ title: 'Beat 02' }).key, 'music');
   assert.equal(themeOf({ title: 'Sessione 3' }, 'Mix e Master EP').key, 'music');
   assert.equal(themeOf({ title: 'Qualcosa', theme: 'sport' }).key, 'sport');
-  assert.equal(themeOf({ title: 'Cena / decompressione', kind: 'rest' }).key, 'rest');
+  assert.equal(themeOf({ title: 'Cena e pausa', kind: 'rest' }).key, 'rest');
 });
 
 test('pomodoro: 25 minuti, pausa, giro dopo; i minuti lavorati si contano', () => {

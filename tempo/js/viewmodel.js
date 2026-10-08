@@ -1,7 +1,7 @@
 // Dati delle schermate: funzioni pure (stato + piano + ora → quello che si vede).
 // app.js si limita a disegnarli. I campi e gli stati sono descritti in DESIGN-API.md.
 import { fmtMin, dateKey, addDays, daysBetween, weekday, WINDOWS, isOffDay } from './scheduler.js';
-import { nowAdvice, briefing, pickObservations } from './companion.js';
+import { nowAdvice, briefing, pickObservations, observationAlive, welcomeView, goalDoneText } from './companion.js';
 import { projectOf } from './store.js';
 import { learnedObservations, learnedList } from './learn.js';
 import { plural, durLabel, windowLabel, cap, dateLong, weekdayName } from './format.js';
@@ -56,7 +56,7 @@ export function today(ctx) {
   const n = minOf(now);
   const out = {
     day, isToday, past: day < t,
-    header: { time: isToday ? fmtMin(n) : dateLong(day), greeting: greetingFor(day, t, now), weekday: cap(weekdayName(day)), date: dateLong(day) },
+    header: { time: isToday ? fmtMin(n) : dateLong(day, t), greeting: greetingFor(day, t, now), weekday: cap(weekdayName(day)), date: dateLong(day, t) },
     now: null, observations: [], seen: state.seenObs, summary: summaryOf(p), cards: [], status: 'normal', env: ctx.env || {},
   };
 
@@ -75,8 +75,10 @@ export function today(ctx) {
         };
       }
     }
-    const cands = briefing(state, ctx.plan, now, { fits: ctx.fits, backupDue: ctx.backupDue, learned: learnedObservations(state, now) });
-    const pick = pickObservations(cands, state.seenObs, t);
+    // bentornato: prima di tutto, e finché non rispondi niente allarmi
+    out.welcome = welcomeView(state, now);
+    const cands = out.welcome ? [] : briefing(state, ctx.plan, now, { fits: ctx.fits, backupDue: ctx.backupDue, learned: learnedObservations(state, now) });
+    const pick = out.welcome ? { shown: [], seen: state.seenObs } : pickObservations(cands, state.seenObs, t, 2, observationAlive(state));
     out.observations = pick.shown;
     out.seen = pick.seen;
   }
@@ -131,7 +133,7 @@ export function days({ state, plan, now, selected }) {
     const off = isOffDay(state.prefs, k);
     return {
       day: k, selected: k === selected, weekday: weekday(k),
-      name: k === t ? 'Oggi' : k === addDays(t, 1) ? 'Domani' : cap(weekdayName(k)), date: dateLong(k),
+      name: k === t ? 'Oggi' : k === addDays(t, 1) ? 'Domani' : cap(weekdayName(k)), date: dateLong(k, t),
       sub: [tasks ? plural(tasks, 'attività', 'attività') : null, evs ? plural(evs, 'impegno', 'impegni') : null, `${durLabel(p.free)} libere`].filter(Boolean).join(' · '),
       off,
       minis: p.blocks.filter((b) => b.type !== 'done').slice(0, 3).map((b) => ({ time: fmtMin(b.start), title: b.item.title, image: b.item.image || null, kind: b.item.kind })),
@@ -188,7 +190,7 @@ export function context({ state, now, fits }) {
     const done = mine.filter((x) => x.status === 'done').length;
     const dd = g.due ? daysBetween(t, g.due) : null;
     return {
-      id: g.id, title: g.title, project: projInfo(state, g.projectId), due: g.due, dueDate: g.due ? dateLong(g.due) : null,
+      id: g.id, title: g.title, project: projInfo(state, g.projectId), due: g.due, dueDate: g.due ? dateLong(g.due, t) : null,
       dueText: g.due == null ? 'senza scadenza' : dd < 0 ? 'scaduto' : dd === 0 ? 'oggi' : dd < 14 ? `tra ${dd} giorni` : `tra ${Math.round(dd / 7)} settimane`,
       sessions: { done, total: mine.length }, late: fits?.[g.id]?.late || 0,
       habit: (state.habits || []).find((h) => h.goalId === g.id) || null,
@@ -202,7 +204,7 @@ export function context({ state, now, fits }) {
       recurring: state.recurring.map((r) => ({ id: r.id, title: r.title, start: fmtMin(r.start), end: fmtMin(r.end), weekdays: r.weekdays })),
       offDays: P.offDays || [], freeDays: P.freeDays || [],
       // i giorni liberati dal companion: a tempo, si tolgono con un tocco
-      restDays: (P.restDays || []).filter((r) => r.until >= t).map((r) => ({ wd: r.wd, until: r.until, text: `${cap(['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'][r.wd])} libero dai progetti fino al ${dateLong(r.until)}` })),
+      restDays: (P.restDays || []).filter((r) => r.until >= t).map((r) => ({ wd: r.wd, until: r.until, text: `${cap(['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'][r.wd])} libero dai progetti fino al ${dateLong(r.until, t)}` })),
       notes: state.memory.filter((m) => m.category === 'vincolo'),
     },
     preferences: {
@@ -212,6 +214,8 @@ export function context({ state, now, fits }) {
       notes: state.memory.filter((m) => m.category !== 'vincolo'),
     },
     learned: learnedList(state, now),
+    // obiettivi raggiunti, con la loro storia
+    goalsDone: (state.goalsDone || []).slice().sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0)).map((g) => ({ id: g.id, title: g.title, project: projInfo(state, g.projectId), text: goalDoneText(state, g, t) })),
   };
 }
 
@@ -265,7 +269,7 @@ export function week(ctx) {
     const pr = g.key === 'other' ? null : projInfo(state, g.key);
     const goal = pr ? (state.goals || []).find((x) => x.projectId === pr.id) : null;
     const nextText = g.next ? `Prossima: ${g.next.title}, ${g.next.day === t ? 'oggi' : g.next.day === addDays(t, 1) ? 'domani' : weekdayName(g.next.day)}${g.next.start != null ? ` alle ${fmtMin(g.next.start)}` : ''}.` : g.total ? (g.done === g.total ? 'Settimana chiusa.' : '') : 'Nessuna sessione questa settimana.';
-    const goalText = goal?.due ? ` Scadenza ${dateLong(goal.due)}.` : '';
+    const goalText = goal?.due ? ` Scadenza ${dateLong(goal.due, t)}.` : '';
     return {
       key: g.key, kind: pr ? 'project' : 'other',
       tag: pr ? pr.name : 'Altro', color: pr?.color || null,
@@ -313,9 +317,9 @@ export function summary(ctx) {
     const name = pr?.name || g.title;
     let line = `${name}: ${ok} di ${plural(mine.length, 'sessione', 'sessioni')}`;
     if (g.due) {
-      if (f?.late) line += `, ma ${plural(f.late, 'sessione resta', 'sessioni restano')} oltre il ${dateLong(g.due)}`;
-      else if (f?.lastDay) { const margin = daysBetween(f.lastDay, g.due); line += `, finisci il ${dateLong(f.lastDay)}: ${margin > 0 ? `${plural(margin, 'giorno', 'giorni')} prima della scadenza` : 'proprio alla scadenza'}`; }
-      else line += `, scadenza ${dateLong(g.due)}`;
+      if (f?.late) line += `, ma ${plural(f.late, 'sessione resta', 'sessioni restano')} oltre il ${dateLong(g.due, t)}`;
+      else if (f?.lastDay) { const margin = daysBetween(f.lastDay, g.due); line += `, finisci il ${dateLong(f.lastDay, t)}: ${margin > 0 ? `${plural(margin, 'giorno', 'giorni')} prima della scadenza` : 'proprio alla scadenza'}`; }
+      else line += `, scadenza ${dateLong(g.due, t)}`;
     }
     points.push(line + '.');
   }
@@ -355,11 +359,11 @@ export function summary(ctx) {
   for (const pr of state.projects || []) if (!cardsByKey.has(pr.id)) cardsByKey.set(pr.id, { key: pr.id, kind: 'project', tag: pr.name, color: pr.color, label: 'Questa settimana', note: 'Niente in programma: dimmi il prossimo passo nella barra del giorno.', openDay: t, total: 0 });
   const projects = [...cardsByKey.values()].filter((c) => c.kind === 'project').map((c) => {
     const goal = (state.goals || []).find((g) => g.projectId === c.key);
-    return { key: c.key, name: c.tag, color: c.color, text: `${c.label === 'Questa settimana' ? 'Nessuna sessione questa settimana.' : `${c.label} questa settimana.`} ${c.note}`.replace(/\s+/g, ' ').trim(), footer: goal?.due ? `Scadenza ${dateLong(goal.due)}` : goal ? goal.title : 'Progetto', day: c.openDay };
+    return { key: c.key, name: c.tag, color: c.color, text: `${c.label === 'Questa settimana' ? 'Nessuna sessione questa settimana.' : `${c.label} questa settimana.`} ${c.note}`.replace(/\s+/g, ' ').trim(), footer: goal?.due ? `Scadenza ${dateLong(goal.due, t)}` : goal ? goal.title : 'Progetto', day: c.openDay };
   });
 
   const intro = points.length > 1 ? 'Ecco come stai andando, in breve.' : 'Ecco il punto della situazione.';
-  return { date: dateLong(t), intro, points, list: { date: dateLong(t), title: 'I prossimi 7 giorni', rows }, projects, monthSessions };
+  return { date: dateLong(t, t), intro, points, list: { date: dateLong(t, t), title: 'I prossimi 7 giorni', rows }, projects, monthSessions };
 }
 
 /**

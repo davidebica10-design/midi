@@ -46,7 +46,7 @@ Il blocco in corso **non** compare anche fra le `cards`.
 | --- | --- |
 | `task` | `id, itemId, title, start, end, minutes, done, doneAt, pinned, important, project {id,name,color} \| null, goalId, habit, energy (1–3), estimated, resumed, part, image, color` |
 | `event` | `id, itemId (null se ricorrente), title, start, end, recurring, image, color, project` |
-| `rest` | `id, title` («Cena / decompressione»), `start, end, note` («Stacca dal lavoro») |
+| `rest` | `id, title` («Cena e pausa»: più corto di «Cena / decompressione», che andava a capo a metà parola), `start, end, note` («Stacca dal lavoro») |
 | `pause` | `at, minutes` («20:00 · pausa 15'») |
 | `missed` | `id, title, start, minutes`: domanda «Hai fatto…?» con Sì / In parte / No |
 | `unscheduled` | `id, title, minutes, reason, moveTo` («domani» / «giorno dopo») |
@@ -74,7 +74,7 @@ Stati dell'ambiente, da disegnare anche sopra gli altri:
 
 ### Osservazioni (`observations[].id`)
 
-Al massimo 2 al giorno; quelle già mostrate restano fino a sera.
+Al massimo 2 al giorno. Una mostrata resta visibile fino a sera (anche se nel frattempo non sarebbe più tra le candidate), finché non la chiudi con la × (`closeObservation`) o le rispondi. «Ho aggiornato le stime» diventa «detto» solo allora. Con il «Bentornato» aperto non se ne mostra nessuna. Le date di un altro anno hanno l'anno («5 luglio 2029»).
 
 | id | Testo (esempio) | Azioni (`act`) |
 | --- | --- | --- |
@@ -85,10 +85,19 @@ Al massimo 2 al giorno; quelle già mostrate restano fino a sera.
 | `learn-<key>` | ««Beat» lo chiudi in circa 70 minuti, non 45: ho aggiornato le stime.» | `learn-off` |
 | `slot-<fascia>` | «Le sessioni del mattino le salti spesso (1 su 9)… Le sposto alla sera?» (almeno 8 sessioni nella fascia; la fascia proposta ha dati e non è piena di impegni fissi) | `slot-move`, `slot-keep` |
 | `day-<n>` | «Il lunedì salti quasi sempre le sessioni… Lo tengo libero dai progetti?» (almeno 8 sessioni in 4 settimane; mai se restano 3 giorni o meno per i progetti) | `day-off` (per 4 settimane: `prefs.restDays`), `slot-keep` |
-| `carry-<item>` / `behind-<item>` | «Hai già fatto 40 minuti, non riparti da zero…» | — |
+| `carry-<item>` | «Hai già fatto 40 minuti, non riparti da zero…» | — |
+| `behind-<item>` | «Relazione è rimasta indietro. Oggi non entra: la sposto o la togliamo?» | `item-tomorrow` («Sposta a domani»), `item-remove` («Togli») |
 | `goal-<goal>` | «Far uscire l'EP: tra 8 settimane. 3 sessioni fatte su 22.» | — |
-| `done-<goal>` | «Le sessioni per l'EP sono finite. Obiettivo raggiunto?» | `goal-done`, `goal-more` |
-| `backup` | «Non esporti un backup da più di due settimane…» | `backup` |
+| `done-<goal>` | «Le sessioni per l'EP sono finite. Obiettivo raggiunto?» | `goal-done` (archivia in `goalsDone` con la storia: «L'EP è fatto: 20 sessioni, 31 ore, dal 12 ottobre al 25 novembre.»), `goal-more` |
+| `backup` | «Non esporti un backup da più di due settimane…» (al massimo ogni 7 giorni, e solo se i dati sono cambiati dall'ultimo export) | `backup` |
+
+### Bentornato (`welcome`)
+
+Se l'ultima apertura (`stats.lastOpenAt`) è di 7 o più giorni fa: `{ text («Bentornato. Non aprivi Tempo da 3 mesi (99 giorni).»), days, archive[{ id, title }], goals[{ id, text, actions }] }`. È la prima carta, a tutta larghezza: archivia con un tocco le attività senza scadenza nate prima dell'assenza, chiede per ogni obiettivo scaduto «È fatto» / «Nuova data» / «Toglilo», e finché non tocchi «Va bene» (`welcome-close`) niente osservazioni.
+
+### Sessione di un obiettivo finita
+
+`sessionDoneNote` → «Beat 01 fatto · 3 di 22 per l'EP · Prossima: giovedì alle 19:15», con «Va bene» e «Sposta» (apre la prossima sessione).
 
 ---
 
@@ -126,6 +135,8 @@ Stati della cella: passato · oggi · selezionato · libero · con sessioni (1, 
 ---
 
 ## 4. Il tuo contesto — `context({ state, now, fits })`
+
+In più: `goalsDone[{ id, title, project, text }]` per la sezione «Obiettivi raggiunti».
 
 | Campo | Contenuto |
 | --- | --- |

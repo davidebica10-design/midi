@@ -12,7 +12,7 @@ const UNDO_KEY = 'tempo.undo.v1';
 
 export const uid = () => Math.random().toString(36).slice(2, 8);
 
-export const SCHEMA = 4;
+export const SCHEMA = 5;
 
 export function emptyState() {
   return {
@@ -20,7 +20,8 @@ export function emptyState() {
     items: [],
     habits: [],     // abitudini con frequenza: { id, title, perWeek, duration, project, goalId, window }
     learned: { durations: {}, slots: {}, samples: [] }, // cosa ha imparato dal tuo comportamento (samples: durate vere delle attività archiviate)
-    seenObs: { day: null, ids: [] },       // osservazioni già mostrate oggi (massimo 2)
+    seenObs: { day: null, ids: [], closed: [], snap: {} }, // osservazioni mostrate oggi (massimo 2), chiuse, e com'erano
+    welcome: null,  // «Bentornato» dopo un'assenza di 7 giorni o più: { since, at } finché non rispondi
     askChat: [],    // le domande del riepilogo e le risposte
     askIntro: null, // i punti chiave scritti dall'AI: { key, text }
     focus: null,    // il timer o pomodoro in corso (focus.js)
@@ -28,13 +29,14 @@ export function emptyState() {
     recurring: [],
     memory: [],
     goals: [],      // obiettivi: { id, title, due, projectId, note }
+    goalsDone: [],  // obiettivi raggiunti: come goals, più { archivedAt, history: { sessions, minutes, from, to } }
     projects: [],   // progetti: { id, name, color }
     log: [],        // cosa è successo: sessioni saltate, completate…
     onboarded: false,
     anchors: {},
     chat: [],
     settings: { apiKey: '', model: 'claude-opus-5-5', name: '' },
-    stats: { replans: {}, createdAt: Date.now(), archived: { tasks: 0, done: 0 }, archivedOn: null },
+    stats: { replans: {}, createdAt: Date.now(), archived: { tasks: 0, done: 0 }, archivedOn: null, lastOpenAt: null, edits: 0, exportedEdits: null, backupShownOn: null },
   };
 }
 
@@ -77,6 +79,19 @@ export function sanitizeState(s) {
   if (s.focus && !s.items.some((x) => x.id === s.focus.itemId)) s.focus = null;
   s.projects = ids(s.projects).map((p, i) => ({ ...p, name: str(p.name, 40) || 'Progetto', color: safeColor(p.color) || COLORS[i % COLORS.length], due: validDate(p.due), aliases: arr(p.aliases).map((a) => str(a, 40)) }));
   s.goals = ids(s.goals).map((g) => ({ ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId), lateSince: validDate(g.lateSince) }));
+  s.goalsDone = ids(s.goalsDone).map((g) => {
+    const h = obj(g.history);
+    return { ...g, title: str(g.title, 120), note: str(g.note, 300), due: validDate(g.due), projectId: safeId(g.projectId), archivedAt: num(g.archivedAt, 0, 9e15, 0),
+      history: { sessions: num(h.sessions, 0, 1e5, 0), minutes: num(h.minutes, 0, 1e7, 0), from: validDate(h.from), to: validDate(h.to) } };
+  });
+  const W = s.welcome && typeof s.welcome === 'object' ? s.welcome : null;
+  s.welcome = W && Number.isFinite(+W.since) && Number.isFinite(+W.at) ? { since: +W.since, at: +W.at } : null;
+  // le osservazioni di oggi: solo testo, tasti e riferimenti (vengono mostrate così come sono)
+  const SO = obj(s.seenObs);
+  const obsOf = (o) => (o && typeof o === 'object' ? { id: str(o.id, 80), text: str(o.text, 400), goalId: safeId(o.goalId), itemId: safeId(o.itemId), learnKey: typeof o.learnKey === 'string' ? o.learnKey.slice(0, 64) : null,
+    actions: arr(o.actions).slice(0, 4).map((a) => ({ label: str(a?.label, 40), act: str(a?.act, 30), arg: str(a?.arg, 80) })) } : null);
+  s.seenObs = { day: validDate(SO.day), ids: arr(SO.ids).map((x) => str(x, 80)).slice(0, 10), closed: arr(SO.closed).map((x) => str(x, 80)).slice(0, 10),
+    snap: Object.fromEntries(Object.entries(obj(SO.snap)).slice(0, 10).map(([k, o]) => [str(k, 80), obsOf(o)]).filter(([, o]) => o)) };
   s.habits = ids(s.habits).map((h) => ({ ...h, title: str(h.title, 60), perWeek: num(h.perWeek, 1, 7, 1), duration: num(h.duration, 10, 240, 60), project: safeId(h.project), goalId: safeId(h.goalId), window: WINDOWS[h.window] ? h.window : null }));
   s.memory = ids(s.memory).map((m) => ({ ...m, text: str(m.text, 200), category: ['vincolo', 'preferenza', 'obiettivo', 'nota'].includes(m.category) ? m.category : 'nota' }));
   s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate), color: cardColor(r.color) }));
@@ -90,7 +105,10 @@ export function sanitizeState(s) {
     samples: arr(L.samples).filter((x) => x && typeof x === 'object' && Number.isFinite(+x.base) && Number.isFinite(+x.actual))
       .map((x) => ({ keys: arr(x.keys).filter((k) => typeof k === 'string').map((k) => k.slice(0, 64)).slice(0, 2), base: num(x.base, 1, 1440, 30), actual: num(x.actual, 1, 1440, 30), doneAt: num(x.doneAt, 0, 9e15, 0) })).slice(-MAX_SAMPLES) };
   const A = obj(obj(s.stats).archived);
-  s.stats = { ...obj(s.stats), archived: { tasks: num(A.tasks, 0, 1e7, 0), done: num(A.done, 0, 1e7, 0) } };
+  const ST = obj(s.stats);
+  s.stats = { ...ST, archived: { tasks: num(A.tasks, 0, 1e7, 0), done: num(A.done, 0, 1e7, 0) },
+    lastOpenAt: ST.lastOpenAt == null ? null : num(ST.lastOpenAt, 0, 9e15, null), edits: num(ST.edits, 0, 1e9, 0),
+    exportedEdits: ST.exportedEdits == null ? null : num(ST.exportedEdits, 0, 1e9, null), backupShownOn: validDate(ST.backupShownOn) };
   const P = obj(s.prefs);
   s.prefs = { ...P, offDays: arr(P.offDays).map(Number).filter((d) => d >= 0 && d <= 6), freeDays: arr(P.freeDays).map(Number).filter((d) => d >= 0 && d <= 6),
     restDays: arr(P.restDays).filter((r) => r && Number.isInteger(+r.wd) && +r.wd >= 0 && +r.wd <= 6 && validDate(r.until)).map((r) => ({ wd: +r.wd, until: r.until })),
@@ -134,6 +152,10 @@ export function migrate(s, now = Date.now()) {
       out.prefs.restDays = [...(out.prefs.restDays || []), ...fromCompanion.map((wd) => ({ wd, until: addDays(today, 28) }))];
     }
   }
+  // v4 → v5: obiettivi raggiunti (goalsDone), bentornato (welcome), stats.lastOpenAt/edits/backupShownOn,
+  // osservazioni di oggi con chiuse e testo (seenObs.closed/snap): i valori vuoti li mette emptyState.
+  // Chi usava già l'app: l'ultima apertura è adesso (niente «Bentornato» alla prima apertura dopo l'aggiornamento).
+  if ((s.schema || 1) < 5 && out.stats.lastOpenAt == null) out.stats.lastOpenAt = now;
   out.schema = SCHEMA;
   return out;
 }
@@ -198,7 +220,7 @@ export function trimUndoStorage() {
 }
 trimUndoStorage();
 
-const snapshotOf = (s) => JSON.stringify({ items: s.items, prefs: s.prefs, recurring: s.recurring, memory: s.memory, anchors: s.anchors, goals: s.goals, projects: s.projects, habits: s.habits, learned: s.learned });
+const snapshotOf = (s) => JSON.stringify({ items: s.items, prefs: s.prefs, recurring: s.recurring, memory: s.memory, anchors: s.anchors, goals: s.goals, goalsDone: s.goalsDone || [], welcome: s.welcome || null, projects: s.projects, habits: s.habits, learned: s.learned });
 
 export function pushUndo(state, label) {
   const id = uid();

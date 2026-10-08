@@ -1,9 +1,9 @@
-import { planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
+import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
 import { glowSoon, bindCards, dragging, setActPalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState } from './store.js';
-import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps } from './companion.js';
+import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
 import { validatePlan } from './templates.js';
@@ -32,21 +32,22 @@ let planCache = {};
 function planFor(k) {
   return plan[k] || (planCache[k] ||= planDay(k, state.items, { ...state.prefs, projectDue: projectDue(state) }, Date.now(), [], state.recurring, state.anchors || {}));
 }
-let planRev = 0, fitCache = null;
+// dataRev cambia quando cambiano i dati (non a ogni tick): il piano lungo si ricalcola solo allora, o quando cambia il giorno
+let dataRev = 0, fitCache = null;
 /** Dove finiscono le sessioni di ogni obiettivo (orizzonte lungo, calcolato solo quando serve). */
 function goalFits() {
-  if (fitCache?.rev === planRev) return fitCache.fits;
+  if (fitCache?.rev === dataRev && fitCache.day === today()) return fitCache.fits;
   const now = Date.now();
   const goals = (state.goals || []).filter((g) => state.items.some((x) => x.goalId === g.id && x.status !== 'done'));
   const long = goals.length ? planDays(state, now, horizonFor(state, now)) : {};
   const fits = Object.fromEntries(goals.map((g) => [g.id, goalFit(state, g, now, long)]));
   trackLate(state, fits, now, plan); // «non entra» solo se il ritardo dura da due giorni
-  fitCache = { rev: planRev, fits, long };
+  fitCache = { rev: dataRev, day: today(), fits, long };
   return fits;
 }
 function replan() {
   planCache = {};
-  planRev++;
+  dataRev++;
   const now = Date.now();
   plan = planDays(state, now, DAYS);
   updateAnchors(state, plan, now);
@@ -62,6 +63,7 @@ function countAutoReplan() {
 function commit(label, mutate, { auto = false } = {}) {
   const undoId = pushUndo(state, label);
   mutate();
+  state.stats.edits = (state.stats.edits || 0) + 1; // per sapere se il backup è ancora aggiornato
   if (auto) countAutoReplan();
   replan();
   save(state);
@@ -511,7 +513,13 @@ function cardHtml(c, i) {
   }
   if (c.type === 'obs') {
     const acts = c.actions ? `<div class="pc-actions">${c.actions.map((ac) => `<button class="mini-btn" data-brief="${esc(ac.act)}" data-arg="${esc(ac.arg)}">${esc(ac.label)}</button>`).join('')}</div>` : '';
-    return `<div class="pc obs" style="${st}" data-bid="${esc(c.id)}"><div class="pc-body"><div class="pc-desc strong">${esc(c.text)}</div>${acts}</div><div class="pc-label">Osservazione</div></div>`;
+    return `<div class="pc obs" style="${st}" data-bid="${esc(c.id)}"><button type="button" class="obs-x" data-obs-close="${esc(c.id)}" aria-label="Chiudi">×</button><div class="pc-body"><div class="pc-desc strong">${esc(c.text)}</div>${acts}</div><div class="pc-label">Osservazione</div></div>`;
+  }
+  if (c.type === 'welcome') {
+    const goals = c.goals.map((g) => `<div class="wl-goal"><div class="pc-desc">${esc(g.text)}</div><div class="pc-actions">${g.actions.map((ac) => `<button class="mini-btn" data-brief="${esc(ac.act)}" data-arg="${esc(ac.arg)}">${esc(ac.label)}</button>`).join('')}</div></div>`).join('');
+    const arch = c.archive.length ? `<div class="wl-arch"><div class="pc-desc">${c.archive.length === 1 ? `Un'attività di prima è ancora aperta: «${esc(c.archive[0].title)}».` : `${c.archive.length} attività di prima sono ancora aperte, senza scadenza.`}</div><div class="pc-actions"><button class="mini-btn" data-welcome="archive">${c.archive.length === 1 ? 'Archiviala' : 'Archiviale'}</button></div></div>` : '';
+    return `<div class="pc obs welcome" style="${st}" data-bid="welcome"><div class="pc-body"><div class="pc-quote">${esc(c.text)}</div>${arch}${goals}
+      <div class="pc-actions"><button class="mini-btn primary" data-brief="welcome-close" data-arg="">Va bene</button></div></div><div class="pc-label">Bentornato</div></div>`;
   }
   const isEvent = c.type === 'event';
   const isTask = c.type === 'task';
@@ -571,10 +579,7 @@ function renderDayView(animate, opts = {}) {
   // osservazioni mostrate oggi: si ricordano (massimo 2 al giorno)
   if (v.isToday && JSON.stringify(v.seen) !== JSON.stringify(state.seenObs)) {
     state.seenObs = v.seen;
-    for (const o of v.observations) {
-      if (o.goalId && o.id.startsWith('due-')) { const g = state.goals.find((x) => x.id === o.goalId); if (g && !g.askedDueOn) g.askedDueOn = t; }
-      if (o.learnKey) { const d = state.learned.durations[o.learnKey]; if (d) d.announced = d.ratio; } // "ho aggiornato le stime": detto una volta
-    }
+    markShown(state, v.observations, t); // le stime aggiornate si segnano «dette» solo quando chiudi o rispondi
     save(state);
   }
 
@@ -596,6 +601,9 @@ function renderDayView(animate, opts = {}) {
   let i = 0;
   const put = (html) => { cols[i % 2].push(html); i++; };
   const rot = (id) => (+tilt(id) * 0.8).toFixed(1);
+
+  // 0. bentornato: prima di tutto, a tutta larghezza
+  const top = v.welcome ? `<div class="top-wide">${cardHtml({ ...v.welcome, type: 'welcome', r: -0.6 }, 0)}</div>` : '';
 
   // 1. "adesso" (oggi) come la carta-affermazione
   if (v.now) {
@@ -623,7 +631,7 @@ function renderDayView(animate, opts = {}) {
     put(cardHtml({ ...c, pauseBefore, r: rot((c.type === 'missed' ? 'm' : c.type === 'unscheduled' ? 'u' : '') + (c.id || c.at)) }, i));
     pauseBefore = 0;
   }
-  const html = `<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>${doneStackHtml(doneCards, v)}${v.emptyText && !doneCards.length ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : ''}`;
+  const html = `${top}<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>${doneStackHtml(doneCards, v)}${v.emptyText && !doneCards.length ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : ''}`;
 
   const col = $('#collage');
   const before = animate || opts.flip === false ? null : flipCapture(col, FLIP_SEL);
@@ -1311,7 +1319,7 @@ function openRestSheet() {
   const cur = state.prefs.decompress ?? 45;
   $('#sheet-form').innerHTML = `
     <h2 id="sheet-title" class="sr-only">Pausa dopo il lavoro</h2>
-    <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">Cena / decompressione</div>
+    <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">Cena e pausa</div>
       <div class="ed-sub">Dopo il lavoro tengo libero questo tempo prima delle attività.</div><div class="ed-foot"><span>Pausa</span></div></div>
     <section class="ed-row"><span class="ed-k">Quanto dura</span><div class="chips-x">
       ${[0, 15, 30, 45, 60, 90].map((m) => `<button type="button" class="ch${m === cur ? ' on' : ''}" data-dec="${m}" aria-pressed="${m === cur}">${m ? durLabel(m) : 'Niente pausa'}</button>`).join('')}
@@ -1470,18 +1478,40 @@ function quickOp(action, id, extra = {}, opts = {}) {
   const label = { complete: 'Fatto', start: 'Iniziata', reopen: 'Riaperta', delete: 'Eliminata', move: 'Spostata', progress: 'Segnato in parte', skip: 'Rimandata' }[action];
   commit(`${label}: ${it.title}`, () => applyOps(state, [{ action, id, ...extra }]), opts);
   closeSheet();
+  // una sessione di un obiettivo: quanto manca e quando è la prossima
+  const note = action === 'complete' ? sessionDoneNote(state, id, plan, Date.now()) : null;
+  if (note) {
+    toast(note.text, [{ label: 'Va bene', fn: () => {} }, ...(note.nextId ? [{ label: 'Sposta', fn: () => openSheet(note.nextId) }] : [])]);
+    return;
+  }
   toastUndo(`${label}: ${it.title}`);
 }
 
 /** Le risposte alle osservazioni del companion (la logica sta in companion.js: answerObservation). */
-function briefAction(act, arg) {
-  if (act === 'goal-more') { $('#input').focus(); toast('Dimmi il prossimo passo: lo metto al posto giusto.'); return; }
-  if (act === 'backup') { exportData(); return; }
+function briefAction(act, arg, obsId) {
+  // hai risposto: l'osservazione si chiude (e, se diceva «ho aggiornato le stime», da ora è detto)
+  if (obsId && obsId !== 'welcome') closeObservation(state, obsId, Date.now());
+  if (act === 'goal-more') { save(state); renderDayView(false); $('#input').focus(); toast('Dimmi il prossimo passo: lo metto al posto giusto.'); return; }
+  if (act === 'backup') { exportData(); renderDayView(false); return; }
   if (act === 'goal-date') { openGoalDateSheet(arg); return; }
   let res = null;
   const undoId = commit('Risposta al companion', () => { res = answerObservation(state, act, arg, { now: Date.now(), plan }); });
   if (!res) { popUndo(state, undoId); replan(); renderAll(); return; }
   if (res.plain) toast(res.toast); else toastUndo(res.toast);
+}
+
+/** Bentornato: le attività senza scadenza di prima dell'assenza vanno in archivio (si possono riavere con Annulla). */
+function archiveOld() {
+  const items = clone(welcomeArchive(state));
+  if (!items.length) return;
+  const ids = items.map((x) => x.id);
+  const done = () => {
+    commit('Archiviate', () => applyArchive(state, ids, Date.now()));
+    toastUndo(items.length === 1 ? 'Archiviata' : `${items.length} attività archiviate`);
+  };
+  if (typeof indexedDB === 'undefined') { done(); return; }
+  archivePut(items.map((x) => ({ ...x, archivedAt: Date.now() }))).then(() => { archived = [...archived.filter((x) => !ids.includes(x.id)), ...items]; done(); })
+    .catch(() => toast('Non riesco a scrivere l\'archivio: riprova tra poco.'));
 }
 
 // ---------------------------------------------------------------- presentazione
@@ -1637,6 +1667,9 @@ function renderSettings() {
       ${ctxv.habits.map((h) => `<div class="card"><div class="row"><span class="lbl">${esc(h.text)}</span><button class="x" data-delhabit="${esc(h.id)}" aria-label="Rimuovi l'abitudine ${esc(h.title)}">×</button></div></div>`).join('')}
       <div class="card"><div class="row"><input type="text" class="wide" id="goal-new" placeholder="Es. far uscire l'EP tra 6 settimane" enterkeyhint="done"><button class="btn" id="goal-add">Aggiungi</button></div></div>
     </div>
+    ${ctxv.goalsDone.length ? `<div class="group"><h2>Obiettivi raggiunti</h2>
+      ${ctxv.goalsDone.map((g) => `<div class="goal done" style="--pc:${safeColor(g.project?.color) || 'var(--accent)'}"><div class="goal-t">${esc(g.title)}</div><div class="goal-m"><span>${esc(g.text)}</span></div></div>`).join('')}
+    </div>` : ''}
 
     <div class="group"><h2>Progetti</h2>
       <div class="chips">${(state.projects || []).map((p) => `<span class="chip" style="--pc:${safeColor(p.color) || 'var(--accent)'}"><i class="proj"></i>${esc(p.name)}<button class="x" data-delproj="${esc(p.id)}" aria-label="Rimuovi">×</button></span>`).join('')}
@@ -1829,12 +1862,14 @@ function addContext(kind) {
 let toastTimer;
 function toast(text, action) {
   const el = $('#toast');
-  el.innerHTML = `<span>${esc(text)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
+  const acts = !action ? [] : Array.isArray(action) ? action : [action];
+  el.innerHTML = `<span>${esc(text)}</span>${acts.map((a) => `<button type="button">${esc(a.label)}</button>`).join('')}`;
+  el.classList.toggle('two', acts.length > 1);
   el.hidden = false;
-  if (action) el.querySelector('button').onclick = () => { el.hidden = true; action.fn(); };
+  el.querySelectorAll('button').forEach((b, k) => { b.onclick = () => { el.hidden = true; acts[k].fn(); }; });
   clearTimeout(toastTimer);
   el.classList.remove('out');
-  toastTimer = setTimeout(() => { el.classList.add('out'); setTimeout(() => { el.hidden = true; el.classList.remove('out'); }, 220); }, action ? 5000 : 2200);
+  toastTimer = setTimeout(() => { el.classList.add('out'); setTimeout(() => { el.hidden = true; el.classList.remove('out'); }, 220); }, acts.length > 1 ? 8000 : acts.length ? 5000 : 2200);
 }
 const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
 
@@ -1921,8 +1956,12 @@ function bind() {
     }
     const ad = e.target.closest('[data-adv]');
     if (ad) { e.stopPropagation(); if (ad.dataset.adv === 'start') startFocusFor(ad.dataset.id); else quickOp(ad.dataset.adv, ad.dataset.id); return; }
+    const ox = e.target.closest('[data-obs-close]');
+    if (ox) { e.stopPropagation(); closeObservation(state, ox.dataset.obsClose, Date.now()); save(state); renderDayView(false); return; }
+    const wl = e.target.closest('[data-welcome]');
+    if (wl) { e.stopPropagation(); archiveOld(); return; }
     const br = e.target.closest('[data-brief]');
-    if (br) { e.stopPropagation(); briefAction(br.dataset.brief, br.dataset.arg); return; }
+    if (br) { e.stopPropagation(); briefAction(br.dataset.brief, br.dataset.arg, br.closest('[data-bid]')?.dataset.bid); return; }
     if (e.target.closest('[data-rest]')) { openRestSheet(); return; }
     const c = e.target.closest('[data-item]');
     if (c && !/^rest:/.test(c.dataset.item)) { sheetFrom = c.getBoundingClientRect(); openSheet(c.dataset.item); }
@@ -2219,8 +2258,13 @@ function bind() {
   // il tempo passa: aggiorna piano e carte
   const tick = () => {
     maybeArchive();
+    const now = Date.now();
+    if (!document.hidden) state.stats.lastOpenAt = now;
     const before = positions(plan);
-    replan();
+    // di solito cambia solo oggi (il tempo passa): il resto del piano e il piano lungo restano quelli
+    const next = refreshToday(state, plan, now);
+    if (next) { plan = next; planCache = {}; updateAnchors(state, plan, now); }
+    else { const keep = dataRev; replan(); dataRev = keep; }
     const after = positions(plan);
     if ([...after].some(([id, p]) => before.has(id) && (before.get(id).day !== p.day || before.get(id).start !== p.start))) countAutoReplan();
     save(state);
@@ -2228,7 +2272,12 @@ function bind() {
     renderComposer();
   };
   setInterval(tick, 30000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    // tornato dopo 7 giorni o più (l'app era rimasta aperta in background): bentornato
+    if (noteOpen(state, Date.now())) { replan(); renderDayView(true); }
+    tick();
+  });
 }
 
 // ---------------------------------------------------------------- archivio e spazio
@@ -2263,10 +2312,7 @@ function syncSaveAlert() {
 }
 
 /** Promemoria di backup: niente export da 14 giorni (e l'app si usa da almeno 14). */
-function backupDue() {
-  const last = state.settings.lastExportAt || state.stats.createdAt || Date.now();
-  return state.items.length > 0 && Date.now() - last > 14 * 864e5;
-}
+const backupDue = () => backupDueOf(state, Date.now());
 
 function exportData() {
   // tutto tranne le chiavi API
@@ -2274,6 +2320,7 @@ function exportData() {
   // anche l'archivio: un backup deve contenere tutto
   const data = JSON.stringify({ app: 'tempo', version: 3, exportedAt: new Date().toISOString(), ...rest, archive: archived }, null, 2);
   state.settings.lastExportAt = Date.now();
+  state.stats.exportedEdits = state.stats.edits || 0;
   save(state);
   const file = new File([data], `tempo-backup-${today()}.json`, { type: 'application/json' });
   if (navigator.canShare?.({ files: [file] })) {
@@ -2288,6 +2335,7 @@ function exportData() {
 }
 
 // ---------------------------------------------------------------- avvio
+noteOpen(state, Date.now()); // 7 giorni o più dall'ultima apertura: «Bentornato» (e allarmi in pausa finché non rispondi)
 replan();
 save(state);
 loadArchive();

@@ -2,6 +2,7 @@
 // È deterministico (funziona anche senza AI); l'AI aggiunge solo il linguaggio naturale.
 import { fmtMin, dateKey, addDays, daysBetween, weekday, dayLabel, planDays } from './scheduler.js';
 import { contextParts, understoodOf } from './parse.js';
+import { dateLong } from './format.js';
 import { projectOf, applyOps } from './store.js';
 import { updateDurations } from './learn.js';
 import { goalInProgress } from './goals.js';
@@ -110,12 +111,14 @@ export function briefing(state, plan, now, extra = {}) {
   if (!p) return [];
   const out = [];
   const n = nowMinOf(now);
-  const nice = (d) => new Date(d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
+  const nice = (d) => dateLong(d, t); // con l'anno quando non è quello in corso
   const where = (id) => {
     for (const [d, x] of Object.entries(plan)) { const b = x.blocks.find((bb) => bb.id === id && bb.type !== 'done' && !(d === t && bb.end <= n)); if (b) return { d, b }; }
     return null;
   };
-  const nameOf = (g) => { const pr = g.projectId ? projectOf(state, g.projectId) : null; return pr ? (pr.name === 'EP' ? "l'EP" : pr.name) : `«${g.title}»`; };
+  const nameOf = (g) => goalName(state, g);
+  // bentornato: finché non rispondi, niente allarmi
+  if (state.welcome) return [];
 
   // 1. un obiettivo che non ci sta prima della scadenza (solo se il ritardo dura da due giorni,
   //    mai mentre stai lavorando proprio a quell'obiettivo)
@@ -128,7 +131,7 @@ export function briefing(state, plan, now, extra = {}) {
     if (to < addDays(t, 7)) to = addDays(t, 7);
     const optional = state.items.some((x) => x.goalId === g.id && x.optional && x.status !== 'done');
     out.push({
-      id: 'fit-' + g.id,
+      id: 'fit-' + g.id, goalId: g.id,
       text: `Le sessioni per ${nameOf(g)} non entrano tutte entro il ${nice(g.due)}: ${fit.late === 1 ? 'ne resta fuori una' : `ne restano fuori ${fit.late}`}. Sposto la scadenza o tengo solo l'essenziale?`,
       actions: [
         { label: `Sposta al ${nice(to)}`, act: 'extend', arg: `${g.id}|${to}` },
@@ -185,8 +188,9 @@ export function briefing(state, plan, now, extra = {}) {
     if (!(it.spent > 0) && !behind) continue;
     const w = where(it.id);
     const at = w ? `${w.d === t ? 'oggi' : dayLabel(w.d, t).toLowerCase()} alle ${fmtMin(w.b.start)}` : null;
-    if (it.spent > 0) out.push({ id: 'carry-' + it.id, text: `«${it.title}»: hai già fatto ${dur(it.spent)}, non riparti da zero. ${at ? `Gli altri ${dur(remainingOf(it))} li ho messi ${at}.` : (p.missed || []).some((m) => m.item.id === it.id) ? 'Com\'è andata la sessione di prima?' : `Mancano ${dur(remainingOf(it))}, ma per ora non entrano.`}` });
-    else out.push({ id: 'behind-' + it.id, text: `${it.title} è rimasta indietro. ${at ? 'L\'ho rimessa ' + at + '.' : 'Oggi non entra: dimmi se la sposto o la togliamo.'}` });
+    if (it.spent > 0) out.push({ id: 'carry-' + it.id, itemId: it.id, text: `«${it.title}»: hai già fatto ${dur(it.spent)}, non riparti da zero. ${at ? `Gli altri ${dur(remainingOf(it))} li ho messi ${at}.` : (p.missed || []).some((m) => m.item.id === it.id) ? 'Com\'è andata la sessione di prima?' : `Mancano ${dur(remainingOf(it))}, ma per ora non entrano.`}` });
+    else out.push({ id: 'behind-' + it.id, itemId: it.id, text: `${it.title} è rimasta indietro. ${at ? 'L\'ho rimessa ' + at + '.' : 'Oggi non entra: la sposto o la togliamo?'}`,
+      actions: [{ label: 'Sposta a domani', act: 'item-tomorrow', arg: it.id }, { label: 'Togli', act: 'item-remove', arg: it.id }] });
     carry++;
   }
   // 6. a che punto sono gli obiettivi
@@ -194,38 +198,161 @@ export function briefing(state, plan, now, extra = {}) {
     const mine = state.items.filter((x) => x.goalId === g.id && x.kind === 'task' && !x.habitId);
     const open = mine.filter((x) => x.status !== 'done');
     if (g.planned && mine.length && !open.length) {
-      out.push({ id: 'done-' + g.id, text: `Le sessioni per ${nameOf(g)} sono finite. Obiettivo raggiunto?`, actions: [{ label: 'Sì, archivialo', act: 'goal-done', arg: g.id }, { label: 'Non ancora', act: 'goal-more', arg: g.id }] });
+      out.push({ id: 'done-' + g.id, goalId: g.id, text: `Le sessioni per ${nameOf(g)} sono finite. Obiettivo raggiunto?`, actions: [{ label: 'Sì, archivialo', act: 'goal-done', arg: g.id }, { label: 'Non ancora', act: 'goal-more', arg: g.id }] });
       continue;
     }
     if (!g.due || daysBetween(t, g.due) < 0 || !mine.length) continue;
     const days = daysBetween(t, g.due);
     const when = days === 0 ? 'oggi' : days < 14 ? `tra ${days} giorni` : `tra ${Math.round(days / 7)} settimane`;
-    out.push({ id: 'goal-' + g.id, text: `${g.title}: ${when}. ${mine.length - open.length} sessioni fatte su ${mine.length}.` });
+    const nDone = mine.length - open.length;
+    out.push({ id: 'goal-' + g.id, goalId: g.id, text: `${g.title}: ${when}. ${nDone === 1 ? '1 sessione fatta' : `${nDone} sessioni fatte`} su ${mine.length}.` });
   }
   // 7. backup
   if (extra.backupDue) out.push({ id: 'backup', text: 'Non esporti un backup da più di due settimane. I dati stanno solo su questo telefono.', actions: [{ label: 'Esporta ora', act: 'backup', arg: '' }] });
   return out;
 }
 
+/** «l'EP», «Portfolio», «Esame di storia» tra virgolette: come si chiama un obiettivo in una frase. */
+export function goalName(state, g) {
+  const pr = g.projectId ? projectOf(state, g.projectId) : null;
+  return pr ? (pr.name === 'EP' ? "l'EP" : pr.name) : `«${g.title}»`;
+}
+
 /**
- * Massimo 2 osservazioni al giorno: quelle già mostrate oggi restano, le nuove entrano solo se c'è posto.
- * seen = { day, ids } (viene aggiornato e restituito).
+ * Massimo 2 osservazioni al giorno. Quelle mostrate restano visibili fino a fine giornata
+ * (anche se nel frattempo non sarebbero più tra le candidate), finché non le chiudi o rispondi;
+ * le nuove entrano solo se c'è posto.
+ * seen = { day, ids, closed, snap } (viene aggiornato e restituito). alive(o): l'osservazione ha ancora senso?
  */
-export function pickObservations(cands, seen, today, max = 2) {
-  const s = seen && seen.day === today ? { day: today, ids: [...seen.ids] } : { day: today, ids: [] };
+export function pickObservations(cands, seen, today, max = 2, alive = () => true) {
+  const s = seen && seen.day === today
+    ? { day: today, ids: [...(seen.ids || [])], closed: [...(seen.closed || [])], snap: { ...(seen.snap || {}) } }
+    : { day: today, ids: [], closed: [], snap: {} };
   const byId = new Map(cands.map((c) => [c.id, c]));
-  const shown = s.ids.map((id) => byId.get(id)).filter(Boolean);
+  const shown = [];
+  for (const id of s.ids) {
+    if (s.closed.includes(id)) continue;
+    const o = byId.get(id) || s.snap[id];
+    if (!o || !alive(o)) continue;
+    s.snap[id] = o;
+    shown.push(o);
+  }
   for (const c of cands) {
     if (s.ids.length >= max) break;
     if (s.ids.includes(c.id)) continue;
     s.ids.push(c.id);
+    s.snap[c.id] = c;
     shown.push(c);
   }
   return { shown: shown.slice(0, max), seen: s };
 }
 
+/** Un'osservazione mostrata ha ancora senso? (l'attività o l'obiettivo di cui parla ci sono ancora) */
+export const observationAlive = (state) => (o) => {
+  if (o.itemId && !(state.items || []).some((x) => x.id === o.itemId && x.status !== 'done')) return false;
+  if (o.goalId && !(state.goals || []).some((g) => g.id === o.goalId)) return false;
+  return true;
+};
+
+/** Dopo averle mostrate: le domande fatte una volta sola si ricordano (non «ho aggiornato le stime»: quello solo quando lo chiudi). */
+export function markShown(state, shown, today) {
+  for (const o of shown || []) {
+    if (o.goalId && String(o.id).startsWith('due-')) { const g = (state.goals || []).find((x) => x.id === o.goalId); if (g && !g.askedDueOn) g.askedDueOn = today; }
+    if (o.id === 'backup') (state.stats ||= {}).backupShownOn = today;
+  }
+}
+
+/** L'hai chiusa o le hai risposto: non si mostra più oggi (e «ho aggiornato le stime» da ora è detto). */
+export function closeObservation(state, id, now) {
+  const today = dateKey(new Date(now));
+  const s = state.seenObs?.day === today ? state.seenObs : (state.seenObs = { day: today, ids: [], closed: [], snap: {} });
+  s.closed = [...new Set([...(s.closed || []), id])];
+  if (!(s.ids || []).includes(id)) s.ids = [...(s.ids || []), id];
+  const key = String(id).startsWith('learn-') ? String(id).slice(6) : null;
+  const d = key && state.learned?.durations?.[key];
+  if (d) d.announced = d.ratio;
+}
+
+/**
+ * Il promemoria del backup: niente export da 14 giorni, dati cambiati dall'ultimo export,
+ * e al massimo una volta ogni 7 giorni.
+ */
+export function backupDue(state, now) {
+  const st = state.stats || {};
+  const t = dateKey(new Date(now));
+  const last = state.settings?.lastExportAt || st.createdAt || now;
+  if (!(state.items || []).length || now - last <= 14 * 864e5) return false;
+  if (state.settings?.lastExportAt && (st.edits || 0) === (st.exportedEdits ?? -1)) return false;
+  if (st.backupShownOn && daysBetween(st.backupShownOn, t) < 7) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------- bentornato
+export const AWAY_DAYS = 7;
+/**
+ * Un'apertura dell'app: se l'ultima è di 7 o più giorni fa, prepara il «Bentornato».
+ * Aggiorna stats.lastOpenAt. Restituisce il bentornato (o null).
+ */
+export function noteOpen(state, now) {
+  const st = (state.stats ||= {});
+  const last = st.lastOpenAt;
+  st.lastOpenAt = now;
+  if (!last || now - last < AWAY_DAYS * 864e5) return null;
+  state.welcome = { since: last, at: now };
+  return state.welcome;
+}
+
+/** Le attività senza scadenza nate prima dell'assenza (non quelle degli obiettivi né delle abitudini). */
+export function welcomeArchive(state) {
+  const since = state.welcome?.since;
+  if (!since) return [];
+  return (state.items || []).filter((x) => x.kind === 'task' && x.status !== 'done' && !x.deadline && !x.goalId && !x.habitId && (x.createdAt || 0) < since);
+}
+
+/** La carta «Bentornato»: { text, days, archive[], goals[{ id, text, actions }] } oppure null. */
+export function welcomeView(state, now) {
+  const w = state.welcome;
+  if (!w) return null;
+  const t = dateKey(new Date(now));
+  const days = Math.max(AWAY_DAYS, Math.round((w.at - w.since) / 864e5));
+  const away = days >= 60 ? `${Math.round(days / 30)} mesi` : days >= 14 ? `${Math.round(days / 7)} settimane` : `${days} giorni`;
+  const goals = (state.goals || []).filter((g) => g.due && g.due < t).map((g) => ({
+    id: g.id, text: `${cap1(goalName(state, g))}: la scadenza era il ${dateLong(g.due, t)}.`,
+    actions: [{ label: 'È fatto', act: 'goal-done', arg: g.id }, { label: 'Nuova data', act: 'goal-date', arg: g.id }, { label: 'Toglilo', act: 'goal-remove', arg: g.id }],
+  }));
+  const archive = welcomeArchive(state);
+  return { days, text: `Bentornato. Non aprivi Tempo da ${days >= 14 ? away + ` (${days} giorni)` : away}.`, archive: archive.map((x) => ({ id: x.id, title: x.title })), goals };
+}
+const cap1 = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// ---------------------------------------------------------------- la fine di una sessione e di un obiettivo
+/** «Beat 01 fatto · 3 di 22 per l'EP · Prossima: giovedì alle 19:15» (null se non è una sessione di un obiettivo). */
+export function sessionDoneNote(state, itemId, plan, now) {
+  const it = (state.items || []).find((x) => x.id === itemId);
+  const g = it?.goalId && (state.goals || []).find((x) => x.id === it.goalId);
+  if (!g || it.habitId) return null;
+  const t = dateKey(new Date(now));
+  const mine = state.items.filter((x) => x.goalId === g.id && x.kind === 'task' && !x.habitId);
+  const done = mine.filter((x) => x.status === 'done').length;
+  let next = null;
+  for (const d of Object.keys(plan || {}).sort()) {
+    const b = plan[d].blocks.find((bb) => bb.type !== 'done' && bb.item.goalId === g.id && bb.item.kind === 'task' && !(d === t && bb.end <= nowMinOf(now)));
+    if (b) { next = { d, b }; break; }
+  }
+  const when = next ? `${next.d === t ? 'oggi' : next.d === addDays(t, 1) ? 'domani' : new Date(next.d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'long' })} alle ${fmtMin(next.b.start)}` : null;
+  const tail = done >= mine.length ? 'era l\'ultima' : when ? `Prossima: ${when}` : 'Prossima: da mettere in programma';
+  return { text: `${it.title} fatto · ${done} di ${mine.length} per ${goalName(state, g)} · ${tail}`, nextId: next?.b.item.id || null };
+}
+
+/** «L'EP è fatto: 20 sessioni, 31 ore, dal 12 ottobre al 25 novembre.» */
+export function goalDoneText(state, g, t) {
+  const h = g.history || {};
+  const time = h.minutes >= 120 ? `${Math.round(h.minutes / 60)} ore` : `${h.minutes || 0} minuti`;
+  const span = h.from && h.to && h.from !== h.to ? `, dal ${dateLong(h.from, t)} al ${dateLong(h.to, t)}` : h.to ? `, il ${dateLong(h.to, t)}` : '';
+  return `${cap1(goalName(state, g))} è fatto: ${h.sessions === 1 ? '1 sessione' : `${h.sessions || 0} sessioni`}, ${time}${span}.`;
+}
+
 export const REST_DAYS_FOR = 28; // un giorno liberato dal companion dura 4 settimane
-const longDate = (d) => new Date(d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
 
 /**
  * La risposta a un'osservazione: cambia lo stato e dice cosa è successo.
@@ -235,6 +362,7 @@ const longDate = (d) => new Date(d + 'T12:00').toLocaleDateString('it-IT', { day
 export function answerObservation(state, act, arg, { now, plan = {} }) {
   const t = dateKey(new Date(now));
   const goalOf = (id) => (state.goals || []).find((x) => x.id === id);
+  const longDate = (d) => dateLong(d, t);
   if (act === 'recover') {
     // sabato si aggiunge tempo: le sessioni già in programma nei prossimi giorni restano dove sono
     const sat = nextSaturday(t);
@@ -278,9 +406,41 @@ export function answerObservation(state, act, arg, { now, plan = {} }) {
     return { label: 'Obiettivo tolto', toast: `«${g.title}» tolto` };
   }
   if (act === 'goal-done') {
+    // archiviato con la sua storia (sessioni, ore reali, da quando a quando), non cancellato
     const g = goalOf(arg);
-    state.goals = (state.goals || []).filter((x) => x.id !== arg);
-    return { label: 'Obiettivo raggiunto', toast: g ? `«${g.title}» archiviato` : 'Archiviato' };
+    if (!g) return null;
+    const mine = state.items.filter((x) => x.goalId === g.id && x.kind === 'task' && !x.habitId);
+    const done = mine.filter((x) => x.status === 'done');
+    const days = done.map((x) => x.doneAt).filter(Boolean).sort((a, b) => a - b);
+    g.archivedAt = now;
+    g.history = {
+      sessions: done.length,
+      minutes: done.reduce((a, x) => a + (x.actual || x.duration || 0), 0),
+      from: days.length ? dateKey(new Date(days[0])) : dateKey(new Date(g.at || now)),
+      to: days.length ? dateKey(new Date(days.at(-1))) : t,
+    };
+    state.goals = state.goals.filter((x) => x.id !== g.id);
+    state.goalsDone = [...(state.goalsDone || []), g];
+    // le sessioni rimaste aperte non servono più (si possono riavere con Annulla)
+    state.items = state.items.filter((x) => !(x.goalId === g.id && x.status !== 'done'));
+    state.habits = (state.habits || []).filter((h) => h.goalId !== g.id);
+    return { label: 'Obiettivo raggiunto', toast: goalDoneText(state, g, t), plain: false };
+  }
+  if (act === 'item-tomorrow') {
+    const it = state.items.find((x) => x.id === arg);
+    if (!it) return null;
+    applyOps(state, [{ action: 'move', id: it.id, date: addDays(t, 1) }], now);
+    return { label: 'Spostata a domani', toast: `«${it.title}» domani` };
+  }
+  if (act === 'item-remove') {
+    const it = state.items.find((x) => x.id === arg);
+    if (!it) return null;
+    applyOps(state, [{ action: 'delete', id: it.id }], now);
+    return { label: 'Tolta', toast: `Tolta «${it.title}»` };
+  }
+  if (act === 'welcome-close') {
+    state.welcome = null;
+    return { label: 'Bentornato', toast: 'Bene. Si riparte da oggi.', plain: true };
   }
   if (act === 'learn-off') {
     const d = state.learned?.durations?.[arg];
@@ -366,7 +526,7 @@ Vincoli e preferenze
 - "Stasera ho solo 2 ore" / "domani sono libero dalle 15" → set_availability (date, start_time, end_time).
 - Lavoro fatto a metà ("ho fatto 30 minuti del beat") → progress con actual_min: il resto viene ripianificato senza ripartire da zero. Sessione saltata → skip.
 - "Che faccio?" → una sola azione concreta adatta al tempo libero che resta prima del prossimo impegno, e cosa NON iniziare. Niente elenchi.
-- Dopo una giornata di lavoro il motore lascia da solo una pausa "Cena / decompressione": non crearla tu.`;
+- Dopo una giornata di lavoro il motore lascia da solo una pausa "Cena e pausa" (decompressione dopo il lavoro): non crearla tu.`;
 
 /** Il contesto del companion in forma compatta, per l'AI. */
 export function companionContext(state, plan, now) {

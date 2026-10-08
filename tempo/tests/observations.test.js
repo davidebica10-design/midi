@@ -9,7 +9,8 @@ test('massimo 2 osservazioni al giorno, stabili durante la giornata', () => {
   const c = (id) => ({ id, text: id });
   let r = pickObservations([c('a'), c('b'), c('c')], null, TODAY);
   assert.deepEqual(r.shown.map((x) => x.id), ['a', 'b']);
-  // "a" risolta: il posto non si libera per una nuova osservazione oggi
+  // "a" risolta (hai risposto: è chiusa): il posto non si libera per una nuova osservazione oggi
+  r.seen.closed.push('a');
   r = pickObservations([c('b'), c('c'), c('d')], r.seen, TODAY);
   assert.deepEqual(r.shown.map((x) => x.id), ['b']);
   // domani si riparte

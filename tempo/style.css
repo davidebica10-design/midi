@@ -978,3 +978,16 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .ow-day span { color: var(--ink-2); min-width: 0; }
 .onb-next:disabled { opacity: 0.5; }
 .r-k { display: inline-block; font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); margin-right: 6px; }
+
+/* osservazioni: si chiudono con la ×; bentornato */
+.pc.obs { position: relative; }
+.obs-x { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 16px; font-size: 20px; line-height: 1; color: var(--ink-3); display: grid; place-items: center; z-index: 2; }
+.pc.obs .pc-body { padding-right: 28px; }
+.pc.welcome .pc-quote { font-size: 22px; }
+.wl-arch, .wl-goal { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line, rgba(0,0,0,.08)); }
+.toast.two { flex-wrap: wrap; justify-content: center; text-align: center; border-radius: 20px; }
+.toast.two span { flex-basis: 100%; }
+.goal.done { opacity: 0.85; }
+.collage > .top-wide { flex: 0 0 100%; margin-bottom: 4px; }
+.collage:has(> .top-wide) { flex-wrap: wrap; }
+.pc.welcome .pc-quote { font-size: 24px; }
