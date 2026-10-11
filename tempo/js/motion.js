@@ -25,6 +25,17 @@ export function setActPalette(pal) {
   glowSoon();
 }
 
+// la scena (genui.js): i colori di base dello sfondo quando nessuna carta colorata è vicina al centro
+let scenePal = null;
+/** Palette della scena (tre colori) o null per tornare ai colori di base. */
+export function setScenePalette(pal) {
+  const key = pal ? pal.join() : '';
+  if (key === (scenePal || []).join()) return;
+  scenePal = pal && pal.length >= 3 ? pal : null;
+  glowSoon();
+}
+const isDark = () => matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light';
+
 /** Le carte colorate più vicine al centro dello schermo colorano le tre macchie dello sfondo. */
 export function updateGlow() {
   const app = document.getElementById('app');
@@ -47,8 +58,10 @@ export function updateGlow() {
   seen.sort((a, b) => a.d - b.d);
   const cols = [...new Set(seen.map((s) => s.g))];
   const pick = [cols[0], cols[1] || cols[0], cols[2]];
+  const base = scenePal ? scenePal.map((c) => (isDark() ? mix(c, '#171617', 0.42) : c)) : null;
   document.querySelectorAll('.bg i').forEach((b, i) => {
-    if (pick[i]) b.style.setProperty('--c', pick[i]); else b.style.removeProperty('--c');
+    const c = pick[i] || base?.[i];
+    if (c) b.style.setProperty('--c', c); else b.style.removeProperty('--c');
   });
 }
 

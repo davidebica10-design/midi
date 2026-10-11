@@ -49,6 +49,7 @@
       <header class="hero" id="hero">
         <div class="hero-time" id="hero-time"></div>
         <h1 class="hero-title" id="hero-title"></h1>
+        <p class="hero-line" id="hero-line" hidden></p>
         <div class="hero-art" id="hero-art" hidden></div>
         <div class="focus-ctl" id="focus-ctl" hidden></div>
       </header>
@@ -74,13 +75,30 @@
     <div class="sum-head">
       <button class="round" id="sum-close" aria-label="Chiudi il riepilogo"><i class="ic ic-back" aria-hidden="true"></i></button>
       <span class="sum-title">Riepilogo</span>
-      <span class="ov-spacer" aria-hidden="true"></span>
+      <button type="button" class="chip-btn" id="sum-month" aria-label="Il tuo mese: il racconto di come hai usato il tempo">Il tuo mese</button>
     </div>
     <main class="sum-scroll" id="sum-scroll" aria-live="polite"></main>
     <form class="ask" id="ask" autocomplete="off">
       <i class="ic ic-sum" aria-hidden="true"></i>
       <textarea id="ask-input" rows="1" placeholder="Chiedi a Tempo come sta andando…" enterkeyhint="send" aria-label="Domanda"></textarea>
       <button type="submit" class="send" id="ask-send" aria-label="Chiedi"><i class="ic ic-up" aria-hidden="true"></i></button>
+    </form>
+  </section>
+
+  <!-- IL TUO MESE: il racconto del mese e le chiacchiere con il tuo tempo -->
+  <section id="recap" class="layer" aria-label="Il tuo mese" hidden>
+    <div class="sum-head">
+      <button class="round" id="rc-close" aria-label="Chiudi il racconto del mese"><i class="ic ic-back" aria-hidden="true"></i></button>
+      <span class="sum-title" id="rc-title">Il tuo mese</span>
+      <button class="round" id="rc-share" aria-label="Condividi il racconto del mese">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>
+      </button>
+    </div>
+    <main class="sum-scroll rc-scroll" id="rc-scroll" aria-live="polite"></main>
+    <form class="ask" id="rc-ask" autocomplete="off">
+      <i class="ic ic-sum" aria-hidden="true"></i>
+      <textarea id="rc-input" rows="1" placeholder="Chiacchiera con il tuo tempo…" enterkeyhint="send" aria-label="Messaggio al tuo tempo"></textarea>
+      <button type="submit" class="send" id="rc-send" aria-label="Invia"><i class="ic ic-up" aria-hidden="true"></i></button>
     </form>
   </section>
 

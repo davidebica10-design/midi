@@ -1,0 +1,10 @@
+{
+  "appId": "app.tempo.companion",
+  "appName": "Tempo",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "never",
+    "scheme": "Tempo",
+    "limitsNavigationsToAppBoundDomains": false
+  }
+}

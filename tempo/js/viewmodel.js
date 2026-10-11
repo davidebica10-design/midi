@@ -4,6 +4,7 @@ import { fmtMin, dateKey, addDays, daysBetween, weekday, WINDOWS, isOffDay } fro
 import { nowAdvice, briefing, pickObservations, observationAlive, welcomeView, goalDoneText } from './companion.js';
 import { projectOf } from './store.js';
 import { learnedObservations, learnedList } from './learn.js';
+import { recapObservation } from './recap.js';
 import { plural, durLabel, windowLabel, cap, dateLong, weekdayName } from './format.js';
 
 const minOf = (now) => { const d = new Date(now); return d.getHours() * 60 + d.getMinutes(); };
@@ -77,7 +78,7 @@ export function today(ctx) {
     }
     // bentornato: prima di tutto, e finché non rispondi niente allarmi
     out.welcome = welcomeView(state, now);
-    const cands = out.welcome ? [] : briefing(state, ctx.plan, now, { fits: ctx.fits, backupDue: ctx.backupDue, learned: learnedObservations(state, now) });
+    const cands = out.welcome ? [] : briefing(state, ctx.plan, now, { fits: ctx.fits, backupDue: ctx.backupDue, learned: [...learnedObservations(state, now), recapObservation(state, now)].filter(Boolean) });
     const pick = out.welcome ? { shown: [], seen: state.seenObs } : pickObservations(cands, state.seenObs, t, 2, observationAlive(state));
     out.observations = pick.shown;
     out.seen = pick.seen;

@@ -5,6 +5,7 @@ import { fmtMin, dateKey, addDays } from './scheduler.js';
 import { localParse, goalPlanPrompt, calendarLines, UNDERSTANDING_RULES } from './ai.js';
 import { sanitizeOps } from './store.js';
 import { COMPANION_RULES, companionContext } from './companion.js';
+import { routeRequest } from './decide.js';
 
 export const LOCAL_MODELS = [
   { id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', label: 'Qwen 2.5 1.5B · consigliato' },
@@ -16,6 +17,7 @@ export const ONLINE_PRESETS = {
   gemini: { label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: '', keyUrl: 'https://aistudio.google.com/apikey' },
   openrouter: { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: '', keyUrl: 'https://openrouter.ai/settings/keys' },
   groq: { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: '', keyUrl: 'https://console.groq.com/keys' },
+  nvidia: { label: 'NVIDIA NIM (Nemotron)', baseUrl: 'https://integrate.api.nvidia.com/v1', model: '', keyUrl: 'https://build.nvidia.com/settings/api-keys' },
   custom: { label: 'Altro (compatibile OpenAI)', baseUrl: '', model: '', keyUrl: '' },
 };
 export const DEFAULT_PRESET = 'gemini';
@@ -27,6 +29,7 @@ const FALLBACK_MODELS = {
   gemini: ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'],
   openrouter: [],
   groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
+  nvidia: ['nvidia/nemotron-3-nano-30b-a3b', 'nvidia/llama-3.3-nemotron-super-49b-v1.5', 'meta/llama-3.3-70b-instruct'],
   custom: [],
 };
 
@@ -61,6 +64,13 @@ export async function listModels(preset, base, key) {
   if (preset === 'gemini') {
     const ok = data.filter((m) => /^gemini/.test(m.id) && !/embedding|image|tts|audio|live|vision|computer|robotics|native|thinking|learnlm|aqa/.test(m.id));
     return ok.sort((a, b) => cmp(rankGemini(a.id), rankGemini(b.id))).map((m) => ({ id: m.id, name: m.display_name || m.id }));
+  }
+  if (preset === 'nvidia') {
+    // NVIDIA NIM: prima i Nemotron (istruzioni e JSON affidabili), poi i grandi modelli open
+    const ok = data.filter((m) => !/embed|rerank|guard|safety|reward|vision|vlm|parse|clip|whisper|tts|asr|retriever|nemoretriever|cosmos/i.test(m.id));
+    const pref = [/nemotron-3-nano/, /nemotron.*super/, /nemotron/, /llama-3\.3-70b/, /qwen3/, /gpt-oss/, /llama/];
+    const rank = (m) => { const i = pref.findIndex((re) => re.test(m.id)); return i < 0 ? 99 : i; };
+    return ok.sort((a, b) => rank(a) - rank(b)).map((m) => ({ id: m.id, name: m.id }));
   }
   if (preset === 'groq') {
     const ok = data.filter((m) => m.active !== false && !/whisper|tts|guard|playai|orpheus|prompt/.test(m.id));
@@ -215,6 +225,7 @@ function parseJson(text) {
 
 // ---------------------------------------------------------------- in locale
 let engine = null, engineModel = null, enginePromise = null;
+const webllmPath = () => new URL('../vendor/web-llm.mjs', import.meta.url).href; // calcolato solo quando serve
 
 export const webgpuAvailable = () => typeof navigator !== 'undefined' && !!navigator.gpu;
 
@@ -224,7 +235,8 @@ async function getEngine(model, onProgress) {
   if (!webgpuAvailable()) throw Object.assign(new Error('webgpu'), { code: 'webgpu' });
   engineModel = model;
   enginePromise = (async () => {
-    const webllm = await import('../vendor/web-llm.mjs');
+    // percorso in una variabile: i bundler (Tempo Cloud su Workers) non includono i 6 MB del modello locale
+    const webllm = await import(webllmPath());
     if (engine) { try { await engine.unload(); } catch {} }
     engine = await webllm.CreateMLCEngine(model, {
       initProgressCallback: (r) => onProgress?.(r.progress ?? 0, r.text || ''),
@@ -271,7 +283,8 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
     }
     content = res.choices?.[0]?.message?.content;
   } else {
-    content = (await onlineComplete(S, messages, signal)).content;
+    // richieste aperte o lunghe («organizzami la settimana») vanno al modello più capace del servizio
+    content = (await onlineComplete(S, messages, signal, { tier: routeRequest(userText, quick) === 'heavy' ? 'heavy' : 'fast' })).content;
   }
 
   let out;
@@ -316,7 +329,7 @@ const authError = (e) => e.status === 401 || e.status === 403 || /api key|apikey
  * Manda i messaggi al servizio online provando, se serve, più modelli.
  * Restituisce { content, model }.
  */
-export async function onlineComplete(S, messages, signal, { json = true } = {}) {
+export async function onlineComplete(S, messages, signal, { json = true, tier = 'fast' } = {}) {
   const preset = presetOf(S);
   const base = (S.openBaseUrl || ONLINE_PRESETS[preset]?.baseUrl || '').replace(/\/+$/, '');
   if (!base) throw new Error('Manca l\'indirizzo del servizio');
@@ -334,7 +347,7 @@ export async function onlineComplete(S, messages, signal, { json = true } = {}) 
       body: JSON.stringify({
         model, messages, temperature: 0.2,
         // i modelli Gemini "pensano" prima di rispondere: serve spazio anche per quello
-        max_tokens: preset === 'gemini' ? 8192 : 2000,
+        max_tokens: preset === 'gemini' ? 8192 : tier === 'heavy' ? 4000 : 2000,
         ...(json ? { response_format: { type: 'json_object' } } : {}),
       }),
     });
@@ -363,6 +376,8 @@ export async function onlineComplete(S, messages, signal, { json = true } = {}) 
     if (!candidates.length) candidates.push(...listed, ...FALLBACK_MODELS[preset]); // tutti scartati di recente: riprova comunque
   }
   if (!candidates.length) throw new Error(listErr ? 'Non riesco a scaricare l\'elenco dei modelli: ' + listErr.message : 'Manca il nome del modello');
+  // richieste corpose (riassunto del mese, organizzare settimane): prima i modelli più capaci del servizio
+  if (tier === 'heavy') candidates.sort((a, b) => heavyRank(preset, a) - heavyRank(preset, b));
 
   const tried = [];
   let lastErr;
@@ -390,6 +405,19 @@ export async function onlineComplete(S, messages, signal, { json = true } = {}) 
   }
   throw Object.assign(new Error(`Nessun modello ha risposto. Provati: ${tried.map((m) => m.replace(/:free$/, '')).join(', ')}. Ultimo errore: ${lastErr.message}`), { code: 'nofree', status: lastErr.status });
 }
+
+/** Per le richieste corpose: 0 = il più capace. A parità resta l'ordine di prima (sort stabile). */
+export function heavyRank(preset, id) {
+  if (preset === 'gemini') return /pro/.test(id) && !/vision/.test(id) ? (/preview|exp/.test(id) ? 1 : 0) : /flash-lite/.test(id) ? 3 : 2;
+  if (preset === 'nvidia') return /super|ultra/.test(id) ? 0 : /nemotron/.test(id) ? 1 : 2;
+  return 0;
+}
+
+/**
+ * Una richiesta corposa con il servizio online scelto (di solito la chiave Gemini dell'utente):
+ * risposta in JSON (json = true) o a parole. Restituisce { content, model }.
+ */
+export const heavyComplete = (S, messages, signal, json = true) => onlineComplete(S, messages, signal, { json, tier: 'heavy' });
 
 /** Prova veloce di chiave e modello, per le impostazioni. */
 export async function testOnline(S) {

@@ -991,3 +991,121 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .collage > .top-wide { flex: 0 0 100%; margin-bottom: 4px; }
 .collage:has(> .top-wide) { flex-wrap: wrap; }
 .pc.welcome .pc-quote { font-size: 24px; }
+
+/* ================================================================
+   UI generativa (genui.js): scene = umore del momento + dominio dell'obiettivo.
+   Token: --scene-accent (colore dell'obiettivo), data-layout su #app, data-motif su .bg.
+   Il colore non è mai l'unico segnale: ogni widget ha testo e un'etichetta per lo screen reader.
+   ================================================================ */
+
+/* frase guida della scena, sotto il saluto */
+.hero-line { margin: 10px auto 0; max-width: 300px; font-family: var(--quote, var(--serif)); font-weight: 700; font-size: 17px; line-height: 1.2; color: var(--ink-2); text-wrap: balance; }
+.hero[data-mode]:not([data-mode="greet"]) .hero-line { display: none; }
+
+/* motivo sullo sfondo: decorativo, leggerissimo, sfuma verso il basso */
+.bg::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 1.2s var(--ease);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 90%); mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 90%); }
+.bg[data-motif]:not([data-motif="none"])::after { opacity: 1; }
+.bg[data-motif="dots"]::after { background: radial-gradient(circle, color-mix(in srgb, var(--ink) 9%, transparent) 1.2px, transparent 1.8px) 0 0 / 22px 22px; }
+.bg[data-motif="grid"]::after { background: linear-gradient(color-mix(in srgb, var(--ink) 6%, transparent) 1px, transparent 1px) 0 0 / 100% 28px, linear-gradient(90deg, color-mix(in srgb, var(--ink) 6%, transparent) 1px, transparent 1px) 0 0 / 28px 100%; }
+.bg[data-motif="lanes"]::after { background: repeating-linear-gradient(112deg, transparent 0 26px, color-mix(in srgb, var(--ink) 6%, transparent) 26px 28px); }
+.bg[data-motif="waves"]::after { background: repeating-radial-gradient(circle at 50% 118%, transparent 0 22px, color-mix(in srgb, var(--ink) 7%, transparent) 22px 23.5px); }
+.bg[data-motif="rings"]::after { background: repeating-radial-gradient(circle at 85% 8%, transparent 0 30px, color-mix(in srgb, var(--ink) 6%, transparent) 30px 31.5px); }
+
+/* disposizioni: «Adesso» resta sempre la prima carta, cambiano aria e densità */
+#app[data-layout="calm"] .collage { margin-top: 2px; }
+#app[data-layout="calm"] .collage > .col + .col { padding-top: 76px; }
+#app[data-layout="dense"] .hero-title { font-size: clamp(46px, 14vw, 60px); }
+#app[data-layout="dense"] .collage > .col, #app[data-layout="dense"] .collage { gap: 10px; }
+#app[data-layout="dense"] .collage > .col + .col { padding-top: 40px; }
+#app[data-layout="focus"] .collage .pc:not(.adv):not(.flash) { opacity: 0.86; }
+#app[data-layout="focus"] .collage .pc:not(.adv):focus-visible { opacity: 1; }
+
+/* i widget della scena: carte come le altre, con la tinta dell'obiettivo */
+.pc.scene { --pc: var(--scene-accent, var(--accent)); --card: color-mix(in srgb, var(--pc) 7%, var(--paper)); --card2: color-mix(in srgb, var(--pc) 17%, var(--paper));
+  --glow: color-mix(in srgb, var(--pc) 45%, var(--bg)); background: linear-gradient(160deg, var(--card) 8%, var(--card2) 100%); }
+.sw-head { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; font-size: 13px; font-weight: 600; color: color-mix(in srgb, var(--pc) 60%, var(--paper-ink)); }
+.sw-head span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-ic { flex: none; width: 18px; height: 18px; background: currentColor; -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat; }
+.sw-grid { display: grid; grid-template-columns: 20px repeat(var(--cols), 1fr); gap: 4px; align-items: center; justify-items: center; }
+.sw-col { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-3); text-transform: uppercase; }
+.sw-row { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--ink-3); justify-self: start; }
+.cl { width: 100%; max-width: 22px; aspect-ratio: 1; border-radius: 6px; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--pc) 45%, transparent); }
+.cl.done { background: var(--pc); box-shadow: none; }
+.cl.done::after { content: ""; display: block; width: 100%; height: 100%; background: var(--paper); -webkit-mask: url(icons/ui/circle-check.svg) center / 70% no-repeat; mask: url(icons/ui/circle-check.svg) center / 70% no-repeat; opacity: 0.85; }
+.cl.doing { background: linear-gradient(135deg, var(--pc) 50%, transparent 50%); }
+.cl.none { box-shadow: none; }
+.sw-tail { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.sw-tail span { padding: 3px 8px; border-radius: 999px; font-size: 11px; background: color-mix(in srgb, var(--pc) 10%, transparent); color: var(--ink-2); }
+.sw-tail span.done { text-decoration: line-through; opacity: 0.7; }
+.sw-tail span.doing { box-shadow: inset 0 0 0 1px var(--pc); }
+.pc.scene .pc-desc { margin-top: 10px; }
+.sw-big { font-family: var(--serif); font-size: 64px; line-height: 0.9; letter-spacing: -0.03em; color: color-mix(in srgb, var(--pc) 70%, var(--paper-ink)); font-variant-numeric: tabular-nums; }
+.sw-deadline .pc-progress i { background: var(--pc); }
+.sw-deadline.late .pc-progress i { background: var(--warn); }
+.sw-li { display: flex; flex-direction: column; align-items: flex-start; width: 100%; min-height: 44px; padding: 7px 0; text-align: left; border-top: 1px solid var(--line); }
+.sw-li:first-of-type { border-top: 0; padding-top: 0; }
+.sw-li b { font-size: 14.5px; font-weight: 600; color: var(--paper-ink); }
+.sw-li small { font-size: 12.5px; color: var(--ink-3); }
+.sw-days { display: flex; justify-content: space-between; gap: 2px; }
+.sw-days span { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; color: var(--ink-3); }
+.sw-days i { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--pc) 45%, transparent); }
+.sw-days .on i { background: var(--pc); box-shadow: none; }
+.sw-days .today { color: var(--paper-ink); font-weight: 700; }
+
+/* impostazioni dell'aspetto */
+.sw-toggle { min-width: 56px; }
+.sw-toggle[aria-checked="true"] { background: var(--ink); color: var(--bg); }
+.sw-pal { display: flex; gap: 4px; margin-right: 8px; }
+.sw-pal i { width: 18px; height: 18px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--line); }
+.chip-btn { min-height: 34px; padding: 6px 12px; border-radius: 17px; background: var(--chip, var(--glass)); font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.chip-btn.ghost { visibility: hidden; }
+
+/* ---------- il tuo mese ---------- */
+#recap { z-index: 6; display: flex; flex-direction: column; background: transparent; animation: panelIn 0.5s var(--spring) both; }
+#recap[hidden] { display: none; }
+#recap.closing { animation: panelOut 0.3s ease-in forwards; }
+#app.recap-open > #summary { display: none; }
+.rc-months { display: flex; align-items: center; justify-content: space-between; margin: 2px 0 18px; font-size: 13px; color: var(--ink-2); text-transform: capitalize; }
+.rc-cards { display: flex; flex-direction: column; gap: 14px; margin-bottom: 18px; }
+.rc-card { --pc: var(--scene-accent, var(--accent)); padding: 22px 22px 20px; border-radius: 22px; background: linear-gradient(160deg, color-mix(in srgb, var(--pc) 6%, var(--paper)) 8%, color-mix(in srgb, var(--pc) 16%, var(--paper)));
+  box-shadow: var(--shadow); transform: rotate(var(--r, 0deg)); color: var(--paper-ink); }
+.rc-cards.enter .rc-card { animation: deal 0.75s var(--spring) both; animation-delay: calc(var(--i, 0) * 90ms + 120ms); }
+.rc-card h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: color-mix(in srgb, var(--pc) 55%, var(--ink-2)); }
+.rc-card.k-cover h2 { font-family: var(--serif); font-size: 30px; font-weight: 400; letter-spacing: -0.01em; text-transform: none; color: var(--paper-ink); }
+.rc-big { display: block; margin-top: 8px; font-family: var(--serif); font-weight: 400; font-size: 54px; line-height: 0.95; letter-spacing: -0.03em; color: color-mix(in srgb, var(--pc) 70%, var(--paper-ink)); }
+.rc-card p { margin-top: 10px; font-size: 17px; line-height: 1.38; }
+.rc-card.k-ai p, .rc-card.k-next p { font-family: var(--quote, var(--serif)); font-weight: 700; font-size: 19px; line-height: 1.22; }
+.rc-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; margin: 4px 2px 8px; background: var(--line); }
+.rc-bar i { width: var(--w); background: var(--pc); }
+.rc-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 2px 16px; font-size: 13px; color: var(--ink-2); }
+.rc-legend i { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%; background: var(--pc); }
+.rc-note { font-size: 13px; color: var(--ink-3); text-align: center; margin: 4px 0 10px; }
+.rc-note .sm-typing { display: inline-flex; vertical-align: middle; padding: 0; }
+.rc-actions { display: flex; justify-content: center; gap: 10px; margin-bottom: 22px; }
+.rc-actions .btn.ghost { display: inline-block; margin: 0; }
+.rc-hint p { font-size: 15px; color: var(--ink-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .bg::after { transition: none; }
+  .rc-cards.enter .rc-card { animation: none; }
+}
+
+/* ---------- account e collegamenti ---------- */
+.cl-box { margin: 4px 0 8px; padding: 14px; border-radius: 16px; background: color-mix(in srgb, var(--ink) 5%, transparent); display: flex; flex-direction: column; gap: 10px; font-size: 14px; }
+.cl-box label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
+.cl-box input[readonly] { width: 100%; padding: 9px 10px; border-radius: 10px; border: 0; background: var(--paper); font: 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); }
+.cl-box .btn { align-self: flex-start; }
+
+/* accessibilità (revisione WCAG 2.1 AA): testo secondario delle carte tinte ≥ 4,5:1, bordi delle celle ≥ 3:1,
+   bersagli ≥ 44 px, niente opacità ridotta sul testo nel layout «focus» */
+.pc.scene { --sw-ink-2: color-mix(in srgb, var(--paper-ink) 84%, transparent); }
+.pc.scene .pc-desc, .pc.scene .pc-label, .sw-col, .sw-row, .sw-tail span, .sw-days span, .sw-li small { color: var(--sw-ink-2); }
+.sw-col, .sw-row { font-size: 11px; }
+.cl { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--pc) 70%, var(--paper-ink)); }
+.sw-days i { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--pc) 70%, var(--paper-ink)); }
+.sw-days .today { color: var(--paper-ink); }
+#app[data-layout="focus"] .collage .pc:not(.adv):not(.flash) { opacity: 1; filter: saturate(0.7); }
+.chip-btn, .sw-toggle { min-height: 44px; }
+.rc-note, .rc-legend { color: var(--ink-2); }
+.pc.scene:focus-visible, .sw-li:focus-visible, .chip-btn:focus-visible, .sw-toggle:focus-visible, .rc-card:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 3px; }

@@ -1,0 +1,11 @@
+{
+  "name": "tempo-cloud",
+  "private": true,
+  "type": "module",
+  "description": "Tempo Cloud: account, sincronizzazione e accesso da Mac, Siri, CarPlay e assistenti AI (MCP).",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "dev": "node src/node.js",
+    "deploy": "wrangler deploy"
+  }
+}
