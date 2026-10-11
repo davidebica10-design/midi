@@ -214,3 +214,84 @@ Il timer è in `state.focus` e si basa sugli orari: continua anche ad app chiusa
 - Ogni volta che il giorno cambia (spunti, sposti, aggiungi), le carte scivolano al nuovo posto con una molla invece di saltare; quella spuntata vola nella pila, che fa un piccolo rimbalzo. Le carte nuove entrano dal basso.
 - Toccando una carta, la carta si solleva e diventa l'anteprima dell'editor.
 - Con «Riduci il movimento» attivo su iPhone le animazioni si spengono.
+
+---
+
+## 6. Scene: UI generativa controllata — `sceneFor(ctx)` (`genui.js`)
+
+**Problema.** La schermata deve adattarsi a qualsiasi impegno, compito o obiettivo, senza perdere il gusto riconoscibile di Tempo e senza disorientare. **Soluzione:** una *scena* = umore del momento × dominio dell'obiettivo, composta solo da pezzi di un catalogo fisso. Le regole decidono; l'AI può proporre una «pelle» per un obiettivo (una volta, validata); l'utente può bloccare colori e disposizione o spegnere tutto.
+
+`ctx = { state, plan, now, view (today()), fits, goalId? }` → `null` (adattamento spento) oppure:
+
+| Campo | Tipo | Note |
+| --- | --- | --- |
+| `mood` | `first` · `empty` · `normal` · `before` · `doing` · `focus` · `full` · `evening` · `off` | dall'oggi (`moodOf`) |
+| `domain` | `release` · `creative` · `study` · `fitness` · `trip` · `move` · `launch` · `event` · `generic` | dalle parole dell'obiettivo (`domainOf`) o dalla pelle |
+| `goalId`, `goalTitle` | | l'obiettivo che dà il tono: regole (`sceneGoalOptions` in `decide.js`) o un motore decisionale |
+| `palette` | 3 × `#rrggbb` o `null` | le tre macchie dello sfondo quando nessuna carta colorata è al centro; sera → verso il lilla, stacco → verso il salvia |
+| `accent` | colore | quello del progetto, altrimenti del dominio (`--scene-accent`) |
+| `motif` | `none` · `dots` · `grid` · `lanes` · `waves` · `rings` | `.bg[data-motif]`, decorativo (`aria-hidden`), sfuma verso il basso |
+| `layout` | `standard` · `calm` · `dense` · `focus` | `#app[data-layout]` |
+| `widgets[]` | dal catalogo, sotto | solo con dati veri, al massimo `MOODS[mood].widgets` |
+| `line` | testo ≤ 90 o `null` | frase guida sotto il saluto (solo dalla pelle AI) |
+| `source` | `rules` · `ai` | |
+
+### Umori → disposizione e widget
+
+| mood | Quando | layout | widget |
+| --- | --- | --- | --- |
+| `first` | nessuna attività né obiettivo | calm | 0 |
+| `empty` | giornata libera | calm | 2 |
+| `normal` | giornata con tempo libero | standard | 1 |
+| `before` | un impegno entro 45' | calm | 0 |
+| `doing` | un blocco in corso | focus | 0 |
+| `focus` | timer o pomodoro partito | focus | 0 |
+| `full` | qualcosa non entra / meno di 30' liberi | dense | 1 (solo `deadline` se in ritardo) |
+| `evening` | dopo le 19 e niente da fare | calm | 2 |
+| `off` | giorno di stacco | calm | 1 |
+
+**Àncora stabile:** «Adesso» resta sempre la prima carta; i widget vengono subito dopo, prima delle osservazioni. Durante un'attività la scena toglie i widget: conta solo quello che stai facendo.
+
+### Catalogo dei widget (carte `.pc.scene`)
+
+| type | Dati | Uso tipico |
+| --- | --- | --- |
+| `pipeline` | `matrix { cols[{label, done, total}], rows[{label, cells[{id, state}]}] }`, `tail[]`, `done`, `total` | «Beat 01…Mix 04» → griglia brani × fasi; «Master», «Copertina» in fondo |
+| `countdown` | `days`, `dateText`, `label` («Mancano 49 giorni all'uscita») | entro 120 giorni dalla scadenza |
+| `deadline` | `pct`, `caption`, `status` (`ok` · `late` · `past` · `none`) | sessioni fatte rispetto alla scadenza |
+| `checklist` | `rows[{id, title, when}]` (max 3, nell'ordine del piano) | ogni riga è un pulsante che apre la sessione |
+| `week` | `days[7]{label, done, today}`, `done`, `target` | abitudini («3 volte a settimana») |
+
+Ordine per dominio: `release` pipeline → countdown → deadline · `study` countdown → deadline → checklist · `fitness` week → countdown → checklist · `trip`/`event` countdown → checklist · `move` checklist → deadline · `launch` pipeline → countdown · `creative` pipeline → deadline · `generic` deadline → checklist.
+
+### Stati delle celle della pipeline
+
+| Stato | Aspetto | Oltre al colore |
+| --- | --- | --- |
+| `done` | piena, con spunta | forma (spunta) |
+| `doing` | metà piena in diagonale | forma |
+| `todo` | solo bordo (≥ 3:1) | forma |
+
+### Pelle proposta dall'AI
+
+`skinPrompt(goal)` → JSON `{ domain, pal[3], motif, widgets[≤3], line }`; `sanitizeSkin` tiene solo valori ammessi, schiarisce i colori troppo scuri, toglie «!» e `<>`. Salvata in `state.skins[goalId]` con il titolo: vale finché il titolo non cambia. Si chiede una volta per obiettivo (riprova dopo 7 giorni se non è arrivata), mai a ogni apertura.
+
+### Impostazioni (⋯ → Aspetto) — `state.prefs.ui`
+
+`{ adaptive (true), motif (true), lockPalette: [3 hex] | null, lockLayout: layout | null }`. «Tieni questi» blocca i colori attuali; «Disposizione» blocca il layout; «Rigenera» chiede all'AI una nuova pelle.
+
+### Accessibilità (revisione WCAG 2.1 AA)
+
+- Ogni widget ha un nome per lo screen reader (`widgetLabel`: «Avanzamento: Beat 1 di 4, …»); con una sessione da aprire è `role="button"` («… Apri Beat 02»), altrimenti `role="group"`. Le parti grafiche sono `aria-hidden`.
+- Contrasto misurato sulla pagina: testo secondario delle carte tinte 8,7–10:1, bordi delle celle 4,7–5,3:1, frase guida 4,7–8,4:1 (chiaro/scuro).
+- Il layout `focus` non abbassa l'opacità del testo: desatura le carte.
+- Motivo e transizioni si fermano con «Riduci movimento».
+- Da fare: Dynamic Type (oggi le carte usano px fissi); i pulsanti tondi esistenti sono 40 × 40 px.
+
+## 7. Il tuo mese — `monthRecap(state, 'YYYY-MM', now)` (`recap.js`)
+
+Numeri calcolati dal codice: `sessions`, `minutes`, `activeDays`, `skipped` (non quelle segnate dall'app da sola), `rate`, `projects[{name, color, minutes, pct}]`, `themes[]`, `best { window, weekday, skipDay }`, `longest`, `ratio` (durata reale / stimata, con almeno 3 misure), `goals[]`, `reached[]`, `chapters[{kind, head, big?, text}]`.
+
+Capitoli senza AI: copertina, progetto principale, ritmo (solo con almeno 4 sessioni), obiettivi, raggiunti, «com'è andata davvero», un consiglio. Con un'AI online il racconto lo scrive il modello più capace del servizio (`heavyComplete`) usando solo questi numeri (`recapPrompt` → `sanitizeRecapAi`), salvato in `state.recaps[mese]` finché i numeri non cambiano.
+
+Si apre dal pulsante «Il tuo mese» nel riepilogo, da ⋯ e, nei primi 5 giorni del mese, da un'osservazione («Il tuo ottobre è pronto»). Sotto, «Chiacchiera con il tuo tempo» (`state.timeChat`): risposte dell'AI con i numeri veri, o del codice senza AI.

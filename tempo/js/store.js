@@ -6,6 +6,8 @@ import { sessionsFor, validatePlan, MAX_SESSIONS } from './templates.js';
 import { estimate, updateDurations, sampleOf, MAX_SAMPLES } from './learn.js';
 import { sanitizeFocus } from './focus.js';
 import { THEME_KEYS } from './themes.js';
+import { sanitizeSkin, LAYOUTS } from './genui.js';
+import { sanitizeRecapAi } from './recap.js';
 
 const KEY = 'tempo.v1';
 const UNDO_KEY = 'tempo.undo.v1';
@@ -23,6 +25,7 @@ export function emptyState() {
     seenObs: { day: null, ids: [], closed: [], snap: {} }, // osservazioni mostrate oggi (massimo 2), chiuse, e com'erano
     welcome: null,  // «Bentornato» dopo un'assenza di 7 giorni o più: { since, at } finché non rispondi
     askChat: [],    // le domande del riepilogo e le risposte
+    timeChat: [],   // le chiacchiere con il tuo tempo (Il tuo mese)
     askIntro: null, // i punti chiave scritti dall'AI: { key, text }
     focus: null,    // il timer o pomodoro in corso (focus.js)
     prefs: structuredClone(DEFAULT_PREFS), // copia profonda: availability e gli elenchi non si condividono tra stati
@@ -35,6 +38,8 @@ export function emptyState() {
     onboarded: false,
     anchors: {},
     chat: [],
+    skins: {},      // l'aspetto proposto dall'AI per ogni obiettivo (genui.js): { [goalId]: { title, domain, pal, motif, widgets, line, at } }
+    recaps: {},     // il racconto del mese scritto dall'AI e se l'hai già visto: { 'YYYY-MM': { hash, ai, seen, at } }
     settings: { apiKey: '', model: 'claude-opus-5-5', name: '' },
     stats: { replans: {}, createdAt: Date.now(), archived: { tasks: 0, done: 0 }, archivedOn: null, lastOpenAt: null, edits: 0, exportedEdits: null, backupShownOn: null },
   };
@@ -53,6 +58,7 @@ export function load() {
 // ---- Sicurezza: uno stato che arriva da fuori (backup importato) non deve poter iniettare codice nella pagina
 const SAFE_ID = /^[A-Za-z0-9_:-]{1,64}$/;
 const SAFE_COLOR = /^#[0-9a-fA-F]{3,8}$/;
+const SAFE_HEX6 = /^#[0-9a-fA-F]{6}$/;
 export const safeId = (v) => (typeof v === 'string' && SAFE_ID.test(v) ? v : null);
 export const CARD_COLORS = ['rose', 'lilac', 'sage', 'sand', 'sky'];
 export const cardColor = (v) => (CARD_COLORS.includes(v) ? v : null);
@@ -97,6 +103,16 @@ export function sanitizeState(s) {
   s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate), color: cardColor(r.color) }));
   s.chat = arr(s.chat).filter((m) => m && typeof m === 'object' && safeId(m.id)).map((m) => ({ ...m, text: str(m.text, 4000), changes: arr(m.changes).map((c) => str(c, 300)), undoId: safeId(m.undoId) }));
   s.askChat = arr(s.askChat).filter((m) => m && typeof m === 'object' && safeId(m.id) && !m.pending).map((m) => ({ id: m.id, role: m.role === 'user' ? 'user' : 'assistant', text: str(m.text, 4000), ts: num(m.ts, 0, 9e15, 0), error: !!m.error })).slice(-40);
+  // l'aspetto degli obiettivi e i racconti del mese: solo valori ammessi (arrivano anche dall'AI e dalla sincronizzazione)
+  s.skins = Object.fromEntries(Object.entries(obj(s.skins)).filter(([k]) => safeId(k)).slice(0, 50)
+    .map(([k, v]) => [k, { ...(sanitizeSkin(v) || {}), title: str(obj(v).title, 120), at: num(obj(v).at, 0, 9e15, 0) }]));
+  s.recaps = Object.fromEntries(Object.entries(obj(s.recaps)).filter(([k]) => /^\d{4}-\d{2}$/.test(k)).slice(-24).map(([k, v]) => {
+    const R = obj(v);
+    let ai = null;
+    try { ai = R.ai ? sanitizeRecapAi(R.ai) : null; } catch { ai = null; }
+    return [k, { hash: str(R.hash, 200), ai, model: R.model ? str(R.model, 80) : null, seen: !!R.seen, at: num(R.at, 0, 9e15, 0) }];
+  }));
+  s.timeChat = arr(s.timeChat).filter((m) => m && typeof m === 'object' && safeId(m.id) && !m.pending).map((m) => ({ id: m.id, role: m.role === 'user' ? 'user' : 'assistant', text: str(m.text, 4000), ts: num(m.ts, 0, 9e15, 0), error: !!m.error })).slice(-40);
   s.askIntro = s.askIntro && typeof s.askIntro === 'object' ? { key: str(s.askIntro.key, 2000), text: str(s.askIntro.text, 2000) } : null;
   s.anchors = Object.fromEntries(Object.entries(obj(s.anchors)).filter(([k]) => safeId(k)));
   s.log = arr(s.log).filter((e) => e && typeof e === 'object').map((e) => ({ ...e, id: safeId(e.id), project: safeId(e.project) }));
@@ -115,7 +131,12 @@ export function sanitizeState(s) {
     focusWindow: WINDOWS[P.focusWindow] ? P.focusWindow : null,
     dayStart: num(P.dayStart, 0, 1440, DEFAULT_PREFS.dayStart), dayEnd: num(P.dayEnd, 0, 1440, DEFAULT_PREFS.dayEnd), buffer: num(P.buffer, 0, 120, DEFAULT_PREFS.buffer),
     slack: num(P.slack, 0, 0.9, DEFAULT_PREFS.slack), maxBlock: num(P.maxBlock, 20, 600, DEFAULT_PREFS.maxBlock), decompress: num(P.decompress, 0, 180, DEFAULT_PREFS.decompress), heavyRest: num(P.heavyRest, 0, 120, 0),
-    availability: Object.fromEntries(Object.entries(obj(P.availability)).filter(([k]) => validDate(k))) };
+    availability: Object.fromEntries(Object.entries(obj(P.availability)).filter(([k]) => validDate(k))),
+    ui: (() => {
+      const U = obj(P.ui);
+      const pal = Array.isArray(U.lockPalette) && U.lockPalette.length === 3 && U.lockPalette.every((h) => SAFE_HEX6.test(h)) ? U.lockPalette.map((h) => h.toLowerCase()) : null;
+      return { adaptive: U.adaptive !== false, motif: U.motif !== false, lockPalette: pal, lockLayout: LAYOUTS.includes(U.lockLayout) ? U.lockLayout : null };
+    })() };
   return s;
 }
 
@@ -125,7 +146,7 @@ export function migrate(s, now = Date.now()) {
   // chi usava già l'app ha già un contesto: niente presentazione iniziale
   if (s.onboarded === undefined) s.onboarded = (s.items || []).length > 0;
   const out = { ...e, ...s, prefs: { ...e.prefs, ...s.prefs }, settings: { ...e.settings, ...s.settings }, stats: { ...e.stats, ...s.stats },
-    learned: { ...e.learned, ...s.learned } };
+    learned: { ...e.learned, ...s.learned }, skins: { ...s.skins }, recaps: { ...s.recaps } };
   sanitizeState(out);
   if ((s.schema || 1) < 2) {
     // v1 → v2: le note di memoria che si possono strutturare diventano preferenze vere

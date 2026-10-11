@@ -1,5 +1,5 @@
 import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
-import { glowSoon, bindCards, dragging, setActPalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
+import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState } from './store.js';
@@ -11,9 +11,14 @@ import { learnedObservations, learnedList, forgetLearned, updateDurations, dropR
 import * as vm from './viewmodel.js';
 import { plural, windowLabel, durLabel } from './format.js';
 import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout, askSystem, claudeAsk } from './ai.js';
-import { runOpenTurn, openGoalPlan, openAsk, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded } from './ai-open.js';
+import { runOpenTurn, openGoalPlan, openAsk, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded, onlineComplete, heavyComplete } from './ai-open.js';
+import { sceneFor, widgetLabel, skinPrompt, sanitizeSkin, LAYOUTS, MOODS } from './genui.js';
+import { decide, sceneGoalOptions, stateText, DECIDERS } from './decide.js';
+import { monthRecap, monthKeyOf, prevMonthKey, recapPrompt, sanitizeRecapAi, recapHash, timeChatSystem, recapText, monthName } from './recap.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
 import { archivePut, archiveAll } from './archive.js';
+import * as native from './native.js';
+import { syncNow, signIn, signOut, cloudCall, DEFAULT_CLOUD_URL } from './cloud.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -68,6 +73,7 @@ function commit(label, mutate, { auto = false } = {}) {
   replan();
   save(state);
   renderAll();
+  scheduleSync();
   return undoId;
 }
 
@@ -584,6 +590,8 @@ function renderDayView(animate, opts = {}) {
   }
 
   const sum = v.summary;
+  const sc = currentScene(v);
+  applyScene(sc);
   const evN = v.cards.filter((c) => c.type === 'event').length + (v.now?.block?.kind === 'event' ? 1 : 0);
   const prog = sum.total ? `${sum.done} di ${sum.total} fatte` : evN ? plural(evN, 'impegno', 'impegni') : 'giornata libera';
   $('#hero-time').textContent = `${v.header.time} · ${prog}`;
@@ -617,6 +625,9 @@ function renderDayView(animate, opts = {}) {
       <div class="pc-label">Adesso</div></div>`);
   }
 
+  // 1b. la scena: i widget scelti per l'obiettivo che dà il tono (pipeline, conto alla rovescia…), dopo «Adesso»
+  for (const w of sc?.widgets || []) put(sceneCardHtml(w, sc, i, rot(w.id)));
+
   // 2. osservazioni (massimo 2) come carte
   for (const o of v.observations) put(cardHtml({ ...o, type: 'obs', r: rot(o.id) }, i));
 
@@ -643,7 +654,110 @@ function renderDayView(animate, opts = {}) {
   fillImages(col);
   if (animate) animateIn(col, 300 + i * 70 + 800);
   $('#undo-btn').hidden = !canUndo();
+  pushSnapshot(v, sc);
   glowSoon();
+}
+
+// ---------------------------------------------------------------- UI generativa (genui.js)
+// La scena la decidono le regole; un motore decisionale (CLM-8B, embeddings, Nemotron…) può scegliere
+// un altro obiettivo tra quelli validi; l'AI può proporre una volta la «pelle» di ogni obiettivo.
+let sceneDecision = null, deciding = false, skinning = null, lastSceneKey = '', sceneNow = null;
+function currentScene(v) {
+  const sc = sceneFor({ state, plan, now: Date.now(), view: v, fits: v.isToday ? goalFits() : {}, goalId: sceneDecision?.rev === dataRev ? sceneDecision.id : null });
+  if (!sc) return null;
+  if (!v.isToday) sc.widgets = [];
+  if (v.isToday) { maybeDecideScene(); maybeSkin(sc); }
+  return sc;
+}
+
+/** Sfondo, motivo e layout della scena (null = l'aspetto classico). */
+function applyScene(sc) {
+  const app = $('#app'), bg = document.querySelector('.bg');
+  app.dataset.layout = sc?.layout || 'standard';
+  app.dataset.mood = sc?.mood || '';
+  bg.dataset.motif = sc?.motif || 'none';
+  if (sc?.accent && safeColor(sc.accent)) app.style.setProperty('--scene-accent', sc.accent); else app.style.removeProperty('--scene-accent');
+  setScenePalette(sc?.palette || null);
+  const line = $('#hero-line');
+  if (line) { line.textContent = sc?.line || ''; line.hidden = !sc?.line || !['empty', 'normal', 'evening', 'off'].includes(sc.mood); }
+  sceneNow = sc;
+  if (sc?.key !== lastSceneKey) { lastSceneKey = sc?.key || ''; native.scene(sc); }
+}
+
+const short = (s, n = 26) => (s.length > n ? s.slice(0, n - 1).trim() + '…' : s);
+function sceneCardHtml(w, sc, i, r) {
+  const st = `--r:${r}deg;--i:${i};--pc:${safeColor(sc.accent) || 'var(--accent)'}`;
+  const head = `<div class="sw-head"><i class="sw-ic" style="--m:url(icons/act/${sc.icon}.svg)" aria-hidden="true"></i><span>${esc(short(sc.goalTitle || sc.domainLabel))}</span></div>`;
+  const label = esc(widgetLabel(w));
+  const next = (state.items || []).find((x) => x.goalId === sc.goalId && x.kind === 'task' && x.status !== 'done');
+  // con una sessione da aprire è un pulsante (nome: cosa mostra + cosa fa), altrimenti un gruppo con il suo nome
+  const open = next ? ` role="button" tabindex="0" data-item="${esc(next.id)}"` : ' role="group"';
+  const name = next ? `${widgetLabel(w)}. Apri ${next.title}` : widgetLabel(w);
+  if (w.type === 'pipeline') {
+    const cell = (c) => `<i class="cl ${c ? c.state : 'none'}"></i>`;
+    const grid = w.matrix ? `<div class="sw-grid" style="--cols:${w.matrix.cols.length}" aria-hidden="true"><span></span>${w.matrix.cols.map((c) => `<span class="sw-col">${esc(c.label.slice(0, 3))}</span>`).join('')}
+      ${w.matrix.rows.map((row) => `<span class="sw-row">${esc(row.label)}</span>${row.cells.map(cell).join('')}`).join('')}</div>` : '';
+    const tail = w.tail.length ? `<div class="sw-tail" aria-hidden="true">${w.tail.map((t) => `<span class="${t.state}">${esc(short(t.label, 14))}</span>`).join('')}</div>` : '';
+    return `<div class="pc scene sw-pipeline" style="${st}" aria-label="${esc(name)}"${open}><div class="pc-body">${head}${grid}${tail}<div class="pc-desc">${w.done} di ${w.total} fatte</div></div><div class="pc-label">Avanzamento</div></div>`;
+  }
+  if (w.type === 'countdown') {
+    return `<div class="pc scene sw-count" style="${st}" aria-label="${esc(name)}"${open}><div class="pc-body">${head}<div class="sw-big" aria-hidden="true">${w.days}</div><div class="pc-desc">${esc(w.days === 0 ? 'È oggi' : w.label.replace(/^Mancano \d+ |^Manca 1 /, ''))} · ${esc(w.dateText)}</div></div><div class="pc-label">${w.days === 1 ? 'Giorno' : 'Giorni'}</div></div>`;
+  }
+  if (w.type === 'deadline') {
+    return `<div class="pc scene sw-deadline ${w.status}" style="${st}" aria-label="${esc(name)}"${open}><div class="pc-body">${head}<div class="pc-progress" aria-hidden="true"><i style="--w:${w.pct}%"></i></div><div class="pc-desc">${esc(w.caption)}</div></div><div class="pc-label">${w.status === 'late' ? 'Da rivedere' : 'Scadenza'}</div></div>`;
+  }
+  if (w.type === 'checklist') {
+    return `<div class="pc scene sw-check" style="${st}" role="group" aria-label="${label}"><div class="pc-body">${head}${w.rows.map((r2) => `<button type="button" class="sw-li" data-item="${esc(r2.id)}"><b>${esc(short(r2.title, 22))}</b><small>${esc(r2.when)}</small></button>`).join('')}</div><div class="pc-label">Prossime</div></div>`;
+  }
+  if (w.type === 'week') {
+    return `<div class="pc scene sw-week" style="${st}" role="group" aria-label="${label}"><div class="pc-body">${head}<div class="sw-days" aria-hidden="true">${w.days.map((d) => `<span class="${d.done ? 'on' : ''}${d.today ? ' today' : ''}"><i></i>${d.label}</span>`).join('')}</div><div class="pc-desc">${esc(w.caption)}</div></div><div class="pc-label">Settimana</div></div>`;
+  }
+  return '';
+}
+
+/** Il motore decisionale scelto; con Gemini senza chiave propria usa la chiave Gemini dell'assistente. */
+function deciderCfg() {
+  const D = state.settings.decider;
+  if (!D?.kind || D.kind === 'rules') return null;
+  const S = state.settings;
+  const key = D.key || (/generativelanguage/.test(D.url || '') && presetOf(S) === 'gemini' ? S.openKey : '') || (/nvidia\.com/.test(D.url || '') && presetOf(S) === 'nvidia' ? S.openKey : '');
+  return { ...D, key };
+}
+
+/** Un motore decisionale configurato sceglie l'obiettivo della scena (una volta per versione del piano). */
+function maybeDecideScene() {
+  const D = deciderCfg();
+  if (!D?.kind || D.kind === 'rules' || deciding || sceneDecision?.rev === dataRev || !navigator.onLine) return;
+  const now = Date.now();
+  const opts = sceneGoalOptions({ state, plan, now, today: today() });
+  if (opts.length < 2) { sceneDecision = { rev: dataRev, id: null }; return; }
+  deciding = true;
+  const rev = dataRev;
+  decide({ task: 'Quale obiettivo deve dare il tono alla schermata adesso?', state: stateText({ state, plan, now, today: today() }), options: opts, decider: D })
+    .then((r) => { sceneDecision = { rev, id: r?.id || null, source: r?.source, error: r?.error }; if (mode === 'day' && rev === dataRev) renderDayView(false, { flip: false }); })
+    .finally(() => { deciding = false; });
+}
+
+/** Con un'AI attiva: la pelle dell'obiettivo della scena, chiesta una volta (riprova dopo 7 giorni se non è arrivata). */
+function maybeSkin(sc) {
+  const g = sc.goalId && state.goals.find((x) => x.id === sc.goalId);
+  const mode2 = aiMode();
+  if (!g || skinning || mode2 === 'base' || mode2 === 'local' || !navigator.onLine) return;
+  const cur = state.skins?.[g.id];
+  if (cur && cur.title === g.title && (cur.domain || Date.now() - (cur.at || 0) < 7 * 864e5)) return;
+  skinning = g.id;
+  const proj = g.projectId ? projectOf(state, g.projectId)?.name || '' : '';
+  const msgs = skinPrompt(g, proj);
+  const run = (signal) => (mode2 === 'claude' ? claudeAsk(state, msgs[0].content, [msgs[1]], signal) : onlineComplete(state.settings, msgs, signal).then((r) => r.content));
+  withTimeout(run, AI_TIMEOUT)
+    .then((txt) => { const t = String(txt || ''); return sanitizeSkin(JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1))); })
+    .catch(() => null)
+    .then((skin) => {
+      (state.skins ||= {})[g.id] = { ...(skin || {}), title: g.title, at: Date.now() };
+      save(state);
+      if (skin && mode === 'day') renderDayView(false, { flip: false });
+    })
+    .finally(() => { skinning = null; });
 }
 
 // ---------------------------------------------------------------- l'attività in corso: icona, orologio a puntini, pomodoro
@@ -685,6 +799,7 @@ function renderHero(v) {
   ctl.hidden = !((mode === 'pomo' || mode === 'ring') && focusOpen);
   if (key !== heroKey) {
     heroKey = key;
+    syncNativeFocus(f, th, v.isToday);
     if (mode === 'icon') {
       const startable = !!it && it.status !== 'done';
       art.innerHTML = `<button type="button" class="hero-ic-btn" data-hero="${startable ? 'start' : 'none'}" data-id="${esc(it?.id || '')}" aria-label="${esc(startable ? `Avvia il timer di ${block.title}` : block.title)}"><i class="hero-ic" style="--m:url(icons/act/${th.icon}.svg)"></i></button>`;
@@ -700,6 +815,41 @@ function renderHero(v) {
     if (mode === 'pomo' || mode === 'ring') renderFocusCtl(f);
   }
   updateFocus();
+}
+
+/** Il timer in corso diventa una Live Activity nell'app nativa (isola dinamica e schermata di blocco). */
+let nativeFocusOn = false;
+function syncNativeFocus(f, th, isToday) {
+  if (!isToday) return;
+  const live = f && (f.phase === 'work' || f.phase === 'break') && f.startedAt;
+  if (live) {
+    const left = focusView(f, Date.now()).left;
+    const data = { title: f.phase === 'break' ? 'Pausa' : f.title, endsAt: Date.now() + left, accent: th?.accent, icon: th?.icon, mode: f.mode, paused: !!f.pausedAt };
+    if (nativeFocusOn) native.focusUpdated(data); else native.focusStarted(data);
+    nativeFocusOn = true;
+  } else if (nativeFocusOn) { native.focusEnded(); nativeFocusOn = false; }
+}
+
+/** Snapshot per widget, Siri e CarPlay: cosa fare adesso e le prossime cose di oggi. */
+function pushSnapshot(v, sc) {
+  if (!v.isToday) return;
+  const next = v.cards.filter((c) => (c.type === 'task' && !c.done) || (c.type === 'event' && c.end > fmtMin(nowMin()))).slice(0, 5)
+    .map((c) => ({ title: c.title, start: c.start, end: c.end || null, kind: c.type }));
+  native.snapshot({ v: 1, at: Date.now(), day: v.day, now: v.now ? { title: v.now.title, why: v.now.why || '', mood: v.now.mood } : null, next, progress: v.summary.caption || '',
+    scene: sc ? { mood: sc.mood, domain: sc.domain, goal: sc.goalTitle, accent: sc.accent, palette: sc.palette } : null });
+  if (state.settings.reminders) native.reminders(reminderList());
+}
+/** Al massimo un promemoria al giorno: la prima sessione da fare oggi e domani, 5 minuti prima. */
+function reminderList() {
+  const out = [];
+  for (const d of [today(), addDays(today(), 1)]) {
+    const b = (plan[d]?.blocks || []).find((x) => x.type !== 'done' && x.item.kind === 'task' && !String(x.id).startsWith('rec:'));
+    if (!b) continue;
+    const [y, m, dd] = d.split('-').map(Number);
+    const at = new Date(y, m - 1, dd, Math.floor(b.start / 60), b.start % 60).getTime() - 5 * 60000;
+    out.push({ id: `start-${d}`, at, title: `Alle ${fmtMin(b.start)} tocca a ${b.item.title}`, body: 'Apri Tempo per partire.' });
+  }
+  return out;
 }
 
 /** I comandi del timer (si vedono con il pannello aperto). */
@@ -1161,6 +1311,147 @@ async function ask(text) {
   $('#sum-scroll').scrollTop = $('#sum-scroll').scrollHeight;
 }
 
+// ---------------------------------------------------------------- il tuo mese (recap.js) e chiacchiere col tempo
+let recapOpen = false, recapKey = null, recapBusy = false, timeAsking = false;
+/** Quale mese aprire: quello chiesto, altrimenti il corrente (o il precedente nei primi giorni, se il corrente è vuoto). */
+function recapDefaultKey() {
+  const cur = monthKeyOf(Date.now());
+  return +today().slice(8, 10) <= 5 && monthRecap(state, cur, Date.now()).empty ? prevMonthKey(cur) : cur;
+}
+function openRecap(key) {
+  recapKey = /^\d{4}-\d{2}$/.test(key || '') ? key : recapDefaultKey();
+  recapOpen = true;
+  ((state.recaps ||= {})[recapKey] ||= {}).seen = true;
+  save(state);
+  if (summaryOpen) closeSummary();
+  if (settingsOpen) closeSettings();
+  setComposing(false);
+  closePlus();
+  const el = $('#recap');
+  el.hidden = false;
+  el.classList.remove('closing');
+  $('#app').classList.add('sum-open', 'recap-open');
+  $('#day').inert = $('#overview').inert = $('#composer').inert = $('#sum-fab').inert = true;
+  renderRecap(true);
+  recapAi();
+}
+function closeRecap() {
+  recapOpen = false;
+  const el = $('#recap');
+  el.classList.add('closing');
+  $('#app').classList.remove('sum-open', 'recap-open');
+  $('#day').inert = $('#overview').inert = $('#composer').inert = false;
+  $('#sum-fab').inert = mode !== 'overview';
+  $('#rc-input').blur();
+  glowSoon();
+  setTimeout(() => { if (!recapOpen) { el.hidden = true; el.classList.remove('closing'); } }, 320);
+}
+const recapNow = () => monthRecap(state, recapKey, Date.now());
+const recapAiOf = (r) => (state.recaps?.[r.key]?.hash === recapHash(r) ? state.recaps[r.key].ai : null);
+function renderRecap(animate) {
+  const r = recapNow();
+  const ai = recapAiOf(r);
+  const cur = monthKeyOf(Date.now());
+  $('#rc-title').textContent = ai?.title || r.title;
+  const card = (c, i) => `<article class="rc-card k-${c.kind}" style="--i:${i};--r:${i % 2 ? 0.8 : -0.8}deg${c.color && safeColor(c.color) ? `;--pc:${c.color}` : ''}">
+    ${c.head ? `<h2>${esc(c.head)}</h2>` : ''}${c.big ? `<b class="rc-big">${esc(c.big)}</b>` : ''}${c.text ? `<p>${esc(c.text)}</p>` : ''}</article>`;
+  let cards;
+  if (ai) {
+    const cover = r.chapters[0];
+    cards = [card({ ...cover, text: ai.lines[0] }, 0), ...ai.lines.slice(1).map((l, k) => card({ kind: 'ai', text: l }, k + 1)), ai.next ? card({ kind: 'next', head: r.current ? 'Da qui a fine mese' : 'Il mese prossimo', text: ai.next }, ai.lines.length) : ''];
+  } else cards = r.chapters.map(card);
+  const bar = r.projects.length > 1 ? `<div class="rc-bar" role="img" aria-label="${esc(r.projects.map((p) => `${p.name} ${p.pct}%`).join(', '))}">${r.projects.map((p) => `<i style="--w:${Math.max(3, p.pct)}%;--pc:${safeColor(p.color) || 'var(--ink-3)'}"></i>`).join('')}</div>
+    <div class="rc-legend" aria-hidden="true">${r.projects.slice(0, 4).map((p) => `<span style="--pc:${safeColor(p.color) || 'var(--ink-3)'}"><i></i>${esc(p.name)} ${p.pct}%</span>`).join('')}</div>` : '';
+  const mode2 = aiMode();
+  const meta = state.recaps?.[r.key];
+  const note = ai ? `Raccontato da ${esc(meta?.model || 'l\'AI')} con i numeri calcolati da Tempo.`
+    : recapBusy ? 'Sto scrivendo il racconto…'
+    : mode2 === 'base' ? 'Con un\'AI (Gemini è gratis) il racconto diventa una storia a parole. ⋯ → Assistente AI.'
+    : mode2 === 'local' ? 'Il modello sul telefono è piccolo per i racconti: qui parlano i numeri.' : '';
+  let html = `<nav class="rc-months" aria-label="Mese">
+      <button type="button" class="chip-btn" data-rc-month="${prevMonthKey(r.key)}" aria-label="Mese precedente: ${esc(monthName(prevMonthKey(r.key)))}">‹ ${esc(monthName(prevMonthKey(r.key)))}</button>
+      <span>${esc(r.month)} ${r.year}</span>
+      ${r.key < cur ? (() => { const [y, m] = r.key.split('-').map(Number); const nk = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; return `<button type="button" class="chip-btn" data-rc-month="${nk}" aria-label="Mese successivo: ${esc(monthName(nk))}">${esc(monthName(nk))} ›</button>`; })() : '<span class="chip-btn ghost" aria-hidden="true"></span>'}
+    </nav>
+    <div class="rc-cards${animate ? ' enter' : ''}">${cards.join('')}</div>${bar}
+    ${note ? `<p class="rc-note">${note}${recapBusy ? ' <span class="sm-typing"><i></i><i></i><i></i></span>' : ''}</p>` : ''}
+    <div class="rc-actions"><button type="button" class="btn" id="rc-share-2">Condividi</button>${ai && mode2 !== 'base' ? '<button type="button" class="btn ghost" id="rc-redo">Riscrivi</button>' : ''}</div>
+    <div class="sm-ai rc-hint"><p>Puoi parlare con il tuo tempo: com'è andato il mese, perché qualcosa non funziona, come vorresti le prossime settimane.</p></div>`;
+  for (const m of state.timeChat || []) {
+    if (m.role === 'user') html += `<div class="sm-user"><p>${esc(m.text)}</p></div>`;
+    else html += `<div class="sm-ai${m.error ? ' err' : ''}">${m.pending ? '<p class="sm-typing"><i></i><i></i><i></i></p>' : String(m.text).split(/\n+/).filter(Boolean).map((t) => `<p>${esc(t)}</p>`).join('')}</div>`;
+  }
+  const sc = $('#rc-scroll');
+  const atEnd = sc.scrollTop + sc.clientHeight > sc.scrollHeight - 40;
+  sc.innerHTML = html;
+  if (animate) sc.scrollTop = 0; else if (atEnd) sc.scrollTop = sc.scrollHeight;
+  $('#rc-send').disabled = timeAsking;
+}
+
+/** Con un'AI online (di solito la chiave Gemini dell'utente) il racconto lo scrive il modello più capace. */
+async function recapAi(force = false) {
+  const mode2 = aiMode();
+  if (mode2 === 'base' || mode2 === 'local' || recapBusy || !navigator.onLine) return;
+  const r = recapNow();
+  if (r.empty) return;
+  const h = recapHash(r);
+  if (!force && state.recaps?.[r.key]?.hash === h && state.recaps[r.key].ai) return;
+  recapBusy = true;
+  renderRecap(false);
+  try {
+    const msgs = recapPrompt(r, state);
+    let txt, model = null;
+    if (mode2 === 'claude') { txt = await withTimeout((sig) => claudeAsk(state, msgs[0].content, [msgs[1]], sig), 60000); model = state.settings.model; }
+    else { const out = await withTimeout((sig) => heavyComplete(state.settings, msgs, sig, true), 60000); txt = out.content; model = out.model; }
+    const ai = sanitizeRecapAi(txt);
+    if (ai) { state.recaps[r.key] = { ...(state.recaps[r.key] || {}), hash: h, ai, model, at: Date.now() }; save(state); }
+  } catch (e) { console.warn('racconto del mese non disponibile', e); if (recapOpen) toast(errorText(e)); }
+  recapBusy = false;
+  if (recapOpen) renderRecap(false);
+}
+
+function shareRecap() {
+  const r = recapNow();
+  const text = recapText(r, recapAiOf(r)) + '\n— Tempo';
+  if (navigator.share) navigator.share({ title: r.title, text }).catch(() => {});
+  else navigator.clipboard?.writeText(text).then(() => toast('Copiato: incollalo dove vuoi')).catch(() => toast('Non riesco a copiare'));
+}
+
+/** Chiacchiere col tempo: il tuo tempo risponde con i numeri veri del mese (AI) o con ciò che sa il codice. */
+async function timeAsk(text) {
+  text = text.trim();
+  if (!text || timeAsking) return;
+  state.timeChat ||= [];
+  const history = state.timeChat.filter((m) => !m.pending && !m.error).slice(-10).map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+  state.timeChat.push({ id: uid(), role: 'user', text: text.slice(0, 1000), ts: Date.now() });
+  const ans = { id: uid(), role: 'assistant', pending: true, text: '', ts: Date.now() };
+  state.timeChat.push(ans);
+  if (state.timeChat.length > 40) state.timeChat = state.timeChat.slice(-40);
+  timeAsking = true;
+  renderRecap(false);
+  $('#rc-scroll').scrollTop = $('#rc-scroll').scrollHeight;
+  const r = recapNow();
+  const sum = summaryModel();
+  const local = vm.answerLocally(text, sum, state);
+  const mode2 = aiMode();
+  try {
+    if (mode2 === 'base') ans.text = local || r.chapters.map((c) => c.text).slice(0, 3).join('\n');
+    else {
+      const system = timeChatSystem(r, state, askSystem(state, plan, Date.now(), sum));
+      const msgs = [...history, { role: 'user', content: text }];
+      const run = (signal) => (mode2 === 'claude' ? claudeAsk(state, system, msgs, signal) : openAsk(state, system, msgs, signal));
+      ans.text = (await (mode2 === 'local' ? run() : withTimeout(run, AI_TIMEOUT))) || local || 'Non ho una risposta.';
+    }
+  } catch (e) {
+    ans.text = local ? `${e.code === 'timeout' ? 'L\'AI non risponde' : 'L\'AI ha avuto un problema'}: ecco cosa so.\n${local}` : errorText(e);
+    ans.error = !local;
+  }
+  ans.pending = false;
+  timeAsking = false;
+  save(state);
+  if (recapOpen) { renderRecap(false); $('#rc-scroll').scrollTop = $('#rc-scroll').scrollHeight; }
+}
+
 // ---------------------------------------------------------------- menu "+" e foto
 function togglePlus(force) {
   const m = $('#plus-menu');
@@ -1494,6 +1785,7 @@ function briefAction(act, arg, obsId) {
   if (act === 'goal-more') { save(state); renderDayView(false); $('#input').focus(); toast('Dimmi il prossimo passo: lo metto al posto giusto.'); return; }
   if (act === 'backup') { exportData(); renderDayView(false); return; }
   if (act === 'goal-date') { openGoalDateSheet(arg); return; }
+  if (act === 'recap') { save(state); renderDayView(false); openRecap(arg); return; }
   let res = null;
   const undoId = commit('Risposta al companion', () => { res = answerObservation(state, act, arg, { now: Date.now(), plan }); });
   if (!res) { popUndo(state, undoId); replan(); renderAll(); return; }
@@ -1703,6 +1995,8 @@ function renderSettings() {
       <button class="btn ghost" id="redo-onb">Raccontami di nuovo di te</button>
     </div>
 
+    ${settingsLookHtml()}
+
     <div class="group"><h2>Assistente AI</h2>
       <div class="card">
         <div class="row"><label for="provider">Motore</label><select id="provider">
@@ -1734,11 +2028,14 @@ function renderSettings() {
           gemini: 'Gratis, senza carta di credito. Per la chiave: apri <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>, accedi con il tuo account Google, tocca <b>Create API key</b> (o «Crea chiave API»), copiala e incollala qui sopra, poi tocca <b>Prova</b>. Con «Automatico» l\'app sceglie il modello Gemini migliore e, se uno non risponde, passa al successivo. Nel piano gratuito Google può usare i messaggi per migliorare i suoi modelli.',
           openrouter: 'Crea una chiave su <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai</a> senza limite di credito. I modelli gratuiti di OpenRouter cambiano spesso e hanno limiti giornalieri bassi: con «Automatico» l\'app passa da sola al successivo se uno non risponde.',
           groq: 'Crea una chiave gratuita su <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com</a>, incollala qui sopra e tocca <b>Prova</b>.',
+          nvidia: 'Modelli open di NVIDIA (Nemotron e altri) su <a href="https://build.nvidia.com" target="_blank" rel="noopener">build.nvidia.com</a>: crea una chiave (nvapi-…) con l\'account sviluppatore gratuito, incollala qui sopra e tocca <b>Prova</b>. L\'accesso gratuito è pensato per provare; per un uso continuativo NVIDIA chiede un piano a pagamento.',
           custom: 'Qualsiasi servizio compatibile con l\'API OpenAI: indica indirizzo, modello e chiave.',
         })[preset],
         claude: 'La chiave resta solo su questo iPhone e viene inviata soltanto ad api.anthropic.com. La crei su <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a>. L\'uso dell\'API si paga a parte, non è incluso negli abbonamenti Claude.',
       }[prov]}</p>
     </div>
+
+    ${settingsDeciderHtml()}
 
     <div class="group"><h2>Cosa ho imparato</h2>
       <div class="card">
@@ -1755,7 +2052,10 @@ function renderSettings() {
         <div class="stat"><b>${st.replansPerDay}</b><span>ripianificazioni automatiche al giorno</span></div>
         <div class="stat"><b>${state.memory.length}</b><span>preferenze ricordate</span></div>
       </div>
+      <button class="btn ghost" id="open-recap">Il tuo mese: com'è andata</button>
     </div>
+
+    ${settingsCloudHtml()}
 
     <div class="group"><h2>Dati</h2>
       <div class="card">
@@ -1766,6 +2066,164 @@ function renderSettings() {
       </div>
       <p class="note">I dati sono salvati sul dispositivo, nell'app installata. Esporta un backup ogni tanto.</p>
     </div>`;
+}
+
+
+
+// ---------------------------------------------------------------- account Tempo Cloud (cloud.js)
+let syncTimer = 0, syncing = false, clLink = null, clDeleting = false, clLinks = null;
+/** Sincronizza poco dopo l'ultima modifica (e mai due volte insieme). */
+function scheduleSync(ms = 4000) {
+  if (!state.settings.cloudToken) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(runSync, ms);
+}
+async function runSync(manual = false) {
+  if (!state.settings.cloudToken || syncing || (!navigator.onLine && !manual)) return;
+  syncing = true;
+  try {
+    const how = await syncNow(state, (ns) => {
+      Object.assign(state, migrate({ ...ns, settings: state.settings }, Date.now()));
+      replan();
+    });
+    save(state);
+    if (how === 'pulled' || how === 'merged') { renderAll(); if (manual) toast('Aggiornato dagli altri dispositivi'); }
+    else if (manual) toast('Tutto sincronizzato');
+  } catch (e) {
+    state.settings.cloudError = e.status === 401 ? 'Accesso scaduto: entra di nuovo.' : e.message;
+    if (e.status === 401) state.settings.cloudToken = '';
+    save(state);
+    if (manual) toast(state.settings.cloudError);
+  }
+  syncing = false;
+  if (settingsOpen) renderSettings();
+}
+
+function settingsCloudHtml() {
+  const S = state.settings;
+  const url = S.cloudUrl || DEFAULT_CLOUD_URL;
+  const canAi = (S.provider === 'online' && S.openKey) ? true : false;
+  if (!S.cloudToken) {
+    return `<div class="group"><h2>Account e dispositivi</h2>
+      <div class="card">
+        <div class="row"><input type="url" class="wide" id="cl-url" placeholder="Indirizzo di Tempo Cloud (https://…)" value="${esc(url)}" autocapitalize="off" spellcheck="false" inputmode="url" aria-label="Indirizzo di Tempo Cloud"></div>
+        <div class="row"><input type="email" class="wide" id="cl-email" placeholder="Email" autocomplete="email" autocapitalize="off" spellcheck="false" aria-label="Email" value="${esc(S.cloudEmail || '')}"></div>
+        <div class="row"><input type="password" class="wide" id="cl-pass" placeholder="Password (almeno 10 caratteri)" autocomplete="current-password" aria-label="Password"></div>
+        <div class="row"><button type="button" class="btn primary" id="cl-login">Accedi</button><button type="button" class="btn" id="cl-signup">Crea account</button></div>
+        ${S.cloudError ? `<div class="row"><span class="lbl" role="alert">✗ ${esc(S.cloudError)}</span></div>` : ''}
+      </div>
+      <p class="note">Facoltativo. Con un account lo stesso tempo è su iPhone, Mac e web, e puoi parlarci da fuori: Siri e Comandi rapidi (anche in auto con CarPlay) e gli assistenti AI. Le chiavi AI restano su questo dispositivo; i dati sul server sono cifrati. Senza account tutto resta qui.</p>
+    </div>`;
+  }
+  const at = S.cloudAt ? new Date(S.cloudAt).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'mai';
+  const linkBox = clLink ? `<div class="cl-box" role="region" aria-label="Nuovo collegamento">
+      <p><b>Collegamento «${esc(clLink.name)}» creato.</b> Il codice si vede solo adesso: copialo dove serve.</p>
+      <label>Codice<input type="text" readonly value="${esc(clLink.token)}" data-copy></label>
+      <label>Siri e Comandi rapidi: «Ottieni contenuto di URL»<input type="text" readonly value="${esc(url)}/v1/now?format=text" data-copy></label>
+      <label>Assistenti AI (MCP)<input type="text" readonly value="${esc(url)}/mcp/t/${esc(clLink.token)}" data-copy></label>
+      <p class="note">Nei Comandi rapidi aggiungi l'intestazione «Authorization: Bearer» + codice. Per dire qualcosa a Tempo: POST su ${esc(url)}/v1/tell?format=text con la frase come testo. Istruzioni complete in cloud/README.md.</p>
+      <button type="button" class="btn" id="cl-link-close">Fatto</button></div>` : '';
+  const links = clLinks ? `<div class="cl-box">${clLinks.length ? clLinks.map((t) => `<div class="row"><span class="lbl">${esc(t.name)}<small>${t.scope === 'full' ? 'dispositivo' : 'collegamento esterno'}${t.current ? ' · questo' : ''} · ${new Date(t.created).toLocaleDateString('it-IT')}</small></span>${t.current ? '' : `<button type="button" class="x" data-cl-revoke="${esc(t.id)}" aria-label="Revoca ${esc(t.name)}">×</button>`}</div>`).join('') : '<p>Nessun collegamento.</p>'}<button type="button" class="btn" id="cl-links-close">Chiudi</button></div>` : '';
+  return `<div class="group"><h2>Account e dispositivi</h2>
+    <div class="card">
+      <div class="row"><span class="lbl">${esc(S.cloudEmail || 'Account')}<small>${S.cloudError ? '✗ ' + esc(S.cloudError) : `sincronizzato: ${esc(at)}`}</small></span><button type="button" class="btn" id="cl-sync" ${syncing ? 'disabled' : ''}>${syncing ? 'Sincronizzo…' : 'Sincronizza'}</button></div>
+      <div class="row"><span class="lbl">Mac, Siri, CarPlay, assistenti AI<small>un collegamento con il suo codice, revocabile</small></span><button type="button" class="btn" id="cl-link">Collega</button></div>
+      ${linkBox}
+      <div class="row"><span class="lbl">Collegamenti attivi</span><button type="button" class="btn" id="cl-links">Vedi</button></div>
+      ${links}
+      ${canAi ? `<div class="row"><span class="lbl">Usa la mia chiave AI anche da fuori<small>per le frasi lunghe dette a Siri o al Mac (salvata cifrata sul server)</small></span><button type="button" class="btn sw-toggle" id="cl-ai" role="switch" aria-checked="${!!S.cloudAi}">${S.cloudAi ? 'Sì' : 'No'}</button></div>` : ''}
+      <div class="row"><button type="button" class="btn" id="cl-logout">Esci da questo dispositivo</button></div>
+      ${clDeleting ? `<div class="row"><input type="password" class="wide" id="cl-del-pass" placeholder="Password per confermare" autocomplete="current-password" aria-label="Password per eliminare l'account"><button type="button" class="btn danger" id="cl-del-go">Elimina</button></div>` : `<div class="row"><span class="lbl">Elimina l'account<small>cancella subito tutti i dati dal server; su questo dispositivo restano</small></span><button type="button" class="btn danger" id="cl-delete">Elimina</button></div>`}
+    </div>
+  </div>`;
+}
+
+async function cloudClick(id, el) {
+  const S = state.settings;
+  try {
+    if (id === 'cl-login' || id === 'cl-signup') {
+      S.cloudUrl = ($('#cl-url')?.value || '').trim().replace(/\/+$/, '');
+      const email = $('#cl-email').value.trim(), password = $('#cl-pass').value;
+      el.disabled = true;
+      await signIn(S, { email, password, create: id === 'cl-signup' });
+      save(state);
+      native.cloud({ url: S.cloudUrl || DEFAULT_CLOUD_URL, token: S.cloudToken });
+      toast(id === 'cl-signup' ? 'Account creato' : 'Accesso fatto');
+      await runSync(true);
+    } else if (id === 'cl-sync') { await runSync(true); return; }
+    else if (id === 'cl-link') {
+      const name = native.isNative() ? 'Siri e CarPlay' : /Mac/.test(navigator.platform) ? 'Mac' : 'Collegamento';
+      const r = await cloudCall(S, 'POST', '/v1/tokens', { name });
+      clLink = { name, token: r.token };
+    } else if (id === 'cl-link-close') clLink = null;
+    else if (id === 'cl-links') clLinks = (await cloudCall(S, 'GET', '/v1/tokens')).tokens;
+    else if (id === 'cl-links-close') clLinks = null;
+    else if (id === 'cl-ai') {
+      const on = !S.cloudAi;
+      await cloudCall(S, 'PATCH', '/v1/settings', { ai: on ? { key: S.openKey, preset: presetOf(S), model: S.openModel || '' } : null });
+      S.cloudAi = on; save(state);
+      toast(on ? 'Da fuori uso la tua chiave AI' : 'Da fuori uso la modalità base');
+    } else if (id === 'cl-logout') { await signOut(S); S.cloudAi = false; save(state); native.cloud(null); toast('Sei uscito: i dati restano qui'); }
+    else if (id === 'cl-delete') clDeleting = true;
+    else if (id === 'cl-del-go') {
+      if (!confirm('Eliminare l\'account e tutti i dati dal server? Non si può annullare. Su questo dispositivo i dati restano.')) return;
+      await cloudCall(S, 'DELETE', '/v1/account', { password: $('#cl-del-pass').value });
+      Object.assign(S, { cloudToken: '', cloudEmail: '', cloudRev: 0, cloudAt: 0, cloudEdits: null, cloudAi: false });
+      clDeleting = false; save(state);
+      native.cloud(null);
+      toast('Account eliminato');
+    } else if (el?.dataset.clRevoke) {
+      await cloudCall(S, 'DELETE', `/v1/tokens/${el.dataset.clRevoke}`);
+      clLinks = (await cloudCall(S, 'GET', '/v1/tokens')).tokens;
+      toast('Collegamento revocato');
+    } else return;
+  } catch (e) {
+    S.cloudError = e.message; save(state); toast(e.message);
+  }
+  if (el) el.disabled = false;
+  if (settingsOpen) renderSettings();
+}
+
+const LAYOUT_NAMES = { standard: 'Normale', calm: 'Ariosa', dense: 'Compatta', focus: 'Concentrata' };
+/** Impostazioni dell'aspetto: quanto la schermata si adatta, e cosa resta fermo. */
+function settingsLookHtml() {
+  const U = state.prefs.ui || {};
+  const sc = sceneNow;
+  const pal = U.lockPalette || sc?.palette || null;
+  const sw = (on, id, label) => `<button type="button" class="btn sw-toggle" id="${id}" role="switch" aria-checked="${on}" aria-label="${esc(label)}">${on ? 'Sì' : 'No'}</button>`;
+  const ai = aiMode() !== 'base' && aiMode() !== 'local';
+  const goal = sc?.goalId ? state.goals.find((g) => g.id === sc.goalId) : null;
+  return `<div class="group"><h2>Aspetto</h2>
+    <div class="card">
+      <div class="row"><span class="lbl">Si adatta a cosa fai<small>sfondo, motivo e carte cambiano con l'obiettivo e il momento</small></span>${sw(U.adaptive !== false, 'ui-adaptive', 'Si adatta a cosa fai')}</div>
+      ${native.isNative() ? `<div class="row"><span class="lbl">Promemoria<small>al massimo uno al giorno: la prima sessione, 5 minuti prima</small></span>${sw(!!state.settings.reminders, 'ui-reminders', 'Promemoria')}</div>` : ''}
+      ${U.adaptive !== false ? `
+      <div class="row"><span class="lbl">Motivo sullo sfondo<small>onde per la musica, griglia per lo studio…</small></span>${sw(U.motif !== false, 'ui-motif', 'Motivo sullo sfondo')}</div>
+      <div class="row"><label for="ui-layout">Disposizione<small>${U.lockLayout ? 'bloccata' : 'cambia con il momento della giornata'}</small></label><select id="ui-layout"><option value="">Automatica</option>${LAYOUTS.map((l) => `<option value="${l}" ${U.lockLayout === l ? 'selected' : ''}>${LAYOUT_NAMES[l]}</option>`).join('')}</select></div>
+      <div class="row"><span class="lbl">Colori<small>${U.lockPalette ? 'bloccati' : 'seguono l\'obiettivo'}</small></span>${pal ? `<span class="sw-pal" aria-hidden="true">${pal.map((c) => `<i style="background:${safeColor(c) || 'transparent'}"></i>`).join('')}</span>` : ''}<button type="button" class="btn" id="ui-lock-pal" ${!pal ? 'disabled' : ''}>${U.lockPalette ? 'Sblocca' : 'Tieni questi'}</button></div>
+      ${ai && goal ? `<div class="row"><span class="lbl">Aspetto di «${esc(short(goal.title, 30))}»<small>${state.skins?.[goal.id]?.domain ? 'proposto dall\'AI' : 'dalle regole'}</small></span><button type="button" class="btn" id="ui-reskin">Rigenera</button></div>` : ''}` : ''}
+    </div>
+    <p class="note">${sc ? `Adesso: ${esc(MOODS[sc.mood]?.label || sc.mood)}${goal ? ` · ${esc(sc.domainLabel.toLowerCase())}` : ''}. ` : ''}L'AI può solo scegliere tra stili già disegnati: niente schermate inventate. «Adesso» resta sempre al primo posto.</p>
+  </div>`;
+}
+
+/** Il motore che sceglie tra le opzioni calcolate dall'app (quale obiettivo dà il tono alla schermata). */
+function settingsDeciderHtml() {
+  const D = state.settings.decider || { kind: 'rules' };
+  const def = DECIDERS[D.kind] || DECIDERS.rules;
+  const res = sceneDecision && sceneDecision.rev === dataRev && sceneDecision.source ? (sceneDecision.error ? `✗ ${sceneDecision.error}: decidono le regole` : `✓ ultima scelta: ${sceneDecision.source}`) : '';
+  return `<div class="group"><h2>Decisioni</h2>
+    <div class="card">
+      <div class="row"><label for="dec-kind">Chi sceglie<small>tra le opzioni che calcola l'app</small></label><select id="dec-kind">${Object.entries(DECIDERS).map(([k, d]) => `<option value="${k}" ${D.kind === k ? 'selected' : ''}>${esc(d.label)}</option>`).join('')}</select></div>
+      ${D.kind !== 'rules' ? `
+      ${def.presets ? `<div class="row"><span class="lbl">Servizio</span>${Object.keys(def.presets).map((k) => `<button type="button" class="btn" data-dec-preset="${k}">${k === 'nvidia' ? 'NVIDIA NIM' : 'Gemini'}</button>`).join('')}</div>` : ''}
+      <div class="row"><input type="text" class="wide" id="dec-url" aria-label="Indirizzo del motore decisionale" placeholder="${D.kind === 'clm' ? 'https://…/decide (endpoint CLM-8B)' : 'https://…/v1'}" value="${esc(D.url || '')}" autocapitalize="off" spellcheck="false" inputmode="url"></div>
+      ${def.needs.includes('model') ? `<div class="row"><input type="text" class="wide" id="dec-model" aria-label="Modello" placeholder="Modello" value="${esc(D.model || '')}" autocapitalize="off" spellcheck="false"></div>` : ''}
+      <div class="row"><input type="password" id="dec-key" aria-label="Chiave del motore decisionale" placeholder="Chiave (facoltativa${/generativelanguage|nvidia/.test(D.url || '') ? ': uso quella dell\'assistente' : ''})" value="${esc(D.key || '')}" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="row"><span class="lbl" id="dec-status">${esc(res || 'Se non risponde in 2,5 secondi decidono le regole')}</span><button type="button" class="btn" id="dec-test">Prova</button></div>` : ''}
+    </div>
+    <p class="note">${D.kind === 'rules' ? 'Le regole dell\'app funzionano offline e sono sempre il ripiego.' : esc(def.hint || 'Il modello dà un punteggio alle opzioni valide; il risultato si mescola con le regole e vale solo se è abbastanza sicuro.')} Orari e vincoli li decide sempre lo scheduler.</p>
+  </div>`;
 }
 
 let fetchingModels = false;
@@ -1824,6 +2282,17 @@ function onSettingsChange(e) {
     if (t.id === 'open-key') ensureFreeModels(true);
   } else if (t.id === 'open-model-sel') {
     state.settings.openModel = t.value; state.settings.lastWorkingModel = null; save(state); renderSettings();
+  } else if (t.id === 'ui-layout') {
+    commit('Aspetto', () => { state.prefs.ui = { ...(state.prefs.ui || {}), lockLayout: t.value || null }; });
+  } else if (t.id === 'dec-kind') {
+    const prev = state.settings.decider || {};
+    state.settings.decider = { ...prev, kind: t.value };
+    if (t.value === 'clm' && /\/v1\/?$/.test(prev.url || '')) state.settings.decider.url = '';
+    sceneDecision = null; save(state); renderSettings();
+  } else if (t.id === 'dec-url' || t.id === 'dec-model' || t.id === 'dec-key') {
+    const k = { 'dec-url': 'url', 'dec-model': 'model', 'dec-key': 'key' }[t.id];
+    state.settings.decider = { kind: 'rules', ...(state.settings.decider || {}), [k]: t.id === 'dec-key' ? t.value.replace(/\s+/g, '') : t.value.trim() };
+    sceneDecision = null; save(state); toast('Salvato');
   } else if (t.id === 'local-model') {
     state.settings.localModel = t.value; save(state); renderSettings();
   } else if (t.id === 'import-file' && t.files[0]) {
@@ -1889,6 +2358,19 @@ function bind() {
   $('#sum-fab').addEventListener('click', openSummary);
   $('#ov-today').addEventListener('click', () => openDay(today(), document.querySelector(`.cd[data-day="${today()}"]`)));
   $('#sum-close').addEventListener('click', closeSummary);
+  $('#sum-month').addEventListener('click', () => openRecap());
+  $('#rc-close').addEventListener('click', closeRecap);
+  $('#rc-share').addEventListener('click', shareRecap);
+  $('#rc-scroll').addEventListener('click', (e) => {
+    const m = e.target.closest('[data-rc-month]');
+    if (m) { recapKey = m.dataset.rcMonth; renderRecap(true); recapAi(); return; }
+    if (e.target.closest('#rc-share-2')) shareRecap();
+    if (e.target.closest('#rc-redo')) recapAi(true);
+  });
+  const rcIn = $('#rc-input');
+  rcIn.addEventListener('input', () => { rcIn.style.height = 'auto'; rcIn.style.height = Math.min(rcIn.scrollHeight, 120) + 'px'; });
+  rcIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#rc-ask').requestSubmit(); } });
+  $('#rc-ask').addEventListener('submit', (e) => { e.preventDefault(); const v = rcIn.value; rcIn.value = ''; rcIn.style.height = 'auto'; timeAsk(v); });
   $('#sum-scroll').addEventListener('click', (e) => {
     const d = e.target.closest('[data-day]');
     if (d) { closeSummary(); openDay(d.dataset.day); return; }
@@ -1976,6 +2458,7 @@ function bind() {
     if (e.key !== 'Escape') return;
     if (!$('#onb').hidden) { $('#onb-skip').click(); return; }
     if (summaryOpen) { closeSummary(); return; }
+    if (recapOpen) { closeRecap(); return; }
     if (!$('#sheet').hidden) { closeSheet(); return; }
     if (settingsOpen) { closeSettings(); return; }
     if (!$('#plus-menu').hidden) { closePlus(); return; }
@@ -2178,6 +2661,39 @@ function bind() {
         .catch((err) => { if (status) status.textContent = errorText(err); t.disabled = false; });
     }
     if (t.id === 'export') exportData();
+    if (t.id === 'open-recap') openRecap();
+    if (tt && (/^cl-/.test(tt.id) || tt.dataset.clRevoke)) cloudClick(tt.id, tt);
+    if (t.matches?.('input[data-copy]')) { t.select(); navigator.clipboard?.writeText(t.value).then(() => toast('Copiato')).catch(() => {}); }
+    if (tt?.id === 'ui-adaptive' || tt?.id === 'ui-motif') {
+      const k = tt.id === 'ui-adaptive' ? 'adaptive' : 'motif';
+      commit('Aspetto', () => { const U = state.prefs.ui || {}; state.prefs.ui = { ...U, [k]: U[k] === false }; });
+    }
+    if (tt?.id === 'ui-reminders') {
+      state.settings.reminders = !state.settings.reminders;
+      save(state);
+      if (state.settings.reminders) native.reminders(reminderList()); else native.reminders([]);
+      renderSettings();
+    }
+    if (tt?.id === 'ui-lock-pal') {
+      const U = state.prefs.ui || {};
+      commit('Aspetto', () => { state.prefs.ui = { ...U, lockPalette: U.lockPalette ? null : sceneNow?.palette || null }; });
+      toast(U.lockPalette ? 'I colori seguono di nuovo l\'obiettivo' : 'Colori bloccati');
+    }
+    if (tt?.id === 'ui-reskin' && sceneNow?.goalId) { delete state.skins[sceneNow.goalId]; save(state); renderDayView(false, { flip: false }); toast('Chiedo all\'AI un nuovo aspetto'); }
+    if (tt?.dataset.decPreset) {
+      const kind = state.settings.decider?.kind;
+      const pr = DECIDERS[kind]?.presets?.[tt.dataset.decPreset];
+      if (pr) { state.settings.decider = { ...state.settings.decider, url: pr.url, model: pr.model }; sceneDecision = null; save(state); renderSettings(); }
+    }
+    if (tt?.id === 'dec-test') {
+      const status = $('#dec-status');
+      if (status) status.textContent = 'Provo…';
+      const now = Date.now();
+      const opts = sceneGoalOptions({ state, plan, now, today: today() });
+      const options = opts.length >= 2 ? opts : [{ id: 'studio', text: 'ripassare per l\'esame di domani', prior: 1 }, { id: 'spesa', text: 'fare la spesa', prior: 1 }];
+      decide({ task: 'Cosa conviene fare adesso?', state: opts.length >= 2 ? stateText({ state, plan, now, today: today() }) : 'Domani ho l\'esame e non ho ancora ripassato.', options, decider: deciderCfg() })
+        .then((r) => { const st2 = $('#dec-status'); if (st2) st2.textContent = r.error ? `✗ ${r.error}: decidono le regole` : `✓ ${r.source}: «${options.find((o) => o.id === r.id)?.text.slice(0, 40)}» (${Math.round(r.confidence * 100)}%)`; });
+    }
     if (t.id === 'clear-chat' && confirm('Dimenticare le richieste passate? Attività e memoria restano.')) { state.chat = []; pending = null; replyId = null; save(state); renderReply(); toast('Fatto'); }
     if (t.id === 'reset' && confirm('Cancellare tutte le attività, la memoria e la chat? (La chiave API resta.)')) {
       commit('Cancella tutto', () => Object.assign(state, { items: [], recurring: [], memory: [], anchors: {}, chat: [] }));
@@ -2226,7 +2742,7 @@ function bind() {
   bindPinch();
   bindSwipes();
   bindCards($('#collage'), { canStart: () => mode === 'day' && !composing, scroller: $('#day-scroll') });
-  for (const sc of ['#day-scroll', '#cal-scroll', '#sum-scroll']) $(sc).addEventListener('scroll', glowSoon, { passive: true });
+  for (const sc of ['#day-scroll', '#cal-scroll', '#sum-scroll', '#rc-scroll']) $(sc).addEventListener('scroll', glowSoon, { passive: true });
   addEventListener('resize', glowSoon);
 
   // tastiera iOS: adatta l'altezza all'area visibile
@@ -2347,6 +2863,18 @@ syncSaveAlert();
 renderAll();
 renderDayView(true);
 if (!state.onboarded) openOnboarding();
+// account: sincronizza all'avvio, quando torni sull'app e ogni 5 minuti mentre è aperta
+if (state.settings.cloudToken) { setTimeout(() => runSync(), 1200); native.cloud({ url: state.settings.cloudUrl || DEFAULT_CLOUD_URL, token: state.settings.cloudToken }); }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(300); });
+setInterval(() => { if (document.visibilityState === 'visible') scheduleSync(0); }, 5 * 60e3);
+// Siri, Comandi rapidi, widget e CarPlay: «Dì a Tempo…» arriva qui (app nativa) o come ?tell= nell'indirizzo
+native.onIntent((e) => { if (e.kind === 'tell' && e.text) send(String(e.text).slice(0, 500)); else if (e.kind === 'recap') openRecap(); });
+{
+  const q = new URLSearchParams(location.search);
+  const said = q.get('tell');
+  if (said) { history.replaceState(null, '', location.pathname); setTimeout(() => send(said.slice(0, 500)), 300); }
+  if (q.get('open') === 'recap') { history.replaceState(null, '', location.pathname); openRecap(); }
+}
 // i dati non devono essere cancellati dal browser quando lo spazio scarseggia: lo si chiede una volta
 if (!state.settings.persistAsked) {
   state.settings.persistAsked = true;

@@ -26,6 +26,15 @@ Tempo non è un'agenda: costruisce la giornata in base a ciò che stai cercando 
 - **Riepilogo**: nel calendario (pizzico sul giorno) l'icona in alto a sinistra mostra i punti chiave su come sta andando, i prossimi 7 giorni e i progetti; puoi fare domande come in una chat.
 - **La barra** sta nel «+» in basso a destra: toccalo per parlare con Tempo.
 
+## Novità: si adatta, ti segue fuori dall'app, racconta il mese
+
+- **Si adatta a cosa fai** (`js/genui.js`): sfondo, motivo e carte cambiano con il momento della giornata e con il tipo di obiettivo. Per un EP compare la griglia brani × fasi e il conto alla rovescia all'uscita; per un esame il conto alla rovescia e le prossime sessioni; durante un'attività resta solo quella. L'AI può proporre l'aspetto di un obiettivo, ma solo scegliendo tra stili già disegnati. ⋯ → Aspetto per bloccare colori e disposizione o spegnere tutto.
+- **Il tuo mese** (`js/recap.js`): il racconto di come hai usato il tempo, scritto da Gemini con la tua chiave (o dal codice senza AI), da condividere. Sotto, puoi chiacchierare con il tuo tempo.
+- **Decisioni** (`js/decide.js`): un modello decisionale (CLM-8B di Stanford e NVIDIA, embeddings NVIDIA NIM o Gemini, Nemotron) può scegliere tra opzioni già valide; se non risponde in tempo decidono le regole.
+- **NVIDIA NIM** tra i servizi online (modelli Nemotron); le richieste corpose vanno al modello più capace del servizio scelto.
+- **Account e dispositivi** (facoltativo, `js/cloud.js` + `../cloud`): lo stesso tempo su iPhone, Mac e web; Siri e Comandi rapidi (anche in CarPlay), widget aggiornati e assistenti AI (MCP). Dati cifrati sul server, chiavi AI solo sul dispositivo, cancellazione dell'account dall'app.
+- **App nativa** (`../native`): la stessa app dentro Capacitor, con widget, Live Activity nell'isola dinamica, Siri, promemoria e CarPlay. Strategia per l'App Store in `APP-STORE.md`.
+
 ## Come si usa
 
 - **La giornata** è un collage di carte: riepilogo, attività in corso, impegni e attività in ordine di orario. Tocca il cerchio per segnare una cosa come fatta, tocca la carta per modificarla.
@@ -51,6 +60,11 @@ I dati restano sul telefono, dentro l'app installata (le foto in un archivio a p
 | `js/ai.js` | Conversazione con Claude tramite uno strumento con output strutturato (`update_plan`); piano degli obiettivi con l'AI; tempo massimo e ripiego sulla modalità base. |
 | `js/ai-open.js` | Modelli gratuiti: in locale con WebLLM oppure su servizi compatibili OpenAI (Gemini, OpenRouter, Groq), con scelta automatica del modello; rispondono in JSON validato dal codice. |
 | `js/app.js` | Disegno e interazione: collage di carte del giorno, panoramica con gesto di pizzico, mese, barra, scheda di modifica, contesto, presentazione. |
+| `js/genui.js` | UI generativa controllata: umore × dominio dell'obiettivo → palette, motivo, disposizione, widget (DESIGN-API §6). |
+| `js/decide.js` | Livello decisionale: regole, CLM-8B, embeddings o LLM scelgono tra opzioni valide; instradamento delle richieste AI. |
+| `js/recap.js` | Il tuo mese: numeri, racconto (con o senza AI), chiacchiere col tempo, osservazione del nuovo mese. |
+| `js/cloud.js` | Account Tempo Cloud: accesso, sincronizzazione con revisioni e unione voce per voce. |
+| `js/native.js` | Ponte con l'app nativa: snapshot per widget e Siri, scena, Live Activity, promemoria, richieste da Siri e CarPlay. |
 | `js/images.js` | Foto delle carte: compresse e salvate in IndexedDB. |
 | `sw.js`, `manifest.webmanifest` | Installazione e funzionamento offline. |
 | `vendor/anthropic-sdk.mjs` | SDK ufficiale `@anthropic-ai/sdk` (0.131.0) impacchettato per il browser. |
