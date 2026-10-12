@@ -64,6 +64,7 @@ Tipi di elemento
 - "Ho finito X" → complete (con actual_min se lo dice). "Sto iniziando X" → start. "Non ho fatto X, spostalo a domani" → move con date di domani.
 - "Non ho ancora iniziato X" → reopen: l'attività torna da pianificare a partire da adesso. Le attività del piano il cui orario è iniziato sono considerate in corso (tipo "current"); quelle in "da_confermare" erano previste ma l'utente non ha detto se le ha fatte.
 - "Questo è più importante" → priority 3. "Sono stanco / giornata più leggera" → abbassa priorità o sposta a domani le attività pesanti (energy 3), e chiedi conferma.
+- Cose da fare DENTRO un impegno o un blocco («metti dentro la card di lavoro queste task», «a lavoro devo fare X e Y»): add_checklist con id dell'impegno (anche ricorrente, es. «Lavoro») e checklist = una voce per cosa. NON creare attività separate (add) né orari nuovi: restano dentro la carta dell'impegno. Per spuntarle: check_item (id dell'impegno, item_id della voce); per toglierle: remove_check.
 - Abitudini ricorrenti ("lavoro dal lunedì al venerdì 9–18") → add_recurring con weekdays (0=domenica … 6=sabato).
 - Preferenze dichiarate stabilmente ("non voglio cose creative dopo il lavoro", "rendo di più la mattina") → remember con una nota breve, e se utile set_pref (focus_window, buffer_min, slack_percent, day_start, day_end).
 
@@ -89,7 +90,7 @@ const OP_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'remember', 'forget', 'set_pref', 'add_recurring', 'remove_recurring', 'set_goal', 'remove_goal', 'plan_goal', 'add_project', 'set_availability', 'add_habit', 'remove_habit'] },
+    action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'remember', 'forget', 'set_pref', 'add_recurring', 'remove_recurring', 'add_checklist', 'check_item', 'remove_check', 'set_goal', 'remove_goal', 'plan_goal', 'add_project', 'set_availability', 'add_habit', 'remove_habit'] },
     id: { ...N('string'), description: 'id dell\'elemento esistente (per update/move/start/complete/reopen/delete/forget/remove_recurring)' },
     title: N('string'),
     kind: { type: ['string', 'null'], enum: ['task', 'event', null] },
@@ -116,8 +117,10 @@ const OP_SCHEMA = {
     pref_value: N('string'),
     weekdays: { type: ['array', 'null'], items: { type: 'integer' } },
     unpin: { ...N('boolean'), description: 'true per togliere l\'orario fisso a un task' },
+    checklist: { type: ['array', 'null'], items: { type: 'string' }, description: 'per add_checklist: le cose da fare DENTRO l\'impegno indicato in id (es. dentro «Lavoro»), una voce per cosa' },
+    item_id: { ...N('string'), description: 'per check_item/remove_check: id (o testo) della voce della lista' },
   },
-  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'project', 'category', 'sessions', 'pref_key', 'pref_value', 'weekdays', 'unpin'],
+  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'project', 'category', 'sessions', 'pref_key', 'pref_value', 'weekdays', 'unpin', 'checklist', 'item_id'],
 };
 
 const TOOL = {
@@ -153,6 +156,7 @@ export function stateForModel(state, plan, now) {
     actual_min: x.actual || undefined, notes: x.notes || undefined,
     project: x.project ? state.projects?.find((p) => p.id === x.project)?.name : undefined,
     gia_fatti_min: x.spent || undefined,
+    lista: x.kind === 'event' && x.checklist?.length ? x.checklist.map((c) => ({ id: c.id, testo: c.text, fatta: c.done })) : undefined,
   }));
   const dayPlan = (day) => {
     const p = plan[day];
@@ -177,7 +181,7 @@ export function stateForModel(state, plan, now) {
       pausa_tra_attivita_min: state.prefs.buffer, margine_imprevisti_percento: Math.round(state.prefs.slack * 100),
       fascia_concentrazione: state.prefs.focusWindow,
     },
-    impegni_ricorrenti: state.recurring.map((r) => `${r.id}: ${r.title} ${fmtMin(r.start)}-${fmtMin(r.end)} giorni ${r.weekdays.join(',')}`),
+    impegni_ricorrenti: state.recurring.map((r) => `${r.id}: ${r.title} ${fmtMin(r.start)}-${fmtMin(r.end)} giorni ${r.weekdays.join(',')}${r.checklist?.length ? ` · lista: ${r.checklist.map((c) => `${c.done ? '✓' : '○'} ${c.text} [${c.id}]`).join(', ')}` : ''}`),
     memoria: state.memory.map((m) => `${m.id}: ${m.category ? '[' + m.category + '] ' : ''}${m.text}`),
     ...companionContext(state, plan, now),
     durate_reali_passate: ratios,

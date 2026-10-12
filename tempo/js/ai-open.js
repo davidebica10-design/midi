@@ -115,6 +115,7 @@ Operazioni possibili in "ops" (metti solo i campi che servono):
 - Attività con scadenza: {"action":"add","kind":"task","title":"Consegnare la relazione","duration_min":240,"deadline":"YYYY-MM-DD"}
 - Piano di un obiettivo (subito dopo set_goal): {"action":"plan_goal","title":"Far uscire l'EP","sessions":[{"key":"s1","title":"Beat 01","duration_min":120,"energy":3,"after":[]}]} (massimo 30 sessioni; senza "sessions" uso un modello)
 - Abitudine: {"action":"add_habit","title":"Palestra","pref_value":"3","duration_min":60}
+- Cose da fare DENTRO una carta (un impegno come «Lavoro»): {"action":"add_checklist","id":"ID_IMPEGNO_o_nome","checklist":["Relazione","Mail"]}; spuntare {"action":"check_item","id":"ID_IMPEGNO","item_id":"ID_VOCE"}; togliere {"action":"remove_check","id":"ID_IMPEGNO","item_id":"ID_VOCE"}. Se l'utente dice «metti dentro la card di X queste cose», usa add_checklist: NON creare attività separate né orari nuovi.
 - Colore di una carta: {"action":"update","id":"ID","color":"rose"|"lilac"|"sage"|"sand"|"sky"} (null = colore normale)
 
 Regole:
@@ -149,7 +150,7 @@ function compactState(state, plan, now) {
     if (p.deferred?.length) lines.push(`SLITTA: ${p.deferred.map((t) => t.title).join(', ')}`);
     lines.push(`Tempo libero ${label.toLowerCase()}: ${p.free} min`);
   }
-  if (state.recurring?.length) lines.push('RICORRENTI (id | titolo | orario | giorni 0=dom): ' + state.recurring.map((r) => `${r.id} | ${r.title} | ${fmtMin(r.start)}-${fmtMin(r.end)} | ${r.weekdays.join(',')}`).join('; '));
+  if (state.recurring?.length) lines.push('RICORRENTI (id | titolo | orario | giorni 0=dom): ' + state.recurring.map((r) => `${r.id} | ${r.title} | ${fmtMin(r.start)}-${fmtMin(r.end)} | ${r.weekdays.join(',')}${r.checklist?.length ? ` | lista: ${r.checklist.map((c) => `${c.done ? '✓' : '○'} ${c.text} [${c.id}]`).join(', ')}` : ''}`).join('; '));
   if (state.prefs?.availability && Object.keys(state.prefs.availability).length) lines.push('DISPONIBILITÀ SPECIALI: ' + Object.entries(state.prefs.availability).map(([d, a]) => `${d} ${a.start != null ? fmtMin(a.start) : ''}-${a.end != null ? fmtMin(a.end) : ''}`).join('; '));
   if (state.memory.length) lines.push('MEMORIA: ' + state.memory.map((m) => (m.category ? `[${m.category}] ` : '') + m.text).join('; '));
   const c = companionContext(state, plan, now);
@@ -180,7 +181,7 @@ const REPLY_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'progress', 'skip', 'set_goal', 'plan_goal', 'add_project', 'set_availability', 'set_pref', 'add_recurring', 'remove_recurring', 'add_habit'] },
+          action: { type: 'string', enum: ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'remember', 'progress', 'skip', 'set_goal', 'plan_goal', 'add_project', 'set_availability', 'set_pref', 'add_recurring', 'remove_recurring', 'add_habit', 'add_checklist', 'check_item', 'remove_check'] },
           id: { type: 'string' },
           title: { type: 'string' },
           kind: { type: 'string', enum: ['task', 'event'] },
@@ -201,6 +202,8 @@ const REPLY_SCHEMA = {
           pref_value: { type: 'string' },
           color: { type: 'string', enum: ['rose', 'lilac', 'sage', 'sand', 'sky'] },
           weekdays: { type: 'array', items: { type: 'integer' } },
+          checklist: { type: 'array', items: { type: 'string' } },
+          item_id: { type: 'string' },
           sessions: { type: 'array', items: { type: 'object' } },
         },
         required: ['action'],

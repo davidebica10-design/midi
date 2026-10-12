@@ -273,6 +273,93 @@ const inferredProject = (text) => {
   return m[1] === 'ep' ? 'EP' : cap(m[1]);
 };
 
+
+// ---------------------------------------------------------------- liste dentro una carta
+// «metti dentro la card di lavoro le task che ho da fare: relazione, mail, chiamare Marco» non crea nuove attività
+// a orari a caso: le mette in una lista dentro l'impegno (il lavoro, una call…), che resta una carta sola.
+const CONTAINER_CUE = /\b(?:dentro|all'interno|nella\s+(?:card|carta|scheda)|nel\s+(?:blocco|riquadro|box)|sotto\s+(?:la\s+)?(?:card|carta)|in\s+(?:card|carta|scheda))\b/;
+const LIST_WORD = /\b(?:task|cose|attivita|compiti|todo|to-do|to do|lista|elenco)\b/;
+const ADD_VERB = /^(?:e\s+)?(?:metti|mettimi|mettici|aggiungi|aggiungimi|inserisci|segna|scrivi|appunta|elenca|mettere|aggiungere|inserire)\b/;
+const INFINITIVE = /^[a-zà-ù]+(?:are|ere|ire|arsi|ersi|irsi|arre|urre|orre)\b/i;
+
+/** Gli impegni che possono contenere una lista: quelli di ogni settimana e quelli con orario non ancora passati. */
+function checklistTargets(state, today) {
+  const out = [];
+  for (const r of state.recurring || []) out.push({ ref: r.id, title: r.title, key: strip(r.title) });
+  for (const x of state.items || []) if (x.kind === 'event' && x.status !== 'done' && (!x.date || x.date >= today)) out.push({ ref: x.id, title: x.title, key: strip(x.title) });
+  return out.filter((t) => t.key.length >= 2);
+}
+
+/** Divide «relazione, mail e chiamare Marco» in voci; «e» divide solo davanti a un verbo («pane e latte» resta intero). */
+export function splitList(text) {
+  const parts = ap(text).split(/\s*[;\n]\s*|\s*,\s*|\s+e\s+(?=[a-zà-ù]+(?:are|ere|ire|arsi|ersi)\b)|\s+(?:poi|inoltre|anche)\s+/i);
+  const out = [];
+  for (let p of parts) {
+    p = tidy(p.replace(/^(?:e|poi|anche|ancora|inoltre)\s+/i, '').replace(/^[\s\-–•*·\d.)]+/, '').replace(/[.!]+$/, ''));
+    if (p.length < 2 || p.length > 80 || out.some((o) => o.toLowerCase() === p.toLowerCase())) continue;
+    out.push(cap(p));
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+/**
+ * Prima di dividere in frasi: l'elenco di una lista dentro una carta resta insieme, anche se scritto con «;»
+ * o con un punto elenco per riga («metti dentro lavoro:\n- relazione\n- mail»).
+ */
+export function keepListsTogether(text, state, today) {
+  const lines = ap(text).split('\n');
+  const out = [];
+  const BULLET = /^\s*(?:[-–•*·]|\d+[.)])\s*\S/;
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    if (checklistOps(line, state, today)) {
+      while (i + 1 < lines.length && BULLET.test(lines[i + 1])) line += ', ' + lines[++i].replace(/^\s*(?:[-–•*·]|\d+[.)])\s*/, '');
+      line = line.replace(/\s*;\s*/g, ', ');
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+/**
+ * Se la frase mette delle cose da fare DENTRO un impegno esistente: { ops, said } oppure { miss } (so dove,
+ * ma non cosa); null se non è questo il caso.
+ */
+export function checklistOps(sentence, state, today) {
+  const raw = ap(sentence);
+  const t = strip(raw);
+  if (!CONTAINER_CUE.test(t) && !(ADD_VERB.test(t) && LIST_WORD.test(t))) return null;
+  // l'impegno nominato: il nome più lungo che compare come parola intera
+  const wd = weekday(today);
+  const hits = checklistTargets(state, today).filter((x) => new RegExp(`(?:^|[^a-z0-9])${esc(x.key)}(?![a-z0-9])`).test(t))
+    .sort((a, b) => b.key.length - a.key.length);
+  if (!hits.length) return null;
+  const top = hits[0];
+  // tra più impegni con lo stesso nome vince quello di oggi (il primo della giornata)
+  const same = hits.filter((h) => h.key === top.key);
+  const pickRec = same.map((h) => (state.recurring || []).find((r) => r.id === h.ref)).filter(Boolean)
+    .sort((a, b) => (b.weekdays.includes(wd) - a.weekdays.includes(wd)) || a.start - b.start)[0];
+  const target = pickRec ? same.find((h) => h.ref === pickRec.id) : same[0];
+
+  // l'elenco: dopo i due punti; altrimenti dopo «da fare» / «devo fare»; altrimenti dopo il nome, se comincia con un verbo
+  let list = null;
+  const colon = raw.search(/[:：]/);
+  if (colon >= 0) list = raw.slice(colon + 1);
+  else {
+    const m = raw.match(/\b(?:da\s+fare|devo\s+fare|ho\s+da\s+fare|ci\s+sono)\b\s*(.*)$/i);
+    if (m) list = m[1];
+    else {
+      const k = new RegExp(`${esc(target.title)}\\b\\s*(?:le\\s+|i\\s+|gli\\s+)?(?:task|cose|attivit[aà]|compiti)?\\s*(.*)$`, 'i').exec(raw);
+      const rest = tidy(k?.[1] || '');
+      if (INFINITIVE.test(rest)) list = rest;
+    }
+  }
+  const items = list ? splitList(list) : [];
+  if (!items.length) return { miss: `Ho capito che vuoi mettere delle cose dentro «${target.title}», ma non quali: scrivile dopo i due punti, separate da virgole.` };
+  return { ops: [{ action: 'add_checklist', id: target.ref, title: target.title, checklist: items }], said: [`${items.length === 1 ? 'una cosa' : `${items.length} cose`} dentro «${target.title}»: ${items.join(', ')}`] };
+}
+
 // ---------------------------------------------------------------- titoli
 const INTENT = /^(?:(?:e|poi|anche|ancora|inoltre|quindi|però|pero)\s+)*(?:devo|dovrei|voglio|vorrei|mi\s+tocca|bisogna|ho\s+da|c'[eè]\s+da|c'[eè]|ci\s+sono|ho(?!\s+(?:fatto|finito|lavorato|passato|iniziato))|sono(?=\s+(?:in|a|al|alla|dal|dalla|da)\s)|vado\s+a|vado\s+al|vado\s+in|devo\s+andare\s+a|andare\s+a|andare\s+in|aggiungi(?:mi)?|aggiungere|metti(?:mi)?|segna(?:mi)?|ricordami\s+di|ricordati\s+di|ricorda(?:mi)?\s+di|promemoria:?|il\s+mio\s+obiettivo\s+[eè]|obiettivo:?)\s+/i;
 const LEAD = /^(?:(?:sul|sulla|sullo|sui|sulle|al|alla|allo|ai|alle|per|di|del|della|dello|dei|delle|il|la|lo|i|gli|le|un|una|uno|a|in|e|da|dal|dalla|dai)\s+|(?:sull'|all'|dell'|dall'|l'|un')\s*)+/i;
@@ -961,6 +1048,9 @@ export function understoodOf(ops, state, today) {
       case 'set_availability': out.push(`Disponibilità · ${niceLong(o.date || today, today)}${o.start_time ? ' dalle ' + hmShort(o.start_time) : ''}${o.end_time ? ' alle ' + hmShort(o.end_time) : ''}`); break;
       case 'add_recurring': out.push(`Ogni settimana · ${o.title} · ${shortDays(o.weekdays || [])} ${hmShort(o.start_time)}–${hmShort(o.end_time)}`); break;
       case 'remove_recurring': out.push(o.date ? `Saltato · ${title(o.id)} · ${niceLong(o.date, today)}` : `Tolto · ${title(o.id)} · tutte le settimane`); break;
+      case 'add_checklist': out.push(`Lista · ${o.title || title(o.id)} · ${(o.checklist || []).join(', ')}`); break;
+      case 'check_item': out.push(`Fatta · ${o.item_id} (${title(o.id)})`); break;
+      case 'remove_check': out.push(`Tolta dalla lista · ${o.item_id} (${title(o.id)})`); break;
       case 'add_habit': out.push(`Abitudine · ${o.title} · ${+o.pref_value === 7 ? 'ogni giorno' : `${o.pref_value} volte a settimana`}`); break;
       case 'set_goal': out.push(`Obiettivo · ${o.title}${o.deadline ? ` · entro il ${dateWithYear(o.deadline, today)}` : ''}`); break;
       case 'add_project': out.push(`Progetto · ${o.title}`); break;
@@ -997,7 +1087,7 @@ export function localParse(text, state, now) {
   const ctx = { projects: [...(state.projects || [])], offDays: [...(state.prefs?.offDays || [])], today };
   const ops = [], said = [], misses = [];
   let confirm = false, goalsMade = 0, clauses = 0, commands = 0, structured = 0;
-  const sentences = sentencesOf(text);
+  const sentences = sentencesOf(keepListsTogether(text, state, today));
   const tired = TIRED.test(lower(text)) ? commandOps('sono stanco', state, today, now) : null;
   if (tired) {
     if (!tired.ops?.length) return { reply: tired.reply };
@@ -1010,6 +1100,14 @@ export function localParse(text, state, now) {
     // «stasera ho solo 2 ore»: quel giorno uso solo quel tempo
     const av = availOps(s, state, today, nowMin);
     if (av) { ops.push(...av.ops); said.push(...av.said); clauses++; structured++; continue; }
+    // «metti dentro la card di lavoro le cose da fare: …»: una lista dentro l'impegno, non attività nuove
+    const ck = checklistOps(s, state, today);
+    if (ck) {
+      clauses++;
+      if (ck.miss) { misses.push(ck.miss); continue; }
+      ops.push(...ck.ops); said.push(...ck.said); structured++;
+      continue;
+    }
     // la frase intera come vincolo o preferenza (il lavoro, i giorni di stacco, le abitudini…)
     const whole = !/^(?:ho\s+finito|fatto|sposta|togli|elimina|cancella|rimanda)/i.test(s.trim()) ? structuredOps(s, ctx) : null;
     if (whole && clausesOf(s).length === 1) { ops.push(...whole.ops, memoryOp(s, whole.category)); said.push(...whole.said); clauses++; structured++; continue; }

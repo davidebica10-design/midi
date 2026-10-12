@@ -27,7 +27,7 @@ const bornOf = (x) => +x?.createdAt || +x?.at || 0;
  * - solo da una parte: se è nata dopo l'ultima sincronizzazione è nuova (si tiene); altrimenti l'altra
  *   parte l'ha cancellata (si toglie). Le voci senza date (progetti) si tengono sempre.
  */
-export function mergeById(local = [], remote = [], lastSync = 0) {
+export function mergeById(local = [], remote = [], lastSync = 0, preferLocal = false) {
   const L = new Map(local.filter((x) => x?.id).map((x) => [x.id, x]));
   const R = new Map(remote.filter((x) => x?.id).map((x) => [x.id, x]));
   const out = [];
@@ -36,7 +36,7 @@ export function mergeById(local = [], remote = [], lastSync = 0) {
     if (!x?.id || seen.has(x.id)) continue;
     seen.add(x.id);
     const a = L.get(x.id), b = R.get(x.id);
-    if (a && b) { out.push(tsOf(a) > tsOf(b) ? a : b); continue; }
+    if (a && b) { out.push(tsOf(a) > tsOf(b) || (preferLocal && tsOf(a) === tsOf(b)) ? a : b); continue; }
     const only = a || b;
     const born = bornOf(only);
     if (!born || born > lastSync || tsOf(only) > lastSync) out.push(only);
@@ -66,7 +66,7 @@ export function mergeStates(local, remote, { lastSync = 0, localDirty = true } =
   if (!remote) return local;
   const base = localDirty ? local : remote;
   const out = { ...remote, ...cloudPayload(base) };
-  for (const k of ['items', 'goals', 'goalsDone', 'recurring', 'memory', 'habits', 'projects']) out[k] = mergeById(local[k], remote[k], lastSync);
+  for (const k of ['items', 'goals', 'goalsDone', 'recurring', 'memory', 'habits', 'projects']) out[k] = mergeById(local[k], remote[k], lastSync, localDirty);
   out.log = mergeLog(local.log, remote.log);
   out.chat = mergeChat(local.chat, remote.chat, 60);
   out.askChat = mergeChat(local.askChat, remote.askChat, 40);

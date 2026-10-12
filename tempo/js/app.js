@@ -537,6 +537,7 @@ function cardHtml(c, i) {
   const label = `${c.title}, ${when}${c.project ? ', ' + c.project.name : ''}`;
   const tint = !c.color && c.project ? ` data-proj style="--pc:${safeColor(c.project.color) || 'var(--accent)'};${st}"` : ` style="${st}"`;
   const open = `role="button" tabindex="0" data-item="${esc(c.id)}" data-c="${c.color || ''}" aria-label="${esc(label)}"${tint}`;
+  const ckList = isEvent && c.checklist?.length ? checklistHtml(c) : '';
   const check = isTask ? `<button class="pc-check" data-check="${esc(c.id)}" aria-label="${done ? 'Riapri' : 'Segna come fatta'}: ${esc(c.title)}" aria-pressed="${done}">${ICON_CHECK}</button>` : '';
   const th = themeFor(state.items.find((x) => x.id === c.itemId) || { title: c.title, project: c.project?.id });
   const ic = `<i class="act-ic" style="--m:url(icons/act/${th.icon}.svg)" aria-hidden="true"></i>`;
@@ -546,9 +547,17 @@ function cardHtml(c, i) {
       <div class="ph-cap"><b>${title}</b><span>${esc(desc)}</span></div></div>`;
   }
   return `<div class="${cls}" ${open}>
-    <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div></div>
+    <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div>${ckList}</div>
     <div class="pc-foot">${isTask ? projMark(c.project) : ''}<span>${esc(foot)}</span>${check}</div>
   </div>`;
+}
+
+/** La lista dentro una carta-impegno: quelle da fare sopra, le fatte barrate; massimo 6 righe. */
+function checklistHtml(c) {
+  const todo = c.checklist.filter((x) => !x.done), done = c.checklist.filter((x) => x.done);
+  const rows = [...todo, ...done].slice(0, 6);
+  const more = c.checklist.length - rows.length;
+  return `<ul class="pc-ck" aria-label="Da fare dentro ${esc(c.title)}: ${todo.length} su ${c.checklist.length}">${rows.map((x) => `<li class="${x.done ? 'done' : ''}"><button type="button" class="ck-b" data-ck="${esc(c.ownerId)}|${esc(x.id)}" role="checkbox" aria-checked="${x.done}" aria-label="${esc(x.text)}"><i aria-hidden="true"></i><span>${esc(x.text)}</span></button></li>`).join('')}${more > 0 ? `<li class="more">+ ${more} ${more === 1 ? 'altra' : 'altre'}</li>` : ''}</ul>`;
 }
 
 function dayModel() {
@@ -618,10 +627,11 @@ function renderDayView(animate, opts = {}) {
     const a = v.now;
     const act = a.action ? `<button class="adv-go" data-adv="${a.action.type}" data-id="${esc(a.action.id)}">${a.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(a.action.label)}</span></button>` : '';
     const blk = a.block ? `<div class="pc-progress" role="progressbar" aria-valuenow="${a.block.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.block.title)}"><i style="--w:${a.block.pct}%"></i></div><div class="pc-desc">${esc(a.block.title)} · fino alle ${a.block.until} · ${a.block.left} rimasti</div>` : '';
+    const blkList = a.block?.checklist ? checklistHtml({ title: a.block.title, ownerId: a.block.ownerId, checklist: a.block.checklist }) : '';
     const nowId = a.block?.kind === 'rest' ? null : a.block?.itemId || a.block?.id || a.action?.id || null;
     const open = nowId ? ` role="button" tabindex="0" data-item="${esc(nowId)}"` : a.block?.kind === 'rest' ? ' role="button" tabindex="0" data-rest="1"' : '';
     put(`<div class="pc quote adv mood-${a.mood}"${open} style="--r:-2deg;--i:0" aria-live="polite">
-      <div class="pc-body"><div class="pc-quote">${esc(a.title)}</div>${a.why ? `<div class="pc-desc">${esc(a.why)}</div>` : ''}${blk}${act}</div>
+      <div class="pc-body"><div class="pc-quote">${esc(a.title)}</div>${a.why ? `<div class="pc-desc">${esc(a.why)}</div>` : ''}${blk}${blkList}${act}</div>
       <div class="pc-label">Adesso</div></div>`);
   }
 
@@ -1551,6 +1561,7 @@ function openRecSheet(id) {
   sheetMode = 'rec';
   ed = null;
   red = { id: r.id, day, title: r.title, start: r.start, end: r.end, weekdays: [...r.weekdays], color: r.color || null };
+  const ck = r.checklist || [];
   const colors = [['', 'Carta'], ['rose', 'Rosa'], ['lilac', 'Lilla'], ['sage', 'Salvia'], ['sand', 'Sabbia'], ['sky', 'Cielo']];
   $('#sheet-form').innerHTML = `
     <h2 id="sheet-title" class="sr-only">Impegno di ogni settimana</h2>
@@ -1569,6 +1580,7 @@ function openRecSheet(id) {
     <section class="ed-row"><span class="ed-k">Giorni</span><div class="chips-x days">
       ${WD_ORDER.map((d) => `<button type="button" class="ch day" data-rd="${d}" aria-label="${WD_FULL[d]}">${WD_SHORT[WD_ORDER.indexOf(d)]}</button>`).join('')}
     </div></section>
+    ${ck.length ? `<section class="ed-row"><span class="ed-k">Da fare qui</span><div class="ed-ck">${ck.map((x) => `<div class="row"><span class="lbl${x.done ? ' done' : ''}">${esc(x.text)}</span><button type="button" class="x" data-rmck="${esc(r.id)}|${esc(x.id)}" aria-label="Togli ${esc(x.text)}">×</button></div>`).join('')}</div></section>` : ''}
     <div class="ed-actions">
       <div class="ed-quick">
         <button type="button" data-sheet="skip" data-rec="${esc(r.id)}" data-day="${esc(day)}"><i class="ic ic-next" aria-hidden="true"></i>Salta ${esc(dayLabel(day, today()))}</button>
@@ -2415,6 +2427,13 @@ function bind() {
   // carte del giorno
   const col = $('#collage');
   col.addEventListener('click', (e) => {
+    const ck = e.target.closest('[data-ck]');
+    if (ck) {
+      e.stopPropagation();
+      const [owner, item] = ck.dataset.ck.split('|');
+      commit('Lista', () => { applyOps(state, [{ action: 'check_item', id: owner, item_id: item }]); });
+      return;
+    }
     const chk = e.target.closest('[data-check]');
     if (chk) {
       e.stopPropagation();
@@ -2579,6 +2598,13 @@ function bind() {
     }
     const st = e.target.closest('[data-step]');
     if (st && ed) { ed.duration = Math.max(5, Math.min(600, ed.duration + +st.dataset.step)); ed.estimated = false; renderEditor(); return; }
+    const rm = e.target.closest('[data-rmck]');
+    if (rm) {
+      const [owner, item] = rm.dataset.rmck.split('|');
+      commit('Lista', () => { applyOps(state, [{ action: 'remove_check', id: owner, item_id: item }]); });
+      rm.closest('.row')?.remove();
+      return;
+    }
     const b = e.target.closest('[data-sheet]');
     if (!b) return;
     const id = $('#sheet-form').dataset.id;
