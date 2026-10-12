@@ -33,7 +33,7 @@ Tempo non è un'agenda: costruisce la giornata in base a ciò che stai cercando 
 - **Decisioni** (`js/decide.js`): un modello decisionale (CLM-8B di Stanford e NVIDIA, embeddings NVIDIA NIM o Gemini, Nemotron) può scegliere tra opzioni già valide; se non risponde in tempo decidono le regole.
 - **NVIDIA NIM** tra i servizi online (modelli Nemotron); le richieste corpose vanno al modello più capace del servizio scelto.
 - **Account e dispositivi** (facoltativo, `js/cloud.js` + `../cloud`): lo stesso tempo su iPhone, Mac e web; Siri e Comandi rapidi (anche in CarPlay), widget aggiornati e assistenti AI (MCP). Dati cifrati sul server, chiavi AI solo sul dispositivo, cancellazione dell'account dall'app.
-- **App nativa** (`../native`): la stessa app dentro Capacitor, con widget, Live Activity nell'isola dinamica, Siri, promemoria e CarPlay. Strategia per l'App Store in `APP-STORE.md`.
+- **App nativa** (`../native`): la stessa app dentro Capacitor, con widget, Live Activity nell'isola dinamica, Siri, promemoria e CarPlay.
 
 - **Liste dentro le carte:** «metti dentro la card di lavoro le task che ho da fare: relazione, mail, chiamare Marco» non crea attività a orari sparsi: le mette in una lista dentro «Lavoro», con le caselle da spuntare (DESIGN-API §8).
 
