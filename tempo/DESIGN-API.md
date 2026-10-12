@@ -295,3 +295,19 @@ Numeri calcolati dal codice: `sessions`, `minutes`, `activeDays`, `skipped` (non
 Capitoli senza AI: copertina, progetto principale, ritmo (solo con almeno 4 sessioni), obiettivi, raggiunti, «com'è andata davvero», un consiglio. Con un'AI online il racconto lo scrive il modello più capace del servizio (`heavyComplete`) usando solo questi numeri (`recapPrompt` → `sanitizeRecapAi`), salvato in `state.recaps[mese]` finché i numeri non cambiano.
 
 Si apre dal pulsante «Il tuo mese» nel riepilogo, da ⋯ e, nei primi 5 giorni del mese, da un'osservazione («Il tuo ottobre è pronto»). Sotto, «Chiacchiera con il tuo tempo» (`state.timeChat`): risposte dell'AI con i numeri veri, o del codice senza AI.
+
+## 8. Liste dentro una carta (`checklist`)
+
+Le «cose da fare» possono stare **dentro** un impegno (il lavoro di ogni settimana, una riunione) invece di diventare attività con un orario proprio: «metti dentro la card di lavoro le task che ho da fare: relazione, mail, chiamare Marco».
+
+| Operazione | Campi | Cosa fa |
+| --- | --- | --- |
+| `add_checklist` | `id` (impegno o nome), `checklist[]` | aggiunge voci (testo, senza doppioni, al massimo 30 per carta) |
+| `check_item` | `id`, `item_id` (id o testo) | spunta / toglie la spunta |
+| `remove_check` | `id`, `item_id` | toglie la voce |
+
+- **Dove vive:** `state.recurring[].checklist` e `state.items[].checklist` (solo impegni): `[{ id, text, done }]`. Con più impegni dello stesso nome («Lavoro» al mattino e al pomeriggio) vince quello di oggi, il primo della giornata.
+- **Schermata:** `cards[].checklist` e `cards[].ownerId` sulla carta dell'impegno; durante l'impegno la lista sta in `now.block.checklist` (il blocco in corso non compare tra le carte, quindi la lista si vede nel riquadro «Adesso»). Massimo 6 righe, le fatte barrate in fondo, «+ N altre». Ogni riga è un `role="checkbox"` da 44 px. Nell'editor dell'impegno ogni voce ha la ×.
+- **Parser senza AI:** `checklistOps` (`parse.js`) usa i nomi veri degli impegni; l'elenco è dopo i due punti, dopo «da fare», oppure dopo il nome se comincia con un verbo. Accetta virgole, «;», punti elenco e «e» davanti a un verbo («pane e latte» resta intero). Se sa dove ma non cosa, lo dice e non crea niente.
+- **AI:** le tre operazioni sono nello schema di Claude e dei modelli open, con la regola «dentro una carta → `add_checklist`, mai attività separate»; lo stato che vede il modello include le liste.
+- **Sincronizzazione:** a parità di data vince il dispositivo con modifiche non ancora mandate; ogni modifica aggiorna `updatedAt` dell'impegno.

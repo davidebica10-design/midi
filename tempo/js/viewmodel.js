@@ -26,13 +26,24 @@ function summaryOf(p) {
   return { done, total, pct: total ? Math.round((done / total) * 100) : 0, freeMin: p.free, caption };
 }
 
+/** L'impegno (di ogni settimana o con orario) che contiene la lista di un blocco-impegno, e la lista. */
+function listOf(state, it) {
+  if (it.kind !== 'event') return null;
+  const own = it.recurring ? (state.recurring || []).find((r) => r.id === it.recId) : (state.items || []).find((x) => x.id === it.id);
+  const list = (own?.checklist || []).map((c) => ({ id: c.id, text: c.text, done: !!c.done }));
+  return list.length ? { ownerId: own.id, checklist: list } : null;
+}
+
 /** Una carta attività/impegno/pausa-cena dal blocco del piano. */
 function cardOf(state, b) {
   const it = b.item;
   const id = String(b.id);
   const time = `${fmtMin(b.start)}`;
   if (it.kind === 'rest') return { type: 'rest', id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), note: 'Stacca dal lavoro' };
-  if (it.kind === 'event') return { type: 'event', id, itemId: id.startsWith('rec:') ? null : it.id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), recurring: !!it.recurring, image: it.image || null, color: it.color || null, project: projInfo(state, it.project) };
+  if (it.kind === 'event') {
+    return { type: 'event', id, itemId: id.startsWith('rec:') ? null : it.id, title: it.title, start: fmtMin(b.start), end: fmtMin(b.end), recurring: !!it.recurring, image: it.image || null, color: it.color || null, project: projInfo(state, it.project),
+      ...(listOf(state, it) || {}) };
+  }
   const done = b.type === 'done';
   return {
     type: 'task', id, itemId: it.id, title: it.title, start: time, end: fmtMin(b.end), minutes: b.end - b.start,
@@ -73,6 +84,7 @@ export function today(ctx) {
           id: String(cur.id), itemId: isTask ? cur.item.id : null, kind: isTask ? 'task' : cur.item.kind, title: cur.item.title,
           until: fmtMin(cur.end), left: durLabel(Math.max(1, cur.end - n)), pct: Math.round(Math.max(0, Math.min(1, (n - cur.start) / Math.max(1, cur.end - cur.start))) * 100),
           doing: cur.item.status === 'doing',
+          ...(listOf(state, cur.item) || {}), // l'impegno in corso (il lavoro) porta con sé la sua lista
         };
       }
     }

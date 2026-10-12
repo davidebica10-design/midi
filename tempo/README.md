@@ -35,6 +35,8 @@ Tempo non è un'agenda: costruisce la giornata in base a ciò che stai cercando 
 - **Account e dispositivi** (facoltativo, `js/cloud.js` + `../cloud`): lo stesso tempo su iPhone, Mac e web; Siri e Comandi rapidi (anche in CarPlay), widget aggiornati e assistenti AI (MCP). Dati cifrati sul server, chiavi AI solo sul dispositivo, cancellazione dell'account dall'app.
 - **App nativa** (`../native`): la stessa app dentro Capacitor, con widget, Live Activity nell'isola dinamica, Siri, promemoria e CarPlay. Strategia per l'App Store in `APP-STORE.md`.
 
+- **Liste dentro le carte:** «metti dentro la card di lavoro le task che ho da fare: relazione, mail, chiamare Marco» non crea attività a orari sparsi: le mette in una lista dentro «Lavoro», con le caselle da spuntare (DESIGN-API §8).
+
 ## Come si usa
 
 - **La giornata** è un collage di carte: riepilogo, attività in corso, impegni e attività in ordine di orario. Tocca il cerchio per segnare una cosa come fatta, tocca la carta per modificarla.

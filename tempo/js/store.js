@@ -63,6 +63,20 @@ export const safeId = (v) => (typeof v === 'string' && SAFE_ID.test(v) ? v : nul
 export const CARD_COLORS = ['rose', 'lilac', 'sage', 'sand', 'sky'];
 export const cardColor = (v) => (CARD_COLORS.includes(v) ? v : null);
 export const safeColor = (v) => (typeof v === 'string' && SAFE_COLOR.test(v) ? v : null);
+/** Le cose da fare dentro una carta: [{ id, text, done }], al massimo 30, testi puliti. */
+export function cleanChecklist(v) {
+  const out = [];
+  const seen = new Set();
+  for (const x of Array.isArray(v) ? v : []) {
+    const text = String(typeof x === 'string' ? x : x?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const id = safeId(x?.id) || null;
+    if (text.length < 2 || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    out.push({ id: id || uid(), text, done: !!x?.done });
+    if (out.length >= 30) break;
+  }
+  return out;
+}
 const str = (v, max = 200) => (typeof v === 'string' ? v.slice(0, max) : v == null ? '' : String(v).slice(0, max));
 const num = (v, lo, hi, dflt = null) => (Number.isFinite(+v) && v !== null && v !== '' ? Math.min(hi, Math.max(lo, +v)) : dflt);
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -80,6 +94,7 @@ export function sanitizeState(s) {
     start: num(x.start, 0, 1440), duration: num(x.duration, 1, 1440, 30), status: ['todo', 'doing', 'done'].includes(x.status) ? x.status : 'todo',
     dependsOn: arr(x.dependsOn).filter(safeId), project: safeId(x.project), goalId: safeId(x.goalId), habitId: safeId(x.habitId), image: safeId(x.image),
     window: WINDOWS[x.window] ? x.window : null, color: cardColor(x.color), theme: THEME_KEYS.includes(x.theme) ? x.theme : null,
+    ...(x.kind === 'event' && x.checklist ? { checklist: cleanChecklist(x.checklist) } : {}),
   }));
   s.focus = sanitizeFocus(s.focus);
   if (s.focus && !s.items.some((x) => x.id === s.focus.itemId)) s.focus = null;
@@ -100,7 +115,7 @@ export function sanitizeState(s) {
     snap: Object.fromEntries(Object.entries(obj(SO.snap)).slice(0, 10).map(([k, o]) => [str(k, 80), obsOf(o)]).filter(([, o]) => o)) };
   s.habits = ids(s.habits).map((h) => ({ ...h, title: str(h.title, 60), perWeek: num(h.perWeek, 1, 7, 1), duration: num(h.duration, 10, 240, 60), project: safeId(h.project), goalId: safeId(h.goalId), window: WINDOWS[h.window] ? h.window : null }));
   s.memory = ids(s.memory).map((m) => ({ ...m, text: str(m.text, 200), category: ['vincolo', 'preferenza', 'obiettivo', 'nota'].includes(m.category) ? m.category : 'nota' }));
-  s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate), color: cardColor(r.color) }));
+  s.recurring = ids(s.recurring).map((r) => ({ ...r, title: str(r.title, 80), start: num(r.start, 0, 1440, 540), end: num(r.end, 0, 1440, 600), weekdays: arr(r.weekdays).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6), skip: arr(r.skip).filter(validDate), color: cardColor(r.color), ...(r.checklist ? { checklist: cleanChecklist(r.checklist) } : {}) }));
   s.chat = arr(s.chat).filter((m) => m && typeof m === 'object' && safeId(m.id)).map((m) => ({ ...m, text: str(m.text, 4000), changes: arr(m.changes).map((c) => str(c, 300)), undoId: safeId(m.undoId) }));
   s.askChat = arr(s.askChat).filter((m) => m && typeof m === 'object' && safeId(m.id) && !m.pending).map((m) => ({ id: m.id, role: m.role === 'user' ? 'user' : 'assistant', text: str(m.text, 4000), ts: num(m.ts, 0, 9e15, 0), error: !!m.error })).slice(-40);
   // l'aspetto degli obiettivi e i racconti del mese: solo valori ammessi (arrivano anche dall'AI e dalla sincronizzazione)
@@ -330,6 +345,26 @@ export const goalOfProject = (state, pid) => (state.goals || []).find((g) => g.p
 // ---- Operazioni ----
 const clampInt = (v, lo, hi) => (v == null || isNaN(+v) ? null : Math.min(hi, Math.max(lo, Math.round(+v))));
 const validDate = (s) => (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
+
+/**
+ * L'impegno che contiene una lista: un impegno di ogni settimana (come «Lavoro») o un impegno con orario.
+ * ref: id (anche quello di una carta «rec:<id>:<giorno>») o nome. Con più impegni dello stesso nome vince
+ * quello che c'è oggi, poi il primo della giornata.
+ */
+export function checklistOwner(state, ref, today = null) {
+  if (!ref) return null;
+  let r = String(ref);
+  if (r.startsWith('rec:')) r = r.split(':')[1];
+  const key = r.toLowerCase();
+  const rec = (state.recurring || []).find((x) => x.id === r);
+  if (rec) return rec;
+  const ev = (state.items || []).find((x) => x.id === r && x.kind === 'event');
+  if (ev) return ev;
+  const wd = today ? weekday(today) : null;
+  const recs = (state.recurring || []).filter((x) => x.title.toLowerCase() === key).sort((a, b) => (wd != null && b.weekdays.includes(wd)) - (wd != null && a.weekdays.includes(wd)) || a.start - b.start);
+  if (recs.length) return recs[0];
+  return (state.items || []).find((x) => x.kind === 'event' && x.status !== 'done' && x.title.toLowerCase() === key) || null;
+}
 
 export function findItem(state, ref) {
   if (!ref) return null;
@@ -568,6 +603,34 @@ export function applyOps(state, ops, now = Date.now()) {
           log.push(`◷ ${niceDay(d, today)}: disponibile${st != null ? ' dalle ' + fmtMin(st) : ''}${en != null ? ' fino alle ' + fmtMin(en) : ''}`);
           break;
         }
+        case 'add_checklist': {
+          const own = checklistOwner(state, op.id || op.title, today);
+          if (!own) { errors.push(`Non trovo l'impegno «${op.id || op.title}» dove mettere la lista`); break; }
+          const have = cleanChecklist(own.checklist);
+          const add = cleanChecklist(op.checklist).filter((c) => !have.some((h) => h.text.toLowerCase() === c.text.toLowerCase()));
+          own.checklist = cleanChecklist([...have, ...add]);
+          own.updatedAt = now;
+          log.push(add.length ? `☰ ${own.title}: ${add.map((c) => c.text).join(', ')}` : `☰ ${own.title}: erano già in lista`);
+          break;
+        }
+        case 'check_item': {
+          const own = checklistOwner(state, op.id, today);
+          const c = own?.checklist?.find((x) => x.id === op.item_id || x.text.toLowerCase() === String(op.item_id).toLowerCase());
+          if (!c) { errors.push('Voce della lista non trovata'); break; }
+          c.done = op.done == null ? !c.done : !!op.done;
+          own.updatedAt = now;
+          log.push(`${c.done ? '✓' : '↺'} ${c.text} (${own.title})`);
+          break;
+        }
+        case 'remove_check': {
+          const own = checklistOwner(state, op.id, today);
+          const c = own?.checklist?.find((x) => x.id === op.item_id || x.text.toLowerCase() === String(op.item_id).toLowerCase());
+          if (!c) { errors.push('Voce della lista non trovata'); break; }
+          own.checklist = own.checklist.filter((x) => x !== c);
+          own.updatedAt = now;
+          log.push(`− ${c.text} tolta da ${own.title}`);
+          break;
+        }
         case 'remember': {
           if (!op.note) break;
           if (state.memory.some((m) => m.text.toLowerCase() === String(op.note).toLowerCase())) break;
@@ -692,11 +755,12 @@ export function refreshHabits(state, today) {
 
 // ---- Validazione di ciò che arriva dall'AI: tipi, formati, azioni ammesse
 const ACTIONS = ['add', 'update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'remember', 'forget', 'set_pref',
-  'add_recurring', 'update_recurring', 'remove_recurring', 'set_goal', 'remove_goal', 'plan_goal', 'add_project', 'set_availability', 'add_habit', 'remove_habit'];
+  'add_recurring', 'update_recurring', 'remove_recurring', 'add_checklist', 'check_item', 'remove_check', 'set_goal', 'remove_goal', 'plan_goal', 'add_project', 'set_availability', 'add_habit', 'remove_habit'];
 const FIELD = {
   id: 'str', title: 'str', kind: ['task', 'event'], date: 'date', start_time: 'time', end_time: 'time', duration_min: 'int', duration_is_estimate: 'bool',
   priority: 'int', deadline: 'date', earliest_date: 'date', window: ['mattina', 'pomeriggio', 'sera'], energy: 'int', depends_on: 'strs', actual_min: 'int',
   note: 'str', project: 'str', color: ['rose', 'lilac', 'sage', 'sand', 'sky'], theme: THEME_KEYS, category: ['vincolo', 'preferenza', 'obiettivo', 'nota'], pref_key: 'str', pref_value: 'str', weekdays: 'ints', unpin: 'bool', sessions: 'sessions',
+  checklist: 'checklist', item_id: 'str',
 };
 /** Tiene solo operazioni e campi validi; restituisce { ops, dropped }. */
 export function sanitizeOps(raw) {
@@ -715,10 +779,13 @@ export function sanitizeOps(raw) {
       else if (t === 'date') { if (validDate(v)) out[k] = v; }
       else if (t === 'time') { if (parseHM(v) != null) out[k] = String(v); }
       else if (t === 'strs') { if (Array.isArray(v)) out[k] = v.filter((x) => typeof x === 'string').slice(0, 10); }
+      else if (t === 'checklist') { if (Array.isArray(v)) { const c = cleanChecklist(v); if (c.length) out[k] = c.map((x) => x.text); } }
       else if (t === 'ints') { if (Array.isArray(v)) out[k] = v.map(Number).filter((x) => Number.isInteger(x) && x >= 0 && x <= 6); }
       else if (t === 'sessions') { const p = validatePlan({ sessions: v }); if (p) out[k] = p; }
     }
-    if (['update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip'].includes(o.action) && !out.id) { dropped++; continue; }
+    if (['update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'check_item', 'remove_check'].includes(o.action) && !out.id) { dropped++; continue; }
+    if (o.action === 'add_checklist' && (!out.checklist?.length || !(out.id || out.title))) { dropped++; continue; }
+    if (['check_item', 'remove_check'].includes(o.action) && !out.item_id) { dropped++; continue; }
     ops.push(out);
   }
   return { ops, dropped };
