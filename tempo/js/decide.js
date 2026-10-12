@@ -132,7 +132,8 @@ async function scoreLlm(cfg, stateText, opts, task, { fetchImpl, signal }) {
   const base = String(cfg.url).replace(/\/+$/, '');
   const list = opts.map((o) => `- ${o.id}: ${o.text}`).join('\n');
   const j = await postJson(fetchImpl, `${base}/chat/completions`, {
-    model: cfg.model, temperature: 0, max_tokens: 300,
+    // i modelli che «ragionano» (Gemini) consumano token prima di rispondere: con pochi token la risposta resta vuota
+    model: cfg.model, temperature: 0, max_tokens: 2048,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: 'Scegli una sola opzione tra quelle date. Rispondi solo con JSON: {"choice":"<id>","confidence":0.0-1.0}. Non inventare id.' },
@@ -140,10 +141,52 @@ async function scoreLlm(cfg, stateText, opts, task, { fetchImpl, signal }) {
     ],
   }, cfg.key, signal);
   const c = String(j.choices?.[0]?.message?.content || '');
-  const o = JSON.parse(c.slice(c.indexOf('{'), c.lastIndexOf('}') + 1));
+  if (!c.includes('{')) throw new Error(j.choices?.[0]?.finish_reason === 'length' ? 'risposta tagliata: il modello ha finito i token' : 'il modello non ha risposto con un JSON');
+  let o;
+  try { o = JSON.parse(c.slice(c.indexOf('{'), c.lastIndexOf('}') + 1)); } catch { throw new Error('JSON del modello non valido'); }
   if (!opts.some((x) => x.id === o.choice)) throw new Error('scelta fuori dalle opzioni');
   const conf = clamp01(+o.confidence || 0.5);
   return Object.fromEntries(opts.map((x) => [x.id, x.id === o.choice ? conf : (1 - conf) / Math.max(1, opts.length - 1)]));
+}
+
+/**
+ * Decide tra le opzioni.
+ * { task: cosa si decide, state: descrizione testuale dello stato, options, decider: { kind, url, key, model, weight, minConfidence },
+ *   fetchImpl, timeoutMs, signal }
+ * Restituisce { id, confidence, scores, source: 'rules' | kind, error? }. Non lancia mai: nel dubbio decidono le regole.
+ */
+/**
+ * Chiede il punteggio al motore remoto: { scores: {id: numero}, probs: true se sono già probabilità (CLM) }.
+ * Lancia in caso di errore o di tempo scaduto (error.message === 'timeout').
+ */
+export async function modelScore({ task = '', state = '', options, decider, fetchImpl = globalThis.fetch, timeoutMs = 2500, signal } = {}) {
+  const opts = cleanOptions(options);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  signal?.addEventListener?.('abort', () => ctl.abort());
+  try {
+    const run = { fetchImpl, signal: ctl.signal };
+    const stateText = String(state).slice(0, 4000);
+    const scores = decider.kind === 'clm' ? await scoreClm(decider, stateText, opts, run, task)
+      : decider.kind === 'embed' ? await scoreEmbed(decider, stateText, opts, run)
+      : decider.kind === 'llm' ? await scoreLlm(decider, stateText, opts, task, run)
+      : null;
+    if (!scores) throw new Error('motore sconosciuto');
+    return { scores, probs: decider.kind === 'clm' };
+  } catch (e) {
+    throw e.name === 'AbortError' ? Object.assign(new Error('timeout'), { code: 'timeout' }) : e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Mescola il punteggio del modello con le regole; se il modello non è abbastanza sicuro restano le regole. */
+export function combine(options, { scores, probs }, decider) {
+  const opts = cleanOptions(options);
+  const byRules = decideByRules(opts);
+  const out = blend(opts, scores, Number.isFinite(+decider.weight) ? clamp01(+decider.weight) : 0.6, { probs });
+  if (out.confidence < (decider.minConfidence ?? 0.35)) return { ...byRules, model: out };
+  return { ...out, source: decider.kind };
 }
 
 /**
@@ -156,24 +199,10 @@ export async function decide({ task = '', state = '', options, decider = null, f
   const opts = cleanOptions(options);
   const byRules = decideByRules(opts);
   if (!byRules || opts.length === 1 || !decider || !decider.kind || decider.kind === 'rules' || !decider.url) return byRules;
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  signal?.addEventListener?.('abort', () => ctl.abort());
   try {
-    const run = { fetchImpl, signal: ctl.signal };
-    const stateText = String(state).slice(0, 4000);
-    const scores = decider.kind === 'clm' ? await scoreClm(decider, stateText, opts, run, task)
-      : decider.kind === 'embed' ? await scoreEmbed(decider, stateText, opts, run)
-      : decider.kind === 'llm' ? await scoreLlm(decider, stateText, opts, task, run)
-      : null;
-    if (!scores) return byRules;
-    const out = blend(opts, scores, Number.isFinite(+decider.weight) ? clamp01(+decider.weight) : 0.6, { probs: decider.kind === 'clm' });
-    if (out.confidence < (decider.minConfidence ?? 0.35)) return { ...byRules, model: out };
-    return { ...out, source: decider.kind };
+    return combine(opts, await modelScore({ task, state, options: opts, decider, fetchImpl, timeoutMs, signal }), decider);
   } catch (e) {
-    return { ...byRules, error: e.name === 'AbortError' ? 'timeout' : e.message };
-  } finally {
-    clearTimeout(timer);
+    return { ...byRules, error: e.code === 'timeout' ? 'timeout' : e.message };
   }
 }
 
