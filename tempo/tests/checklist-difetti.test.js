@@ -133,3 +133,62 @@ test('«ho fatto la relazione» detto due volte (AI, senza done) la lascia fatta
   applyOps(s, undo.ops, NOW + 3000);
   assert.equal(s.recurring[0].checklist[0].done, false);
 });
+
+// ---- seconda rilettura (revisore indipendente)
+import { localParse, understoodOf } from '../js/parse.js';
+
+test('sincronizzazione: la prima lista aggiunta qui non si perde se l\'altro lato cambia la stessa carta più tardi', () => {
+  const a = workState();
+  const b = structuredClone(a);
+  const lastSync = NOW - DAY;
+  applyOps(a, [{ action: 'add_checklist', id: 'rmat', checklist: ['Relazione'] }], NOW - 5000);
+  applyOps(b, [{ action: 'update_recurring', id: 'rmat', color: 'sage' }], NOW);
+  const m = mergeStates(a, b, { lastSync, localDirty: true }).recurring.find((x) => x.id === 'rmat');
+  assert.equal(m.color, 'sage');
+  assert.deepEqual(m.checklist.map((x) => x.text), ['Relazione']);
+});
+
+test('sincronizzazione: una voce tolta qui non torna perché l\'altro lato ha modificato la stessa lista dopo', () => {
+  const [a, b] = pairWithList();
+  const lastSync = NOW - DAY;
+  applyOps(a, [{ action: 'remove_check', id: 'rmat', item_id: 'Mail' }], NOW - 5000);
+  applyOps(b, [{ action: 'add_checklist', id: 'rmat', checklist: ['Fattura'] }], NOW);
+  for (const [x, y] of [[a, b], [b, a]]) {
+    const list = mergeStates(x, y, { lastSync, localDirty: true }).recurring.find((r) => r.id === 'rmat').checklist.map((c) => c.text);
+    assert.ok(list.includes('Fattura'), 'la voce nuova resta');
+    assert.ok(!list.includes('Mail'), 'la voce tolta non risorge');
+  }
+});
+
+test('un ricorrente salvato prima delle date non risorge dopo essere stato cancellato', () => {
+  const legacy = () => migrate({ onboarded: true, items: [], recurring: [{ id: 'rv', title: 'Yoga', start: 420, end: 480, weekdays: [1], skip: [] }] }, NOW);
+  const a = legacy(), b = legacy();
+  applyOps(a, [{ action: 'remove_recurring', id: 'rv' }], NOW);
+  assert.equal(mergeStates(a, b, { lastSync: NOW - DAY, localDirty: true }).recurring.length, 0);
+  // alla prima sincronizzazione (lastSync = 0) tutto si tiene
+  assert.equal(mergeStates(legacy(), migrate({ onboarded: true }, NOW), { lastSync: 0, localDirty: true }).recurring.length, 1);
+});
+
+test('forme di cortesia («puoi mettere dentro lavoro…») non diventano attività', () => {
+  const s = workState();
+  for (const f of ['puoi mettere dentro lavoro delle cose da fare?', 'vorrei mettere dentro lavoro delle task', 'ora metti dentro lavoro le task']) {
+    const r = checklistOps(f, s, TODAY);
+    assert.ok(r?.miss && !r.ops, f + ' → ' + JSON.stringify(r));
+    const p = localParse(f, s, NOW);
+    assert.ok(!(p.ops || []).length, f + ': nessuna attività creata');
+  }
+});
+
+test('«Salta ricorrenza» passa da applyOps e aggiorna updatedAt', () => {
+  const s = workState();
+  applyOps(s, [{ action: 'remove_recurring', id: 'rmat', date: '2026-10-14' }], NOW);
+  assert.deepEqual(s.recurring[0].skip, ['2026-10-14']);
+  assert.equal(s.recurring[0].updatedAt, NOW);
+});
+
+test('la spunta tolta si racconta come tolta', () => {
+  const s = workState();
+  const out = understoodOf([{ action: 'check_item', id: 'rmat', item_id: 'Relazione', done: false }, { action: 'check_item', id: 'rmat', item_id: 'Mail' }], s, TODAY);
+  assert.match(out[0], /^Spunta tolta/);
+  assert.match(out[1], /^Fatta/);
+});

@@ -56,17 +56,21 @@ export function mergeById(local = [], remote = [], lastSync = 0, preferLocal = f
  * sincronizzazione, altrimenti l'altra parte l'ha tolta. Le voci della carta vincente restano sempre.
  */
 function mergeLists(win, lose, lastSync) {
-  const wl = Array.isArray(win.checklist) ? win.checklist : null, ll = Array.isArray(lose.checklist) ? lose.checklist : null;
-  if (!wl || !ll) return win;
+  const wl = Array.isArray(win.checklist) ? win.checklist : [], ll = Array.isArray(lose.checklist) ? lose.checklist : [];
+  if (!wl.length && !ll.length) return win;
   const byId = new Map(ll.map((x) => [x.id, x]));
-  const merged = wl.map((x) => {
-    const y = byId.get(x.id);
-    if (!y) return x;
-    const ax = +x.at || 0, ay = +y.at || 0;
-    return ay > ax || (ay === ax && y.done && !x.done) ? { ...x, done: !!y.done, at: Math.max(ax, ay) } : x;
-  });
   const have = new Set(wl.map((x) => x.id));
-  for (const y of ll) if (!have.has(y.id) && (+y.at || 0) > lastSync) merged.push(y);
+  // una voce di una sola parte resta se è nata dopo l'ultima sincronizzazione (o se non ha data: non si può dire);
+  // altrimenti l'altra parte l'aveva già e l'ha tolta
+  const fresh = (x) => !(+x.at > 0) || +x.at > lastSync;
+  const merged = [];
+  for (const x of wl) {
+    const y = byId.get(x.id);
+    if (!y) { if (fresh(x)) merged.push(x); continue; }
+    const ax = +x.at || 0, ay = +y.at || 0;
+    merged.push(ay > ax || (ay === ax && y.done && !x.done) ? { ...x, done: !!y.done, at: Math.max(ax, ay) } : x);
+  }
+  for (const y of ll) if (!have.has(y.id) && fresh(y)) merged.push(y);
   return { ...win, checklist: cleanChecklist(merged) };
 }
 

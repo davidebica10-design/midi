@@ -2622,7 +2622,7 @@ function bind() {
       quickOp('delete', id);
       if (img) deleteImage(img).catch(() => {});
     } else if (a === 'skip') {
-      commit('Salta ricorrenza', () => { const r = state.recurring.find((x) => x.id === b.dataset.rec); r.skip = [...(r.skip || []), b.dataset.day]; });
+      commit('Salta ricorrenza', () => { applyOps(state, [{ action: 'remove_recurring', id: b.dataset.rec, date: b.dataset.day }]); });
       closeSheet(); toastUndo('Saltato');
     } else if (a === 'delrec') {
       if (!confirm('Eliminare l\'impegno ricorrente?')) return;

@@ -280,6 +280,8 @@ const inferredProject = (text) => {
 const CONTAINER_CUE = /\b(?:dentro|all'interno|nella\s+(?:card|carta|scheda)|nel\s+(?:blocco|riquadro|box)|sotto\s+(?:la\s+)?(?:card|carta)|in\s+(?:card|carta|scheda))\b/;
 const LIST_WORD = /\b(?:task|cose|attivita|compiti|todo|to-do|to do|lista|elenco)\b/;
 const ADD_VERB = /^(?:e\s+)?(?:metti|mettimi|mettici|aggiungi|aggiungimi|inserisci|segna|scrivi|appunta|elenca|mettere|aggiungere|inserire)\b/;
+// il verbo di aggiunta anche in mezzo alla frase («puoi mettere dentro lavoro…», «ora metti…»)
+const ADD_ANY = /\b(?:metti|mettimi|mettici|mettere|aggiungi|aggiungimi|aggiungere|inserisci|inserire|segna|scrivi|appunta|elenca)\b/;
 // parole che dicono «dove» o «che tipo di cosa» e non sono una voce: «dentro lavoro», «cose da fare dentro»…
 const CONTAINER_WORDS = "dentro|all'interno|nella|nel|nelle|nei|in|card|carta|scheda|blocco|riquadro|box|sotto|la|le|il|lo|i|gli|di|del|della|dei|delle|task|cose|attivita|compiti|todo|to-do|lista|elenco|da|fare|oggi|domani|ho|devo|ci|sono";
 const INFINITIVE = /^[a-zà-ù]+(?:are|ere|ire|arsi|ersi|irsi|arre|urre|orre)\b/i;
@@ -357,10 +359,10 @@ export function checklistOps(sentence, state, today) {
     }
   }
   const noise = new RegExp(`\\b(?:${esc(target.key)}|${CONTAINER_WORDS})\\b`, 'g');
-  const items = (list ? splitList(list) : []).filter((x) => strip(x).replace(noise, ' ').replace(/[^a-z0-9]+/g, ' ').trim().length >= 2);
+  const items = (list ? splitList(list) : []).filter((x) => strip(x).replace(noise, ' ').replace(/[^a-z0-9]+/g, ' ').trim().length >= 1);
   if (!items.length) {
     // «sto lavorando dentro lavoro» non è una richiesta: solo con un verbo di aggiunta o i due punti chiedo cosa mettere
-    if (!(ADD_VERB.test(t) || colon >= 0)) return null;
+    if (!(ADD_ANY.test(t) || colon >= 0)) return null;
     return { miss: `Ho capito che vuoi mettere delle cose dentro «${target.title}», ma non quali: scrivile dopo i due punti, separate da virgole.` };
   }
   return { ops: [{ action: 'add_checklist', id: target.ref, title: target.title, checklist: items }], said: [`${items.length === 1 ? 'una cosa' : `${items.length} cose`} dentro «${target.title}»: ${items.join(', ')}`] };
@@ -1055,7 +1057,7 @@ export function understoodOf(ops, state, today) {
       case 'add_recurring': out.push(`Ogni settimana · ${o.title} · ${shortDays(o.weekdays || [])} ${hmShort(o.start_time)}–${hmShort(o.end_time)}`); break;
       case 'remove_recurring': out.push(o.date ? `Saltato · ${title(o.id)} · ${niceLong(o.date, today)}` : `Tolto · ${title(o.id)} · tutte le settimane`); break;
       case 'add_checklist': out.push(`Lista · ${o.title || title(o.id)} · ${(o.checklist || []).join(', ')}`); break;
-      case 'check_item': out.push(`Fatta · ${o.item_id} (${title(o.id)})`); break;
+      case 'check_item': out.push(`${o.done === false ? 'Spunta tolta' : 'Fatta'} · ${o.item_id} (${title(o.id)})`); break;
       case 'remove_check': out.push(`Tolta dalla lista · ${o.item_id} (${title(o.id)})`); break;
       case 'add_habit': out.push(`Abitudine · ${o.title} · ${+o.pref_value === 7 ? 'ogni giorno' : `${o.pref_value} volte a settimana`}`); break;
       case 'set_goal': out.push(`Obiettivo · ${o.title}${o.deadline ? ` · entro il ${dateWithYear(o.deadline, today)}` : ''}`); break;
