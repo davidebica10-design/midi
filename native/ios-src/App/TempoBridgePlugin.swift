@@ -1,6 +1,7 @@
 // Il ponte tra l'app web (js/native.js) e iOS: widget, Live Activity, promemoria, Siri e CarPlay.
 // Registrato da MainViewController (plugin locale dell'app, niente pacchetto npm).
 import Foundation
+import UIKit
 import Capacitor
 import WidgetKit
 import UserNotifications
@@ -124,7 +125,6 @@ public class TempoBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                     let content = UNMutableNotificationContent()
                     content.title = title
                     content.body = (r["body"] as? String) ?? ""
-                    content.interruptionLevel = .timeSensitive
                     let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: when)
                     center.add(UNNotificationRequest(identifier: "tempo-\(id)", content: content, trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)))
                     n += 1

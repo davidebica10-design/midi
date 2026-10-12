@@ -93,15 +93,7 @@ Il codice nell'indirizzo (`/mcp/t/…`) è comodo ma finisce nei log di chi lo v
 
 ## Il modello decisionale (CLM-8B)
 
-Tempo può far scegliere a un modello decisionale tra opzioni che ha già calcolato (oggi: quale obiettivo dà il tono alla schermata). Contratto in `clm/serve.py`:
-
-```
-POST /decide  {"state": "...", "actions": ["...", "..."]}  →  {"scores": [..]}
-```
-
-[CLM-8B](https://huggingface.co/Contrastive-LM/CLM-v0.1-8B) (Stanford e NVIDIA, Apache 2.0) rappresenta stato e azioni nello stesso spazio e sceglie l'azione più vicina, senza generare testo. Serve una GPU (o la versione GGUF quantizzata): `clm/serve.py` è l'adattatore, da completare con il caricamento indicato nel [README di CLM](https://github.com/Contrastive-LM/CLM).
-
-Alternative già pronte nell'app (⋯ → Decisioni): embeddings di NVIDIA NIM o Gemini (stessa idea con un modello generico), oppure un modello di chat come Nemotron su NIM. In tutti i casi: se il servizio non risponde in 2,5 secondi o non è abbastanza sicuro, decidono le regole dell'app.
+Tempo può far scegliere a un modello decisionale tra opzioni che ha già calcolato. L'app parla direttamente con `clm-serve` (il pacchetto ufficiale di [CLM-8B](https://github.com/Contrastive-LM/CLM)); qui non serve niente. Guida completa, requisiti (GPU, indirizzo https) e formato delle richieste: [`clm/README.md`](clm/README.md).
 
 ## File
 
@@ -112,5 +104,5 @@ Alternative già pronte nell'app (⋯ → Decisioni): embeddings di NVIDIA NIM o
 | `src/mcp.js` | Server MCP |
 | `src/crypto.js` | PBKDF2, AES-GCM per utente, token |
 | `src/worker.js` / `src/node.js` | Avvio su Cloudflare Workers / su Node |
-| `clm/serve.py` | Adattatore per CLM-8B |
+| `clm/README.md` | Come far girare CLM-8B e collegarlo a Tempo |
 | `test/cloud.test.js` | 12 test: account, sync, conflitti, fuso orario, AI simulata, MCP, cancellazione, CORS |
