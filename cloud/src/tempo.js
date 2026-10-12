@@ -31,7 +31,9 @@ export function clockFor(tz, now = Date.now()) {
 export function unshift(state, localNow, now) {
   if (localNow === now) return state;
   const fix = (o) => { if (o && typeof o === 'object') for (const k of Object.keys(o)) if (o[k] === localNow) o[k] = now; };
-  for (const list of [state.items, state.goals, state.memory, state.log, state.habits, state.projects, state.chat]) (list || []).forEach(fix);
+  for (const list of [state.items, state.goals, state.memory, state.log, state.habits, state.projects, state.chat, state.recurring]) (list || []).forEach(fix);
+  // le voci delle liste dentro le carte hanno la loro ora (`at`)
+  for (const list of [state.items, state.recurring]) (list || []).forEach((o) => (Array.isArray(o?.checklist) ? o.checklist.forEach(fix) : null));
   fix(state.stats);
   return state;
 }

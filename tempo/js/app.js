@@ -2,7 +2,7 @@ import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, f
 import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState } from './store.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState, checklistOwner } from './store.js';
 import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
@@ -2431,7 +2431,9 @@ function bind() {
     if (ck) {
       e.stopPropagation();
       const [owner, item] = ck.dataset.ck.split('|');
-      commit('Lista', () => { applyOps(state, [{ action: 'check_item', id: owner, item_id: item }]); });
+      // la casella dice cosa vuole l'utente: l'inverso di com'è adesso (l'AI invece, senza `done`, vuol dire «fatto»)
+      const now = checklistOwner(state, owner, today())?.checklist?.find((x) => x.id === item);
+      commit('Lista', () => { applyOps(state, [{ action: 'check_item', id: owner, item_id: item, done: !now?.done }]); });
       return;
     }
     const chk = e.target.closest('[data-check]');
@@ -2620,7 +2622,7 @@ function bind() {
       quickOp('delete', id);
       if (img) deleteImage(img).catch(() => {});
     } else if (a === 'skip') {
-      commit('Salta ricorrenza', () => { const r = state.recurring.find((x) => x.id === b.dataset.rec); r.skip = [...(r.skip || []), b.dataset.day]; });
+      commit('Salta ricorrenza', () => { applyOps(state, [{ action: 'remove_recurring', id: b.dataset.rec, date: b.dataset.day }]); });
       closeSheet(); toastUndo('Saltato');
     } else if (a === 'delrec') {
       if (!confirm('Eliminare l\'impegno ricorrente?')) return;

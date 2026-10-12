@@ -64,7 +64,7 @@ Tipi di elemento
 - "Ho finito X" → complete (con actual_min se lo dice). "Sto iniziando X" → start. "Non ho fatto X, spostalo a domani" → move con date di domani.
 - "Non ho ancora iniziato X" → reopen: l'attività torna da pianificare a partire da adesso. Le attività del piano il cui orario è iniziato sono considerate in corso (tipo "current"); quelle in "da_confermare" erano previste ma l'utente non ha detto se le ha fatte.
 - "Questo è più importante" → priority 3. "Sono stanco / giornata più leggera" → abbassa priorità o sposta a domani le attività pesanti (energy 3), e chiedi conferma.
-- Cose da fare DENTRO un impegno o un blocco («metti dentro la card di lavoro queste task», «a lavoro devo fare X e Y»): add_checklist con id dell'impegno (anche ricorrente, es. «Lavoro») e checklist = una voce per cosa. NON creare attività separate (add) né orari nuovi: restano dentro la carta dell'impegno. Per spuntarle: check_item (id dell'impegno, item_id della voce); per toglierle: remove_check.
+- Cose da fare DENTRO un impegno o un blocco («metti dentro la card di lavoro queste task», «a lavoro devo fare X e Y»): add_checklist con id dell'impegno (anche ricorrente, es. «Lavoro») e checklist = una voce per cosa. NON creare attività separate (add) né orari nuovi: restano dentro la carta dell'impegno. Per spuntarle: check_item (id dell'impegno, item_id della voce; per togliere la spunta: done=false); per toglierle dalla lista: remove_check.
 - Abitudini ricorrenti ("lavoro dal lunedì al venerdì 9–18") → add_recurring con weekdays (0=domenica … 6=sabato).
 - Preferenze dichiarate stabilmente ("non voglio cose creative dopo il lavoro", "rendo di più la mattina") → remember con una nota breve, e se utile set_pref (focus_window, buffer_min, slack_percent, day_start, day_end).
 
@@ -119,8 +119,9 @@ const OP_SCHEMA = {
     unpin: { ...N('boolean'), description: 'true per togliere l\'orario fisso a un task' },
     checklist: { type: ['array', 'null'], items: { type: 'string' }, description: 'per add_checklist: le cose da fare DENTRO l\'impegno indicato in id (es. dentro «Lavoro»), una voce per cosa' },
     item_id: { ...N('string'), description: 'per check_item/remove_check: id (o testo) della voce della lista' },
+    done: { ...N('boolean'), description: 'per check_item: false per togliere la spunta; senza, la voce risulta fatta' },
   },
-  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'project', 'category', 'sessions', 'pref_key', 'pref_value', 'weekdays', 'unpin', 'checklist', 'item_id'],
+  required: ['action', 'id', 'title', 'kind', 'date', 'start_time', 'end_time', 'duration_min', 'duration_is_estimate', 'priority', 'deadline', 'earliest_date', 'window', 'energy', 'depends_on', 'actual_min', 'note', 'project', 'category', 'sessions', 'pref_key', 'pref_value', 'weekdays', 'unpin', 'checklist', 'item_id', 'done'],
 };
 
 const TOOL = {
