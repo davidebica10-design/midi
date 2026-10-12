@@ -5,7 +5,8 @@
   "description": "Tempo per iPhone, iPad e Mac (Apple silicon): la PWA dentro un guscio nativo Capacitor, con widget, Live Activity, Siri e CarPlay.",
   "scripts": {
     "web": "node scripts/copy-web.mjs",
-    "ios:add": "npm run web && npx cap add ios && node scripts/install-swift.mjs",
+    "ios:add": "npm run web && npx cap add ios && ruby scripts/setup-xcode.rb",
+    "ios:xcode": "ruby scripts/setup-xcode.rb",
     "ios:sync": "npm run web && npx cap sync ios",
     "ios:open": "npx cap open ios"
   },
@@ -15,5 +16,8 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

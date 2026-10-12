@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, decideByRules, blend, routeRequest, sceneGoalOptions, cleanOptions, cosine } from '../js/decide.js';
+import { decide, decideByRules, blend, routeRequest, sceneGoalOptions, cleanOptions, cosine, clmEndpoint } from '../js/decide.js';
 import { localParse } from '../js/parse.js';
 import { emptyState } from '../js/store.js';
 
@@ -19,14 +19,47 @@ test('opzioni sporche: id duplicati o non stringa vengono scartati', () => {
   assert.equal(decideByRules([]), null);
 });
 
-test('CLM: il punteggio del modello può ribaltare le regole', async () => {
-  const r = await decide({ options: opts, decider: { kind: 'clm', url: 'https://clm.test/score' }, fetchImpl: json({ scores: [0.9, 0.1, 0.0] }) });
+/** Un finto clm-serve con il contratto vero (README e src/clm/client.py di Contrastive-LM/CLM). */
+function fakeClm(probsFor, seen = []) {
+  return async (url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ url: String(url), headers: init.headers, body });
+    const q = body.questions.decisione;
+    assert.equal(q.type, 'choice');
+    assert.equal(typeof q.instructions, 'string');
+    assert.equal(typeof body.state, 'string');
+    const probabilities = probsFor(Object.keys(q.criteria));
+    const choice = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0][0];
+    return { ok: true, status: 200, json: async () => ({ model: body.model, answers: { decisione: { type: 'choice', choice, confidence: 0.8, probabilities } }, usage: { billing_units: 1, input_tokens: 40 } }) };
+  };
+}
+
+test('CLM: parla il formato vero di clm-serve (domanda «choice») e può ribaltare le regole', async () => {
+  const seen = [];
+  const f = fakeClm((keys) => ({ a: 0.9, b: 0.07, c: 0.03 }), seen);
+  const r = await decide({ task: 'Quale obiettivo?', state: 'Sera, due ore libere', options: opts, decider: { kind: 'clm', url: 'http://gpu.local:8700/', key: 'segreto' }, fetchImpl: f });
   assert.equal(r.id, 'a');
   assert.equal(r.source, 'clm');
+  assert.equal(seen[0].url, 'http://gpu.local:8700/v1/systemone');
+  assert.equal(seen[0].headers.Authorization, 'Bearer segreto');
+  assert.equal(seen[0].body.model, 'clm-latest');
+  assert.deepEqual(Object.keys(seen[0].body.questions.decisione.criteria), ['a', 'b', 'c'], 'gli id sono le chiavi, i testi le descrizioni');
+  assert.equal(seen[0].body.questions.decisione.criteria.b, 'B');
+  assert.equal(seen[0].body.questions.decisione.instructions, 'Quale obiettivo?');
+});
+
+test('CLM: l\'indirizzo si capisce con o senza percorso', () => {
+  for (const u of ['http://h:8700', 'http://h:8700/', 'http://h:8700/v1', 'http://h:8700/v1/systemone']) assert.equal(clmEndpoint(u), 'http://h:8700/v1/systemone');
+});
+
+test('CLM: con un modello poco sicuro le regole restano in testa', async () => {
+  const f = fakeClm(() => ({ a: 0.34, b: 0.33, c: 0.33 }));
+  const r = await decide({ options: opts, decider: { kind: 'clm', url: 'http://h:8700', weight: 0.4 }, fetchImpl: f });
+  assert.equal(r.id, 'b', 'le regole (b ha il punteggio più alto) vincono quando CLM non ha un\'opinione');
 });
 
 test('CLM con risposta malformata: decidono le regole e l\'errore è riportato', async () => {
-  const r = await decide({ options: opts, decider: { kind: 'clm', url: 'https://clm.test/score' }, fetchImpl: json({ scores: [1] }) });
+  const r = await decide({ options: opts, decider: { kind: 'clm', url: 'https://clm.test' }, fetchImpl: json({ model: 'clm-latest', answers: { decisione: { type: 'choice', probabilities: { a: 1 } } } }) });
   assert.equal(r.id, 'b');
   assert.equal(r.source, 'rules');
   assert.match(r.error, /non valida/);

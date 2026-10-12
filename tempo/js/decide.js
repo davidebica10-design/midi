@@ -4,9 +4,9 @@
 //
 // Motori («decider»), dal più semplice:
 //  - rules  regole del codice (sempre disponibile, offline, deterministico): è la base e il ripiego;
-//  - clm    un modello decisionale contrastivo come CLM-8B (Stanford / NVIDIA, Apache 2.0) servito da un
-//           endpoint che riceve { state, actions } e restituisce { scores }: stato e azioni nello stesso
-//           spazio, vince l'azione più vicina allo stato. Niente testo generato, latenza bassa;
+//  - clm    CLM-8B (Stanford / NVIDIA, Apache 2.0) servito da `clm-serve` (github.com/Contrastive-LM/CLM):
+//           una domanda «choice» a POST /v1/systemone, con le opzioni come candidati; stato e azioni sono
+//           nello stesso spazio e vince l'azione più vicina allo stato. Niente testo generato, latenza bassa;
 //  - embed  qualsiasi servizio /embeddings compatibile OpenAI (NVIDIA NIM, Gemini…): stessa idea di CLM
 //           con un modello di embedding generico, somiglianza del coseno;
 //  - llm    un modello di chat compatibile OpenAI (NVIDIA Nemotron su NIM, Gemini…) a cui si chiede di
@@ -16,7 +16,7 @@
 
 export const DECIDERS = {
   rules: { label: 'Regole dell\'app (offline)', needs: [] },
-  clm: { label: 'CLM-8B · modello decisionale open source', needs: ['url'], hint: 'Endpoint che riceve {state, actions} e risponde {scores}. Vedi cloud/README.md.' },
+  clm: { label: 'CLM-8B · modello decisionale open source', needs: ['url'], hint: 'Indirizzo https del tuo clm-serve, avviato con --cors e una chiave. Servono una GPU e vLLM: vedi cloud/clm/README.md.' },
   embed: { label: 'Embeddings (NVIDIA NIM, Gemini…)', needs: ['url', 'model'], presets: {
     nvidia: { url: 'https://integrate.api.nvidia.com/v1', model: 'nvidia/llama-3.2-nv-embedqa-1b-v2' },
     gemini: { url: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-embedding-001' },
@@ -73,10 +73,13 @@ export function decideByRules(options) {
  * Mescola le probabilità delle regole con quelle del modello.
  * weight: quanto conta il modello (0–1). Restituisce la scelta finale.
  */
-export function blend(options, modelScores, weight = 0.6) {
+export function blend(options, modelScores, weight = 0.6, { probs = false } = {}) {
   const opts = cleanOptions(options);
   const rules = softmax(opts.map((o) => o.prior), 0.6);
-  const model = softmax(opts.map((o) => (Number.isFinite(modelScores?.[o.id]) ? modelScores[o.id] : Math.min(...Object.values(modelScores || {}).filter(Number.isFinite), 0))), 0.15);
+  const raw = opts.map((o) => (Number.isFinite(modelScores?.[o.id]) ? modelScores[o.id] : Math.min(...Object.values(modelScores || {}).filter(Number.isFinite), 0)));
+  // «probs»: il modello ha già dato una distribuzione (CLM): si usa com'è; altrimenti sono punteggi e si passano da una softmax
+  const total = raw.reduce((a, b) => a + Math.max(0, b), 0);
+  const model = probs && total > 0 ? raw.map((x) => Math.max(0, x) / total) : softmax(raw, 0.15);
   const mixed = opts.map((o, i) => (1 - weight) * rules[i] + weight * model[i]);
   let best = 0;
   for (let i = 1; i < mixed.length; i++) if (mixed[i] > mixed[best]) best = i;
@@ -95,12 +98,24 @@ async function postJson(fetchImpl, url, body, key, signal) {
   return j;
 }
 
-/** CLM e simili: { state, actions } → { scores: [numeri] } nello stesso ordine delle azioni. */
-async function scoreClm(cfg, stateText, opts, { fetchImpl, signal }) {
-  const j = await postJson(fetchImpl, cfg.url, { state: stateText, actions: opts.map((o) => o.text) }, cfg.key, signal);
-  const s = Array.isArray(j.scores) ? j.scores : [];
-  if (s.length !== opts.length || !s.every((x) => Number.isFinite(+x))) throw new Error('risposta del modello decisionale non valida');
-  return Object.fromEntries(opts.map((o, i) => [o.id, +s[i]]));
+/** L'indirizzo di clm-serve, con o senza il percorso: «http://host:8700», «…/v1/systemone». */
+export const clmEndpoint = (url) => String(url || '').replace(/\/+$/, '').replace(/\/v1(?:\/systemone)?$/, '') + '/v1/systemone';
+
+/**
+ * CLM-8B tramite `clm-serve`: una domanda di tipo «choice» sullo stato; ogni opzione è un candidato (la sua
+ * descrizione) con il suo id come chiave. La risposta è la distribuzione di probabilità sulle chiavi.
+ * Formato: github.com/Contrastive-LM/CLM (README «API Reference», src/clm/client.py).
+ */
+async function scoreClm(cfg, stateText, opts, { fetchImpl, signal }, task = '') {
+  const j = await postJson(fetchImpl, clmEndpoint(cfg.url), {
+    state: stateText,
+    model: cfg.model || 'clm-latest',
+    questions: { decisione: { type: 'choice', instructions: task || 'Qual è la scelta giusta adesso?', criteria: Object.fromEntries(opts.map((o) => [o.id, o.text])) } },
+  }, cfg.key, signal);
+  const a = j?.answers?.decisione;
+  const p = a?.probabilities;
+  if (a?.type !== 'choice' || !p || !opts.every((o) => Number.isFinite(+p[o.id]))) throw new Error('risposta del modello decisionale non valida');
+  return Object.fromEntries(opts.map((o) => [o.id, +p[o.id]]));
 }
 
 /** Embeddings compatibili OpenAI: somiglianza del coseno tra lo stato e ogni azione. */
@@ -147,12 +162,12 @@ export async function decide({ task = '', state = '', options, decider = null, f
   try {
     const run = { fetchImpl, signal: ctl.signal };
     const stateText = String(state).slice(0, 4000);
-    const scores = decider.kind === 'clm' ? await scoreClm(decider, stateText, opts, run)
+    const scores = decider.kind === 'clm' ? await scoreClm(decider, stateText, opts, run, task)
       : decider.kind === 'embed' ? await scoreEmbed(decider, stateText, opts, run)
       : decider.kind === 'llm' ? await scoreLlm(decider, stateText, opts, task, run)
       : null;
     if (!scores) return byRules;
-    const out = blend(opts, scores, Number.isFinite(+decider.weight) ? clamp01(+decider.weight) : 0.6);
+    const out = blend(opts, scores, Number.isFinite(+decider.weight) ? clamp01(+decider.weight) : 0.6, { probs: decider.kind === 'clm' });
     if (out.confidence < (decider.minConfidence ?? 0.35)) return { ...byRules, model: out };
     return { ...out, source: decider.kind };
   } catch (e) {

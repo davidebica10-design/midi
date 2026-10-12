@@ -5,9 +5,9 @@
 import AppIntents
 
 struct WhatNowIntent: AppIntent {
-    static var title: LocalizedStringResource = "Cosa faccio adesso"
-    static var description = IntentDescription("Tempo ti dice una sola cosa da fare adesso, con il perché.")
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Cosa faccio adesso"
+    static let description = IntentDescription("Tempo ti dice una sola cosa da fare adesso, con il perché.")
+    static let openAppWhenRun = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let text = await TempoCloud.now()?.text ?? SharedStore.snapshot()?.spoken ?? "Apri Tempo e raccontami cosa vuoi ottenere: costruisco io la giornata."
@@ -16,9 +16,9 @@ struct WhatNowIntent: AppIntent {
 }
 
 struct TellTempoIntent: AppIntent {
-    static var title: LocalizedStringResource = "Dì a Tempo"
-    static var description = IntentDescription("Aggiungi o cambia qualcosa con una frase: «domani alle 16 call con Marco», «ho finito il beat 02».")
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Dì a Tempo"
+    static let description = IntentDescription("Aggiungi o cambia qualcosa con una frase: «domani alle 16 call con Marco», «ho finito il beat 02».")
+    static let openAppWhenRun = false
 
     @Parameter(title: "Cosa vuoi dire", requestValueDialog: IntentDialog("Cosa vuoi dire a Tempo?"))
     var text: String
@@ -31,9 +31,9 @@ struct TellTempoIntent: AppIntent {
 }
 
 struct MonthRecapIntent: AppIntent {
-    static var title: LocalizedStringResource = "Il mio mese con Tempo"
-    static var description = IntentDescription("Apre il racconto del mese.")
-    static var openAppWhenRun = true
+    static let title: LocalizedStringResource = "Il mio mese con Tempo"
+    static let description = IntentDescription("Apre il racconto del mese.")
+    static let openAppWhenRun = true
 
     func perform() async throws -> some IntentResult {
         SharedStore.queueIntent(kind: "recap")
