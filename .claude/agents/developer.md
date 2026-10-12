@@ -1,6 +1,6 @@
 ---
 name: developer
-description: Implementa in Tempo un lavoro già approvato (bug, funzione, rifacimento) rispettando l'architettura esistente. Usalo per scrivere o modificare codice in tempo/, cloud/ o native/ Non decide cosa costruire: se lo scopo non è chiaro, torna a chi l'ha chiamato.
+description: Implementa in Tempo un lavoro già approvato (bug, funzione, rifacimento) rispettando l'architettura esistente. Usalo per scrivere o modificare codice in tempo/, cloud/ o native/. Non decide cosa costruire: se lo scopo non è chiaro, torna a chi l'ha chiamato.
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: sonnet
 ---
