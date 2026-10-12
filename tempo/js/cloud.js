@@ -5,6 +5,8 @@
 // Sincronizzazione: il server tiene una revisione. Chi salva con la revisione giusta vince; chi arriva
 // dopo riceve lo stato attuale (409), unisce voce per voce (mergeStates) e riprova.
 
+import { cleanChecklist } from './store.js';
+
 /** Indirizzo predefinito del server (vuoto finché non lo pubblichi: vedi cloud/README.md). */
 export const DEFAULT_CLOUD_URL = '';
 
@@ -36,12 +38,36 @@ export function mergeById(local = [], remote = [], lastSync = 0, preferLocal = f
     if (!x?.id || seen.has(x.id)) continue;
     seen.add(x.id);
     const a = L.get(x.id), b = R.get(x.id);
-    if (a && b) { out.push(tsOf(a) > tsOf(b) || (preferLocal && tsOf(a) === tsOf(b)) ? a : b); continue; }
+    if (a && b) {
+      const aWins = tsOf(a) > tsOf(b) || (preferLocal && tsOf(a) === tsOf(b));
+      out.push(mergeLists(aWins ? a : b, aWins ? b : a, lastSync));
+      continue;
+    }
     const only = a || b;
     const born = bornOf(only);
     if (!born || born > lastSync || tsOf(only) > lastSync) out.push(only);
   }
   return out;
+}
+
+/**
+ * Le cose da fare dentro una carta, voce per voce: ogni voce ha l'ora dell'ultima modifica (`at`) e vince la più recente
+ * (a parità, «fatto» batte «da fare»). Una voce che c'è solo nella carta perdente resta se è nata dopo l'ultima
+ * sincronizzazione, altrimenti l'altra parte l'ha tolta. Le voci della carta vincente restano sempre.
+ */
+function mergeLists(win, lose, lastSync) {
+  const wl = Array.isArray(win.checklist) ? win.checklist : null, ll = Array.isArray(lose.checklist) ? lose.checklist : null;
+  if (!wl || !ll) return win;
+  const byId = new Map(ll.map((x) => [x.id, x]));
+  const merged = wl.map((x) => {
+    const y = byId.get(x.id);
+    if (!y) return x;
+    const ax = +x.at || 0, ay = +y.at || 0;
+    return ay > ax || (ay === ax && y.done && !x.done) ? { ...x, done: !!y.done, at: Math.max(ax, ay) } : x;
+  });
+  const have = new Set(wl.map((x) => x.id));
+  for (const y of ll) if (!have.has(y.id) && (+y.at || 0) > lastSync) merged.push(y);
+  return { ...win, checklist: cleanChecklist(merged) };
 }
 
 /** Elenchi di eventi senza id stabile (registro): unione senza doppioni, in ordine di tempo. */

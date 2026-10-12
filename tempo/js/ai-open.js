@@ -115,7 +115,7 @@ Operazioni possibili in "ops" (metti solo i campi che servono):
 - Attività con scadenza: {"action":"add","kind":"task","title":"Consegnare la relazione","duration_min":240,"deadline":"YYYY-MM-DD"}
 - Piano di un obiettivo (subito dopo set_goal): {"action":"plan_goal","title":"Far uscire l'EP","sessions":[{"key":"s1","title":"Beat 01","duration_min":120,"energy":3,"after":[]}]} (massimo 30 sessioni; senza "sessions" uso un modello)
 - Abitudine: {"action":"add_habit","title":"Palestra","pref_value":"3","duration_min":60}
-- Cose da fare DENTRO una carta (un impegno come «Lavoro»): {"action":"add_checklist","id":"ID_IMPEGNO_o_nome","checklist":["Relazione","Mail"]}; spuntare {"action":"check_item","id":"ID_IMPEGNO","item_id":"ID_VOCE"}; togliere {"action":"remove_check","id":"ID_IMPEGNO","item_id":"ID_VOCE"}. Se l'utente dice «metti dentro la card di X queste cose», usa add_checklist: NON creare attività separate né orari nuovi.
+- Cose da fare DENTRO una carta (un impegno come «Lavoro»): {"action":"add_checklist","id":"ID_IMPEGNO_o_nome","checklist":["Relazione","Mail"]}; spuntare {"action":"check_item","id":"ID_IMPEGNO","item_id":"ID_VOCE"} (togliere la spunta: aggiungi "done":false); togliere {"action":"remove_check","id":"ID_IMPEGNO","item_id":"ID_VOCE"}. Se l'utente dice «metti dentro la card di X queste cose», usa add_checklist: NON creare attività separate né orari nuovi.
 - Colore di una carta: {"action":"update","id":"ID","color":"rose"|"lilac"|"sage"|"sand"|"sky"} (null = colore normale)
 
 Regole:
@@ -204,6 +204,7 @@ const REPLY_SCHEMA = {
           weekdays: { type: 'array', items: { type: 'integer' } },
           checklist: { type: 'array', items: { type: 'string' } },
           item_id: { type: 'string' },
+          done: { type: 'boolean' },
           sessions: { type: 'array', items: { type: 'object' } },
         },
         required: ['action'],

@@ -95,7 +95,9 @@ test('spuntare, togliere, non duplicare, annullare le doppie', () => {
   applyOps(s, [{ action: 'check_item', id: 'rmat', item_id: first }], NOW + 1);
   assert.equal(r.checklist[0].done, true);
   assert.equal(r.updatedAt, NOW + 1);
-  applyOps(s, [{ action: 'check_item', id: 'rec:rmat:2026-10-12', item_id: first }], NOW + 2); // anche con l'id della carta
+  applyOps(s, [{ action: 'check_item', id: 'rec:rmat:2026-10-12', item_id: first }], NOW + 2); // senza `done` vuol dire «fatto»: non si disfa
+  assert.equal(r.checklist[0].done, true);
+  applyOps(s, [{ action: 'check_item', id: 'rec:rmat:2026-10-12', item_id: first, done: false }], NOW + 2); // anche con l'id della carta
   assert.equal(r.checklist[0].done, false);
   applyOps(s, [{ action: 'remove_check', id: 'rmat', item_id: 'Mail' }], NOW + 3);
   assert.deepEqual(r.checklist.map((c) => c.text), ['Relazione', 'Chiamare Marco']);

@@ -1,6 +1,6 @@
 // Stato, persistenza locale, annullamento e applicazione delle modifiche strutturate.
 // Qui vengono validati orari, durate e vincoli: l'AI propone, il codice decide.
-import { DEFAULT_PREFS, parseHM, fmtMin, dateKey, addDays, WINDOWS, weekday, daysBetween, isOffDay } from './scheduler.js';
+import { DEFAULT_PREFS, parseHM, fmtMin, dateKey, addDays, WINDOWS, weekday, daysBetween, isOffDay, recurringFirst, eventFirst } from './scheduler.js';
 import { parseDue, weekdaysIn, structureMemory } from './parse.js';
 import { sessionsFor, validatePlan, MAX_SESSIONS } from './templates.js';
 import { estimate, updateDurations, sampleOf, MAX_SAMPLES } from './learn.js';
@@ -63,16 +63,23 @@ export const safeId = (v) => (typeof v === 'string' && SAFE_ID.test(v) ? v : nul
 export const CARD_COLORS = ['rose', 'lilac', 'sage', 'sand', 'sky'];
 export const cardColor = (v) => (CARD_COLORS.includes(v) ? v : null);
 export const safeColor = (v) => (typeof v === 'string' && SAFE_COLOR.test(v) ? v : null);
-/** Le cose da fare dentro una carta: [{ id, text, done }], al massimo 30, testi puliti. */
-export function cleanChecklist(v) {
+/**
+ * Le cose da fare dentro una carta: [{ id, text, done, at }], al massimo 30, testi puliti, identificativi unici.
+ * `at` è l'ultima volta che la voce è stata scritta o spuntata (serve a unire due dispositivi voce per voce);
+ * le voci nuove prendono `since`.
+ */
+export function cleanChecklist(v, since = 0) {
   const out = [];
-  const seen = new Set();
+  const seen = new Set(), ids = new Set();
   for (const x of Array.isArray(v) ? v : []) {
     const text = String(typeof x === 'string' ? x : x?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
-    const id = safeId(x?.id) || null;
     if (text.length < 2 || seen.has(text.toLowerCase())) continue;
     seen.add(text.toLowerCase());
-    out.push({ id: id || uid(), text, done: !!x?.done });
+    let id = safeId(x?.id);
+    if (!id || ids.has(id)) id = uid();
+    ids.add(id);
+    const at = Number.isFinite(+x?.at) && +x.at > 0 ? Math.round(+x.at) : since;
+    out.push({ id, text, done: !!x?.done, at });
     if (out.length >= 30) break;
   }
   return out;
@@ -360,10 +367,9 @@ export function checklistOwner(state, ref, today = null) {
   if (rec) return rec;
   const ev = (state.items || []).find((x) => x.id === r && x.kind === 'event');
   if (ev) return ev;
-  const wd = today ? weekday(today) : null;
-  const recs = (state.recurring || []).filter((x) => x.title.toLowerCase() === key).sort((a, b) => (wd != null && b.weekdays.includes(wd)) - (wd != null && a.weekdays.includes(wd)) || a.start - b.start);
+  const recs = (state.recurring || []).filter((x) => x.title.toLowerCase() === key).sort(recurringFirst(today));
   if (recs.length) return recs[0];
-  return (state.items || []).find((x) => x.kind === 'event' && x.status !== 'done' && x.title.toLowerCase() === key) || null;
+  return (state.items || []).filter((x) => x.kind === 'event' && x.status !== 'done' && x.title.toLowerCase() === key).sort(eventFirst(today))[0] || null;
 }
 
 export function findItem(state, ref) {
@@ -607,7 +613,7 @@ export function applyOps(state, ops, now = Date.now()) {
           const own = checklistOwner(state, op.id || op.title, today);
           if (!own) { errors.push(`Non trovo l'impegno «${op.id || op.title}» dove mettere la lista`); break; }
           const have = cleanChecklist(own.checklist);
-          const add = cleanChecklist(op.checklist).filter((c) => !have.some((h) => h.text.toLowerCase() === c.text.toLowerCase()));
+          const add = cleanChecklist(op.checklist, now).filter((c) => !have.some((h) => h.text.toLowerCase() === c.text.toLowerCase()));
           own.checklist = cleanChecklist([...have, ...add]);
           own.updatedAt = now;
           log.push(add.length ? `☰ ${own.title}: ${add.map((c) => c.text).join(', ')}` : `☰ ${own.title}: erano già in lista`);
@@ -617,7 +623,9 @@ export function applyOps(state, ops, now = Date.now()) {
           const own = checklistOwner(state, op.id, today);
           const c = own?.checklist?.find((x) => x.id === op.item_id || x.text.toLowerCase() === String(op.item_id).toLowerCase());
           if (!c) { errors.push('Voce della lista non trovata'); break; }
-          c.done = op.done == null ? !c.done : !!op.done;
+          // senza `done` vuol dire «fatto» (come dice l'AI); chi tocca la casella passa il valore esplicito
+          c.done = op.done == null ? true : !!op.done;
+          c.at = now;
           own.updatedAt = now;
           log.push(`${c.done ? '✓' : '↺'} ${c.text} (${own.title})`);
           break;
@@ -664,7 +672,7 @@ export function applyOps(state, ops, now = Date.now()) {
           const e = parseHM(op.end_time);
           const days = (op.weekdays || []).filter((d) => d >= 0 && d <= 6);
           if (!op.title || start == null || e == null || e <= start || !days.length) { errors.push('Impegno ricorrente incompleto'); break; }
-          state.recurring.push({ id: uid(), title: op.title, start, end: e, weekdays: days, skip: [] });
+          state.recurring.push({ id: uid(), title: op.title, start, end: e, weekdays: days, skip: [], createdAt: now, updatedAt: now });
           log.push(`⟳ ${op.title} ${fmtMin(start)}–${fmtMin(e)} (${days.map((d) => 'DLMMGVS'[d]).join('')})`);
           break;
         }
@@ -680,6 +688,7 @@ export function applyOps(state, ops, now = Date.now()) {
           if (r.end <= r.start) r.end = Math.min(24 * 60 - 1, r.start + 60);
           if (days && days.length) r.weekdays = [...new Set(days)].sort();
           if (op.color !== undefined) r.color = cardColor(op.color);
+          r.updatedAt = now;
           log.push(`⟳ ${r.title} ${fmtMin(r.start)}–${fmtMin(r.end)} (${r.weekdays.map((d) => 'DLMMGVS'[d]).join('')})`);
           break;
         }
@@ -687,7 +696,7 @@ export function applyOps(state, ops, now = Date.now()) {
           const r = state.recurring.find((x) => x.id === op.id || x.title.toLowerCase() === String(op.id || op.title || '').toLowerCase());
           if (!r) { errors.push('Impegno ricorrente non trovato'); break; }
           touchedFixed = true;
-          if (date) { r.skip = [...(r.skip || []), date]; log.push(`− ${r.title} saltato il ${date}`); }
+          if (date) { r.skip = [...(r.skip || []), date]; r.updatedAt = now; log.push(`− ${r.title} saltato il ${date}`); }
           else { state.recurring = state.recurring.filter((x) => x !== r); log.push(`− ${r.title} (ricorrente) rimosso`); }
           break;
         }
@@ -760,7 +769,7 @@ const FIELD = {
   id: 'str', title: 'str', kind: ['task', 'event'], date: 'date', start_time: 'time', end_time: 'time', duration_min: 'int', duration_is_estimate: 'bool',
   priority: 'int', deadline: 'date', earliest_date: 'date', window: ['mattina', 'pomeriggio', 'sera'], energy: 'int', depends_on: 'strs', actual_min: 'int',
   note: 'str', project: 'str', color: ['rose', 'lilac', 'sage', 'sand', 'sky'], theme: THEME_KEYS, category: ['vincolo', 'preferenza', 'obiettivo', 'nota'], pref_key: 'str', pref_value: 'str', weekdays: 'ints', unpin: 'bool', sessions: 'sessions',
-  checklist: 'checklist', item_id: 'str',
+  checklist: 'checklist', item_id: 'str', done: 'bool',
 };
 /** Tiene solo operazioni e campi validi; restituisce { ops, dropped }. */
 export function sanitizeOps(raw) {

@@ -1,6 +1,6 @@
 // Capire le frasi senza AI: attività, impegni, durate, scadenze, vincoli, preferenze, obiettivi.
 // Restituisce sempre operazioni strutturate: è store.js a validarle e applicarle.
-import { fmtMin, dateKey, addDays, daysBetween, weekday, dayLabel } from './scheduler.js';
+import { fmtMin, dateKey, addDays, daysBetween, weekday, dayLabel, recurringFirst, eventFirst } from './scheduler.js';
 
 // ---------------------------------------------------------------- utilità
 const ap = (s) => String(s ?? '').replace(/[’`´]/g, "'");
@@ -280,6 +280,8 @@ const inferredProject = (text) => {
 const CONTAINER_CUE = /\b(?:dentro|all'interno|nella\s+(?:card|carta|scheda)|nel\s+(?:blocco|riquadro|box)|sotto\s+(?:la\s+)?(?:card|carta)|in\s+(?:card|carta|scheda))\b/;
 const LIST_WORD = /\b(?:task|cose|attivita|compiti|todo|to-do|to do|lista|elenco)\b/;
 const ADD_VERB = /^(?:e\s+)?(?:metti|mettimi|mettici|aggiungi|aggiungimi|inserisci|segna|scrivi|appunta|elenca|mettere|aggiungere|inserire)\b/;
+// parole che dicono «dove» o «che tipo di cosa» e non sono una voce: «dentro lavoro», «cose da fare dentro»…
+const CONTAINER_WORDS = "dentro|all'interno|nella|nel|nelle|nei|in|card|carta|scheda|blocco|riquadro|box|sotto|la|le|il|lo|i|gli|di|del|della|dei|delle|task|cose|attivita|compiti|todo|to-do|lista|elenco|da|fare|oggi|domani|ho|devo|ci|sono";
 const INFINITIVE = /^[a-zà-ù]+(?:are|ere|ire|arsi|ersi|irsi|arre|urre|orre)\b/i;
 
 /** Gli impegni che possono contenere una lista: quelli di ogni settimana e quelli con orario non ancora passati. */
@@ -331,16 +333,15 @@ export function checklistOps(sentence, state, today) {
   const t = strip(raw);
   if (!CONTAINER_CUE.test(t) && !(ADD_VERB.test(t) && LIST_WORD.test(t))) return null;
   // l'impegno nominato: il nome più lungo che compare come parola intera
-  const wd = weekday(today);
   const hits = checklistTargets(state, today).filter((x) => new RegExp(`(?:^|[^a-z0-9])${esc(x.key)}(?![a-z0-9])`).test(t))
     .sort((a, b) => b.key.length - a.key.length);
   if (!hits.length) return null;
   const top = hits[0];
-  // tra più impegni con lo stesso nome vince quello di oggi (il primo della giornata)
+  // tra più impegni con lo stesso nome vince quello che c'è davvero oggi, poi il più vicino (stessa regola dell'app)
   const same = hits.filter((h) => h.key === top.key);
-  const pickRec = same.map((h) => (state.recurring || []).find((r) => r.id === h.ref)).filter(Boolean)
-    .sort((a, b) => (b.weekdays.includes(wd) - a.weekdays.includes(wd)) || a.start - b.start)[0];
-  const target = pickRec ? same.find((h) => h.ref === pickRec.id) : same[0];
+  const pickRec = same.map((h) => (state.recurring || []).find((r) => r.id === h.ref)).filter(Boolean).sort(recurringFirst(today))[0];
+  const pickEv = same.map((h) => (state.items || []).find((x) => x.id === h.ref)).filter(Boolean).sort(eventFirst(today))[0];
+  const target = same.find((h) => h.ref === (pickRec || pickEv)?.id) || same[0];
 
   // l'elenco: dopo i due punti; altrimenti dopo «da fare» / «devo fare»; altrimenti dopo il nome, se comincia con un verbo
   let list = null;
@@ -355,8 +356,13 @@ export function checklistOps(sentence, state, today) {
       if (INFINITIVE.test(rest)) list = rest;
     }
   }
-  const items = list ? splitList(list) : [];
-  if (!items.length) return { miss: `Ho capito che vuoi mettere delle cose dentro «${target.title}», ma non quali: scrivile dopo i due punti, separate da virgole.` };
+  const noise = new RegExp(`\\b(?:${esc(target.key)}|${CONTAINER_WORDS})\\b`, 'g');
+  const items = (list ? splitList(list) : []).filter((x) => strip(x).replace(noise, ' ').replace(/[^a-z0-9]+/g, ' ').trim().length >= 2);
+  if (!items.length) {
+    // «sto lavorando dentro lavoro» non è una richiesta: solo con un verbo di aggiunta o i due punti chiedo cosa mettere
+    if (!(ADD_VERB.test(t) || colon >= 0)) return null;
+    return { miss: `Ho capito che vuoi mettere delle cose dentro «${target.title}», ma non quali: scrivile dopo i due punti, separate da virgole.` };
+  }
   return { ops: [{ action: 'add_checklist', id: target.ref, title: target.title, checklist: items }], said: [`${items.length === 1 ? 'una cosa' : `${items.length} cose`} dentro «${target.title}»: ${items.join(', ')}`] };
 }
 

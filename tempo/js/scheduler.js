@@ -111,6 +111,24 @@ export function recurringFor(day, recurring = []) {
 }
 
 /**
+ * Tra più impegni ricorrenti con lo stesso nome, per ordinare: prima quello che c'è davvero oggi
+ * (giorno della settimana giusto e non saltato), poi il primo della giornata.
+ */
+export function recurringFirst(today) {
+  const wd = today ? weekday(today) : null;
+  const live = (r) => wd != null && (r.weekdays || []).includes(wd) && !(r.skip || []).includes(today);
+  return (a, b) => live(b) - live(a) || a.start - b.start;
+}
+
+/** Tra più impegni con orario e lo stesso nome, per ordinare: oggi e i prossimi (dal più vicino), poi senza data, poi i passati. */
+export function eventFirst(today) {
+  const rank = (x) => (!x.date || !today ? 1 : x.date >= today ? 0 : 2);
+  return (a, b) => rank(a) - rank(b)
+    || (rank(a) === 2 ? (b.date > a.date ? 1 : b.date < a.date ? -1 : 0) : (a.date || '') < (b.date || '') ? -1 : (a.date || '') > (b.date || '') ? 1 : 0)
+    || (a.start ?? 0) - (b.start ?? 0);
+}
+
+/**
  * Pianifica una singola giornata.
  * pool: attività senza data (o in ritardo) ancora da collocare; viene consumato.
  */
