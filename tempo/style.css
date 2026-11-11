@@ -910,10 +910,20 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .btn, .ch, .round, .bar-btn, .send, .mini-btn, .adv-go, .sw, .fbtn, .cd, .sl-row, .sm-card, .ed-quick button { transition: transform 0.45s var(--spring-soft), background 0.2s, color 0.2s, box-shadow 0.2s; }
 .btn:active, .ch:active, .mini-btn:active, .adv-go:active, .fbtn:active, .ed-quick button:active { transform: scale(0.94); transition-duration: 0.15s; }
 
-/* spazio finito: avviso che resta finché il salvataggio non funziona di nuovo */
-.save-alert { position: absolute; left: 12px; right: 12px; top: calc(var(--safe-t) + 8px); z-index: var(--z-alert); display: flex; flex-direction: column; gap: 10px; padding: 14px 16px;
-  border-radius: 18px; background: var(--ink); color: var(--bg); box-shadow: var(--shadow-lg); font-size: 14.5px; line-height: 1.35; }
-.save-alert .btn.primary { background: var(--bg); color: var(--ink); height: 44px; border-radius: 14px; font-weight: 600; }
+/* avvisi: cosa è successo, perché, cosa puoi fare (app.js, notice) */
+.notices { display: flex; flex-direction: column; gap: 8px; }
+.notices:empty { display: none; }
+.notices:not(.top) { margin: 0 4px 10px; }
+.notices.top { position: fixed; left: 12px; right: 12px; top: calc(var(--safe-t) + 8px); z-index: var(--z-alert); max-width: 560px; margin: 0 auto; pointer-events: none; }
+.notices.top .notice { pointer-events: auto; }
+.notice { max-height: 60vh; padding-right: 40px; }
+.notice p { margin: 0; font-size: 14.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.notice .n-what { font-size: 15.5px; font-weight: 700; }
+.notice .n-why { color: var(--ink-2); margin-top: 4px; }
+.notice .n-next { margin-top: 4px; }
+.notice .r-actions { flex-wrap: wrap; }
+.notice .r-actions .btn { min-height: 44px; }
+.notice .r-x { top: 6px; right: 6px; }
 
 /* presentazione: il riepilogo prima di partire */
 .onb-body.review { justify-content: flex-start; overflow-y: auto; padding: 8px 2px 16px; -webkit-mask-image: linear-gradient(#000 92%, transparent); mask-image: linear-gradient(#000 92%, transparent); }
