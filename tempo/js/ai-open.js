@@ -294,6 +294,9 @@ export async function runOpenTurn({ state, plan, now, userText, onProgress, sign
   let out;
   try { out = parseJson(content); }
   catch {
+    // un JSON rotto o troncato non è una risposta: non si mostra grezzo e non cambia niente
+    const raw = String(content || '').trim();
+    if (/^[{\[]/.test(raw) || /"(ops|reply|action)"\s*:/.test(raw)) throw Object.assign(new Error('formato json non valido'), { code: 'malformata' });
     // il modello ha risposto a parole: mostriamo il testo senza modifiche
     return { text: String(content || '').trim() || 'Non ho capito, puoi riformulare?', ops: [], confirm: false };
   }
