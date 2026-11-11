@@ -728,6 +728,14 @@ function cardHtml(c, i) {
     return `<div class="${cls}" ${open}>${imgTag(c.image)}${check}
       <div class="ph-cap"><b>${title}</b><span>${esc(desc)}</span></div></div>`;
   }
+  if (!ckList) { // tessera compatta: titolo, una riga (ora · durata), icona, spunta a destra; il tipo sta nel nome accessibile
+    const kind = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : 'Attività';
+    const meta = done ? `Fatto alle ${c.doneAt}` : isEvent ? `${c.start} – ${c.end}` : `${c.start} · ${durLabel(c.minutes)}`;
+    const name = `${kind}: ${c.title}, ${desc}${c.project ? ', ' + c.project.name : ''}`;
+    return `<div class="${cls.replace('pc ', 'pc compact ')}" ${open.replace(/aria-label="[^"]*"/, `aria-label="${esc(name)}"`)}>
+      <div class="pc-body"><div class="pc-title">${title}</div><div class="pc-meta">${ic.replace('class="act-ic"', 'class="act-ic mi"')}<span>${esc(meta)}</span></div></div>${check}
+    </div>`;
+  }
   return `<div class="${cls}" ${open}>
     <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div>${ckList}</div>
     <div class="pc-foot">${isTask ? projMark(c.project) : ''}<span>${esc(foot)}</span>${check}</div>
