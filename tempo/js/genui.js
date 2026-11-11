@@ -331,7 +331,9 @@ export const STATES_IN_SYNC = Object.keys(MOODS).every((k) => k in STATES) && Ob
  * cards: carte del giorno non concluse, in ordine ('missed' sempre in vista e fuori dal conto).
  * Restituisce { state, primary, visible, hidden, more }.
  */
-export function stateSpec(scene, { now, cards, isToday } = {}, { expanded = false } = {}) {
+export function stateSpec(scene, ctx, opts) {
+  const { now, cards, isToday } = ctx || {};
+  const expanded = !!(opts && opts.expanded);
   const list = Array.isArray(cards) ? cards.filter((c) => c && typeof c === 'object') : [];
   const adapt = !!scene && isToday !== false && !!isToday;
   const state = adapt && Object.hasOwn(STATES, scene.mood) ? scene.mood : 'normal';
