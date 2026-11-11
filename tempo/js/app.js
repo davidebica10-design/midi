@@ -12,7 +12,7 @@ import * as vm from './viewmodel.js';
 import { plural, windowLabel, durLabel } from './format.js';
 import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout, askSystem, claudeAsk } from './ai.js';
 import { runOpenTurn, openGoalPlan, openAsk, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded, onlineComplete, heavyComplete } from './ai-open.js';
-import { sceneFor, widgetLabel, skinPrompt, sanitizeSkin, LAYOUTS, MOODS } from './genui.js';
+import { sceneFor, widgetLabel, skinPrompt, sanitizeSkin, stateSpec, LAYOUTS, MOODS } from './genui.js';
 import { decide, sceneGoalOptions, stateText, DECIDERS } from './decide.js';
 import { monthRecap, monthKeyOf, prevMonthKey, recapPrompt, sanitizeRecapAi, recapHash, timeChatSystem, recapText, monthName } from './recap.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
@@ -588,6 +588,8 @@ function doneStackHtml(cards, v) {
     </button></section>`;
 }
 
+// «Il resto di oggi» aperto: vale per un solo giorno, solo in memoria (si azzera cambiando giorno)
+let expandedDay = null, lastDayHtml = '';
 function renderDayView(animate, opts = {}) {
   const t = today();
   const v = dayModel();
@@ -615,24 +617,45 @@ function renderDayView(animate, opts = {}) {
 
   // collage su due colonne (come Dot): in ordine di lettura sinistra, destra, sinistra…
   const cols = [[], []];
-  let i = 0;
-  const put = (html) => { cols[i % 2].push(html); i++; };
+  let i = 1;
+  const put = (html) => { cols[(i - 1) % 2].push(html); i++; };
   const rot = (id) => (+tilt(id) * 0.8).toFixed(1);
 
   // 0. bentornato: prima di tutto, a tutta larghezza
   const top = v.welcome ? `<div class="top-wide">${cardHtml({ ...v.welcome, type: 'welcome', r: -0.6 }, 0)}</div>` : '';
 
-  // 1. "adesso" (oggi) come la carta-affermazione
-  if (v.now) {
-    const a = v.now;
-    const act = a.action ? `<button class="adv-go" data-adv="${a.action.type}" data-id="${esc(a.action.id)}">${a.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(a.action.label)}</span></button>` : '';
+  // le carte della giornata; quelle concluse (fatte, o impegni già finiti) vanno nella pila in fondo
+  const nowHM = fmtMin(nowMin());
+  const concluded = (c) => c.type === 'task' ? !!c.done : c.type === 'event' && (v.past || (v.isToday && c.end <= nowHM));
+  const doneCards = [], live = [], pauses = new Map();
+  let pauseBefore = 0;
+  for (const c of v.cards) {
+    if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
+    if (concluded(c)) { doneCards.push(c); pauseBefore = 0; continue; }
+    live.push(c); pauses.set(c, pauseBefore);
+    pauseBefore = 0;
+  }
+  // lo stato decide quante carte si vedono e quale azione è quella primaria (genui.stateSpec)
+  if (expandedDay && expandedDay !== v.day) expandedDay = null;
+  const expanded = expandedDay === v.day;
+  const spec = stateSpec(sc, { now: v.now, cards: live, isToday: v.isToday }, { expanded });
+  const collapsedMore = expanded ? stateSpec(sc, { now: v.now, cards: live, isToday: v.isToday }).more : spec.more;
+
+  // 1. «Adesso»: l'ancora, a tutta larghezza sotto la fascia fissa, con l'unica azione primaria
+  let anchor = '';
+  const a = v.now || (v.isToday && sc?.mood === 'empty' ? { title: 'Giornata libera', why: v.emptyText, mood: 'rest', block: null, action: null } : null);
+  if (a) {
+    const pr = spec.primary;
+    const act = !pr ? '' : pr.type === 'add'
+      ? `<button type="button" class="adv-go" data-adv="add"><i class="ic ic-plus" aria-hidden="true"></i><span>${esc(pr.label)}</span></button>`
+      : `<button type="button" class="adv-go" data-adv="${esc(pr.type)}" data-id="${esc(pr.id)}">${pr.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(pr.label)}</span></button>`;
     const blk = a.block ? `<div class="pc-progress" role="progressbar" aria-valuenow="${a.block.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.block.title)}"><i style="--w:${a.block.pct}%"></i></div><div class="pc-desc">${esc(a.block.title)} · fino alle ${a.block.until} · ${a.block.left} rimasti</div>` : '';
     const blkList = a.block?.checklist ? checklistHtml({ title: a.block.title, ownerId: a.block.ownerId, checklist: a.block.checklist }) : '';
     const nowId = a.block?.kind === 'rest' ? null : a.block?.itemId || a.block?.id || a.action?.id || null;
     const open = nowId ? ` role="button" tabindex="0" data-item="${esc(nowId)}"` : a.block?.kind === 'rest' ? ' role="button" tabindex="0" data-rest="1"' : '';
-    put(`<div class="pc quote adv mood-${a.mood}"${open} style="--r:-2deg;--i:0" aria-live="polite">
+    anchor = `<div class="pc quote adv now-anchor mood-${esc(a.mood)}"${open} style="--r:-0.5deg;--i:0" aria-live="polite">
       <div class="pc-body"><div class="pc-quote">${esc(a.title)}</div>${a.why ? `<div class="pc-desc">${esc(a.why)}</div>` : ''}${blk}${blkList}${act}</div>
-      <div class="pc-label">Adesso</div></div>`);
+      <div class="pc-label">Adesso</div></div>`;
   }
 
   // 1b. la scena: i widget scelti per l'obiettivo che dà il tono (pipeline, conto alla rovescia…), dopo «Adesso»
@@ -641,20 +664,23 @@ function renderDayView(animate, opts = {}) {
   // 2. osservazioni (massimo 2) come carte
   for (const o of v.observations) put(cardHtml({ ...o, type: 'obs', r: rot(o.id) }, i));
 
-  // 3. le carte della giornata; quelle concluse (fatte, o impegni già finiti) vanno nella pila in fondo
-  const nowHM = fmtMin(nowMin());
-  const concluded = (c) => c.type === 'task' ? !!c.done : c.type === 'event' && (v.past || (v.isToday && c.end <= nowHM));
-  const doneCards = [];
-  let pauseBefore = 0;
-  for (const c of v.cards) {
-    if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
-    if (concluded(c)) { doneCards.push(c); pauseBefore = 0; continue; }
-    put(cardHtml({ ...c, pauseBefore, r: rot((c.type === 'missed' ? 'm' : c.type === 'unscheduled' ? 'u' : '') + (c.id || c.at)) }, i));
-    pauseBefore = 0;
-  }
-  const html = `${top}<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>${doneStackHtml(doneCards, v)}${v.emptyText && !doneCards.length ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : ''}`;
+  // 3. le carte in vista
+  for (const c of spec.visible) put(cardHtml({ ...c, pauseBefore: pauses.get(c) || 0, r: rot((c.type === 'missed' ? 'm' : c.type === 'unscheduled' ? 'u' : '') + (c.id || c.at)) }, i));
+
+  const chev = '<svg class="mh-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  const handle = spec.more ? `<button type="button" class="more-handle" data-more="open" aria-expanded="false"><span>${esc(spec.more.label)}</span>${chev}</button>`
+    : expanded && collapsedMore ? `<button type="button" class="more-handle open" data-more="close" aria-expanded="true"><span>Mostra meno</span>${chev}</button>` : '';
+  const hint = v.emptyText && !doneCards.length && !(anchor && spec.state === 'empty') ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : '';
+  const grid = cols[0].length || cols[1].length ? `<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>` : '';
+  const html = `${top}${anchor}${grid}${handle}${doneStackHtml(doneCards, v)}${hint}`;
 
   const col = $('#collage');
+  if (opts.skipSame && !animate && html === lastDayHtml && col.childElementCount) { // l'orologio non ridisegna a vuoto
+    $('#undo-btn').hidden = !canUndo();
+    pushSnapshot(v, sc);
+    return;
+  }
+  lastDayHtml = html;
   const before = animate || opts.flip === false ? null : flipCapture(col, FLIP_SEL);
   const had = col.querySelector('.done-stack .ds-n')?.textContent;
   col.innerHTML = html;
@@ -686,6 +712,7 @@ function applyScene(sc) {
   app.dataset.layout = sc?.layout || 'standard';
   app.dataset.mood = sc?.mood || '';
   bg.dataset.motif = sc?.motif || 'none';
+  bg.classList.toggle('still', ['before', 'full', 'focus'].includes(sc?.mood)); // gli stati «fermi» non animano lo sfondo
   if (sc?.accent && safeColor(sc.accent)) app.style.setProperty('--scene-accent', sc.accent); else app.style.removeProperty('--scene-accent');
   setScenePalette(sc?.palette || null);
   const line = $('#hero-line');
@@ -1704,13 +1731,15 @@ function renderEditor() {
 }
 
 // la scheda: se si apre toccando una carta, la carta si solleva e diventa l'anteprima dell'editor
-let sheetFrom = null;
+let sheetFrom = null, sheetOpener = null;
 function showSheet() {
   const sh = $('#sheet'), from = sheetFrom;
   sheetFrom = null;
   sh.classList.remove('closing');
   sh.classList.toggle('zoom', !!from && !matchMedia('(prefers-reduced-motion: reduce)').matches);
   sh.hidden = false; $('#sheet-backdrop').hidden = false;
+  const app = $('#app');
+  if (!app.inert) { sheetOpener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null; app.inert = true; }
   const card = sh.querySelector('#ed-card');
   if (!from || !card || !sh.classList.contains('zoom')) return;
   const to = card.getBoundingClientRect();
@@ -1723,6 +1752,9 @@ function showSheet() {
 function closeSheet() {
   const sh = $('#sheet'), bd = $('#sheet-backdrop');
   if (sh.hidden) return;
+  const app = $('#app'), opener = sheetOpener;
+  sheetOpener = null; app.inert = false;
+  if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
   sh.classList.add('closing'); bd.classList.add('closing');
   setTimeout(() => { sh.hidden = true; bd.hidden = true; sh.classList.remove('closing'); bd.classList.remove('closing'); }, 260);
 }
@@ -2457,8 +2489,10 @@ function bind() {
       if (a2.dataset.act2 === 'move') quickOp('move', id, { date: addDays(selDay, 1) });
       return;
     }
+    const mh = e.target.closest('[data-more]');
+    if (mh) { e.stopPropagation(); expandedDay = mh.dataset.more === 'open' ? selDay : null; renderDayView(false); col.querySelector('.more-handle')?.focus({ preventScroll: true }); return; }
     const ad = e.target.closest('[data-adv]');
-    if (ad) { e.stopPropagation(); if (ad.dataset.adv === 'start') startFocusFor(ad.dataset.id); else quickOp(ad.dataset.adv, ad.dataset.id); return; }
+    if (ad) { e.stopPropagation(); if (ad.dataset.adv === 'add') openBar(); else if (ad.dataset.adv === 'start') startFocusFor(ad.dataset.id); else quickOp(ad.dataset.adv, ad.dataset.id); return; }
     const ox = e.target.closest('[data-obs-close]');
     if (ox) { e.stopPropagation(); closeObservation(state, ox.dataset.obsClose, Date.now()); save(state); renderDayView(false); return; }
     const wl = e.target.closest('[data-welcome]');
@@ -2801,9 +2835,9 @@ function bind() {
 
   // il tempo passa: aggiorna piano e carte
   const tick = () => {
+    const snap = JSON.stringify(state);
     maybeArchive();
     const now = Date.now();
-    if (!document.hidden) state.stats.lastOpenAt = now;
     const before = positions(plan);
     // di solito cambia solo oggi (il tempo passa): il resto del piano e il piano lungo restano quelli
     const next = refreshToday(state, plan, now);
@@ -2811,12 +2845,16 @@ function bind() {
     else { const keep = dataRev; replan(); dataRev = keep; }
     const after = positions(plan);
     if ([...after].some(([id, p]) => before.has(id) && (before.get(id).day !== p.day || before.get(id).start !== p.start))) countAutoReplan();
-    save(state);
-    if (mode === 'day') renderDayView(false); else renderCalendar(false);
+    // «ultima apertura» si aggiorna al massimo ogni 10 minuti; si salva solo se è cambiato qualcosa
+    let changed = JSON.stringify(state) !== snap;
+    if (!document.hidden && now - (state.stats.lastOpenAt || 0) > 600000) { state.stats.lastOpenAt = now; changed = true; }
+    if (changed) save(state);
+    if (mode === 'day') renderDayView(false, { skipSame: true }); else renderCalendar(false);
     renderComposer();
   };
   setInterval(tick, 30000);
   document.addEventListener('visibilitychange', () => {
+    document.documentElement.classList.toggle('page-hidden', document.hidden); // gli sfondi animati si fermano
     if (document.hidden) return;
     // tornato dopo 7 giorni o più (l'app era rimasta aperta in background): bentornato
     if (noteOpen(state, Date.now())) { replan(); renderDayView(true); }
