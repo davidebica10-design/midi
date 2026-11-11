@@ -234,7 +234,7 @@ export function findInvite(text, now) {
     let dec = src;
     try { dec = decodeURIComponent(src); } catch { /* resta com'è */ }
     for (const s of dec === src ? [src] : [src, dec]) {
-      for (const re of [/tempo:inv1:([A-Za-z0-9_\-\s]*)/gi, /invito=(?:tempo:inv1:)?([A-Za-z0-9_\-\s]*)/gi]) {
+      for (const re of [/tempo:inv1:((?:(?!tempo:inv1:)[A-Za-z0-9_\-\s])*)/gi, /invito=(?:tempo:inv1:)?([A-Za-z0-9_\-\s]*)/gi]) {
         let n = 0;
         for (const m of s.matchAll(re)) {
           if (++n > 5) break;
