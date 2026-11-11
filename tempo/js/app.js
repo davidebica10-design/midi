@@ -31,6 +31,14 @@ function itDate(d, prep = 'il', withYear = false) {
   return `${art}${n} ${d.toLocaleDateString('it-IT', { month: 'long', ...(withYear ? { year: 'numeric' } : {}) })}`;
 }
 /** Una data valida o niente: mai «Invalid Date» nella pagina. */
+/** Testo per un guasto di Tempo Cloud: le frasi scritte da noi passano, tutto il resto diventa una frase con il prossimo passo. */
+const cloudMsg = (e) => {
+  const st = e && typeof e.status === 'number' ? e.status : null;
+  if (st === 401) return 'Accesso scaduto. Entra di nuovo.';
+  if (st !== null && st >= 500) return 'Tempo Cloud ha un problema suo. Riprova tra qualche minuto.';
+  const m = st !== null && e.message ? String(e.message).slice(0, 140) : '';
+  return m && !/^errore \d+$/i.test(m) && m !== 'conflict' ? m : 'Non sono riuscito a parlare con Tempo Cloud. Riprova tra poco.';
+};
 const validDate = (v) => { if (v == null || v === '') return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; };
 /** Titolo corto per i messaggi di una riga: al massimo 28 caratteri, poi «…». */
 const shortTitle = (t) => { t = String(t ?? '').replace(/\s+/g, ' ').trim(); return t.length > 28 ? t.slice(0, 28).trimEnd() + '…' : t; };
@@ -2394,7 +2402,7 @@ async function runSync(manual = false) {
     if (how === 'pulled' || how === 'merged') { renderAll(); if (manual) toast('Aggiornato dagli altri dispositivi'); }
     else if (manual) toast('Tutto sincronizzato');
   } catch (e) {
-    state.settings.cloudError = e.status === 401 ? 'Accesso scaduto: entra di nuovo.' : e.message;
+    state.settings.cloudError = cloudMsg(e);
     if (e.status === 401) state.settings.cloudToken = '';
     save(state);
     if (manual) toast(state.settings.cloudError);
@@ -2482,7 +2490,7 @@ async function cloudClick(id, el) {
       toast('Collegamento revocato');
     } else return;
   } catch (e) {
-    S.cloudError = e.message; save(state); toast(e.message);
+    S.cloudError = cloudMsg(e); save(state); toast(S.cloudError);
   }
   if (el) el.disabled = false;
   if (settingsOpen) renderSettings();
