@@ -550,14 +550,14 @@ function setComposing(on) {
   syncBar();
 }
 
-// La barra sta chiusa nel «+» laterale; si apre toccandolo e si richiude quando non serve più
+// La barra è sempre in basso (agganciata); «bar-open» è la composizione aperta, che si richiude quando non serve più
 let barForced = false, plusAt = 0;
 function syncBar() {
   const input = $('#input');
   const open = barForced || composing || busy || !$('#reply').hidden || !$('#plus-menu').hidden || !!input.value.trim() || !!rec;
   $('#app').classList.toggle('bar-open', open);
   $('#plus').setAttribute('aria-expanded', open);
-  $('#plus').setAttribute('aria-label', open ? 'Aggiungi un\'attività' : 'Parla con Tempo');
+  $('#plus').setAttribute('aria-label', 'Aggiungi un\'attività');
   if (!open) barForced = false;
 }
 function openBar() {
@@ -2921,8 +2921,8 @@ function bind() {
     renderComposer();
   });
   $('#mic').addEventListener('click', () => { setComposing(true); toggleMic(); });
-  $('#plus').addEventListener('pointerdown', () => { if ($('#app').classList.contains('bar-open')) plusAt = Date.now(); });
-  $('#plus').addEventListener('click', () => { if (!$('#app').classList.contains('bar-open')) openBar(); else togglePlus(); });
+  $('#plus').addEventListener('pointerdown', () => { plusAt = Date.now(); });
+  $('#plus').addEventListener('click', () => togglePlus());
   $('#plus-menu').addEventListener('click', (e) => {
     const b = e.target.closest('[data-plus]');
     if (!b) return;

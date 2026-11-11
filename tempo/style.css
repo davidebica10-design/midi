@@ -575,9 +575,9 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .bar-row textarea::placeholder { color: var(--ink-3); }
 .bar-btn { width: 40px; height: 40px; color: var(--ink); }
 .send { width: 34px; height: 34px; background: var(--ink); color: var(--bg); }
-#app:not(.bar-open) .bar-row { width: 48px; padding: 0; justify-content: center; }
-#app:not(.bar-open) .bar-row > :not(#plus) { display: none !important; }
-#app:not(.bar-open) .bar-row #plus { width: 48px; height: 48px; }
+/* agganciata: sempre una sola pillola a tutta larghezza; aperta, guadagna la nota e il riepilogo sopra */
+.bar-row { min-height: 52px; border-radius: 26px; padding: 4px 6px 4px 6px; box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent), 0 10px 26px -14px rgba(60, 30, 50, 0.35); }
+.bar-row textarea { cursor: text; }
 #app:not(.bar-open) .mini-sum, #app:not(.bar-open) .reply { display: none; }
 #plus .ic { transition: transform 0.35s var(--spring); }
 #plus.open .ic { transform: rotate(45deg); }
