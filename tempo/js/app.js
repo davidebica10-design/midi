@@ -30,6 +30,8 @@ function itDate(d, prep = 'il', withYear = false) {
   const art = prep === 'del' ? (elide ? 'dell\'' : 'del ') : (elide ? 'l\'' : 'il ');
   return `${art}${n} ${d.toLocaleDateString('it-IT', { month: 'long', ...(withYear ? { year: 'numeric' } : {}) })}`;
 }
+/** Una data valida o niente: mai «Invalid Date» nella pagina. */
+const validDate = (v) => { if (v == null || v === '') return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; };
 /** Titolo corto per i messaggi di una riga: al massimo 28 caratteri, poi «…». */
 const shortTitle = (t) => { t = String(t ?? '').replace(/\s+/g, ' ').trim(); return t.length > 28 ? t.slice(0, 28).trimEnd() + '…' : t; };
 
@@ -331,9 +333,33 @@ function notice({ key, what, why, next, detail = '', action = null, sticky = fal
   el.innerHTML = `<button type="button" class="r-x" aria-label="Chiudi">×</button><p class="n-what">${esc(what)}</p>${why ? `<p class="n-why">${esc(why)}</p>` : ''}${next ? `<p class="n-next">${esc(next)}</p>` : ''}${detail ? `<p class="n-code">${esc(detail)}</p>` : ''}${acts.length ? `<div class="r-actions">${acts.map((a, k) => `<button type="button" class="btn${k === 0 ? ' primary' : ''}">${esc(a.label)}</button>`).join('')}</div>` : ''}`;
   el.querySelector('.r-x').addEventListener('click', () => dismissNotice(key));
   el.querySelectorAll('.r-actions .btn').forEach((b, k) => b.addEventListener('click', () => { if (!acts[k].keep) dismissNotice(key); acts[k].fn(); }));
+  if (host === 'top') { dockNotices(); if (!sticky && !acts.length) el.dataset.tied = dockedOn; }
   box.append(el);
   if (!sticky && !acts.length) noticeTimers[key] = setTimeout(() => dismissNotice(key), 14000);
   return el;
+}
+/** Gli avvisi in alto non coprono mai l'intestazione di una scheda o di una schermata: dentro, sotto la testata. */
+const SURFACES = [['#sheet', '.grabber'], ['#onb', '.onb-top'], ['#recap', '.sum-head'], ['#summary', '.sum-head'], ['#panel', '.panel-head']];
+let dockedOn = '';
+function dockNotices() {
+  const host = $('#notices-top');
+  if (!host) return;
+  let anchor = null, name = '';
+  for (const [sel, head] of SURFACES) {
+    const el = $(sel);
+    if (el && !el.hidden && !el.classList.contains('closing') && (anchor = el.querySelector(head))) { name = sel; break; }
+    anchor = null;
+  }
+  if (name !== dockedOn) { // la superficie è cambiata: gli avvisi senza scelta legati alla vecchia si chiudono con lei
+    for (const el of host.querySelectorAll('[data-tied]')) if (dockedOn && el.dataset.tied === dockedOn && !el.querySelector('.r-actions')) el.remove();
+    dockedOn = name;
+  }
+  if (anchor) { if (host.previousElementSibling !== anchor) anchor.after(host); host.classList.add('docked'); }
+  else if (host.classList.contains('docked')) { host.classList.remove('docked'); document.body.insertBefore(host, $('#toast')); }
+}
+function watchSurfaces() {
+  const mo = new MutationObserver(dockNotices);
+  for (const [sel] of SURFACES) { const el = $(sel); if (el) mo.observe(el, { attributes: true, attributeFilter: ['hidden', 'class'] }); }
 }
 function dismissNotice(key, now = false) {
   clearTimeout(noticeTimers[key]);
@@ -1042,7 +1068,8 @@ function renderFocusCtl(f) {
     html = `<div class="f-row">${b('skipbreak', 'Salta la pausa', 'primary')}${b('end', 'Termina')}</div>`;
   } else if (f.phase === 'done') {
     const w = workedMin(f, Date.now());
-    html = `<p class="f-note">${w ? `Hai lavorato ${durLabel(w)} su «${esc(f.title)}».` : `«${esc(f.title)}»`} Com'è andata?</p>
+    const late = lateEnd && lateEnd.itemId === f.itemId ? `<p class="f-note f-late">Il timer è finito alle ${esc(lateEnd.hm)}, mentre Tempo era chiuso.</p>` : '';
+    html = `${late}<p class="f-note">${w ? `Hai lavorato ${durLabel(w)} su «${esc(f.title)}».` : `«${esc(f.title)}»`} Com'è andata?</p>
       <div class="f-row">${b('done', 'Fatta', 'primary')}${f.mode === 'timer' ? b('more', 'Altri 10\'') : b('go2', 'Un altro giro')}${b('later', 'Non ancora')}</div>`;
   }
   $('#focus-ctl').innerHTML = html;
@@ -1078,6 +1105,7 @@ function updateFocus() {
 }
 const minOfDay = (t) => { const d = new Date(t); return d.getHours() * 60 + d.getMinutes(); };
 
+let lateEnd = null; // { itemId, hm }: il timer è finito mentre Tempo era chiuso
 /** Il tempo della fase è finito. */
 function advanceFocus() {
   const f = state.focus;
@@ -1090,15 +1118,9 @@ function advanceFocus() {
     focusOpen = true;
     heroKey = '';
     save(state);
-    renderDayView(false);
     const hm = new Date(endedAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-    notice({
-      key: 'timer', sticky: true,
-      what: `Il timer è finito alle ${hm}, mentre Tempo era chiuso.`,
-      why: `«${shortTitle(f.title)}»: ${workedMin(state.focus, now) ? `hai lavorato ${durLabel(workedMin(state.focus, now))}` : 'non conto altro tempo'}.`,
-      next: 'Com\'è andata?',
-      action: [{ label: 'Fatta', fn: () => endFocus('done') }, { label: 'Non ancora', fn: () => endFocus('later') }],
-    });
+    lateEnd = { itemId: f.itemId, hm }; // la riga sta nel pannello del timer, sopra la sua domanda
+    renderDayView(false);
     return;
   }
   const next = focusNext(f, now);
@@ -1136,6 +1158,7 @@ function endFocus(how, quiet = false) {
   focusOpen = false;
   heroKey = '';
   dismissNotice('timer', true);
+  lateEnd = null;
   let undoId = null;
   if (how === 'done') undoId = quickOp('complete', f.itemId, w ? { actual_min: w } : {});
   else if (how === 'later' && w) { if (quiet) { applyOps(state, [{ action: 'progress', id: f.itemId, actual_min: w }]); save(state); } else undoId = quickOp('progress', f.itemId, { actual_min: w }); }
@@ -2396,7 +2419,7 @@ function settingsCloudHtml() {
       <p class="note">Facoltativo. Con un account lo stesso tempo è su iPhone, Mac e web, e puoi parlarci da fuori: Siri e Comandi rapidi (anche in auto con CarPlay) e gli assistenti AI. Le chiavi AI restano su questo dispositivo; i dati sul server sono cifrati. Senza account tutto resta qui.</p>
     </div>`;
   }
-  const at = S.cloudAt ? new Date(S.cloudAt).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'mai';
+  const at = validDate(S.cloudAt) ? validDate(S.cloudAt).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'mai';
   const linkBox = clLink ? `<div class="cl-box" role="region" aria-label="Nuovo collegamento">
       <p><b>Collegamento «${esc(clLink.name)}» creato.</b> Il codice si vede solo adesso: copialo dove serve.</p>
       <label>Codice<input type="text" readonly value="${esc(clLink.token)}" data-copy></label>
@@ -2404,7 +2427,7 @@ function settingsCloudHtml() {
       <label>Assistenti AI (MCP)<input type="text" readonly value="${esc(url)}/mcp/t/${esc(clLink.token)}" data-copy></label>
       <p class="note">Nei Comandi rapidi aggiungi l'intestazione «Authorization: Bearer» + codice. Per dire qualcosa a Tempo: POST su ${esc(url)}/v1/tell?format=text con la frase come testo. Istruzioni complete in cloud/README.md.</p>
       <button type="button" class="btn" id="cl-link-close">Fatto</button></div>` : '';
-  const links = clLinks ? `<div class="cl-box">${clLinks.length ? clLinks.map((t) => `<div class="row"><span class="lbl">${esc(t.name)}<small>${t.scope === 'full' ? 'dispositivo' : 'collegamento esterno'}${t.current ? ' · questo' : ''} · ${new Date(t.created).toLocaleDateString('it-IT')}</small></span>${t.current ? '' : `<button type="button" class="x" data-cl-revoke="${esc(t.id)}" aria-label="Revoca ${esc(t.name)}">×</button>`}</div>`).join('') : '<p>Nessun collegamento.</p>'}<button type="button" class="btn" id="cl-links-close">Chiudi</button></div>` : '';
+  const links = clLinks ? `<div class="cl-box">${clLinks.length ? clLinks.map((t) => `<div class="row"><span class="lbl">${esc(t.name)}<small>${t.scope === 'full' ? 'dispositivo' : 'collegamento esterno'}${t.current ? ' · questo' : ''} ${validDate(t.created) ? '· ' + validDate(t.created).toLocaleDateString('it-IT') : ''}</small></span>${t.current ? '' : `<button type="button" class="x" data-cl-revoke="${esc(t.id)}" aria-label="Revoca ${esc(t.name)}">×</button>`}</div>`).join('') : '<p>Nessun collegamento.</p>'}<button type="button" class="btn" id="cl-links-close">Chiudi</button></div>` : '';
   return `<div class="group"><h2>Account e dispositivi</h2>
     <div class="card">
       <div class="row"><span class="lbl">${esc(S.cloudEmail || 'Account')}<small>${S.cloudError ? '✗ ' + esc(S.cloudError) : `sincronizzato: ${esc(at)}`}</small></span><button type="button" class="btn" id="cl-sync" ${syncing ? 'disabled' : ''}>${syncing ? 'Sincronizzo…' : 'Sincronizza'}</button></div>
@@ -2622,7 +2645,7 @@ function openBackupSheet() {
       <div class="ed-sub">Ora hai ${esc(countsLabel(countsOf(state)))}.</div>
       <div class="ed-sub">Nel backup${date ? ` (${esc(date)})` : ''} ci sono ${esc(countsLabel(counts))}.</div>
       <div class="ed-sub">Sostituisce quello che hai adesso. Potrai annullare finché non chiudi l'app.</div><div class="ed-foot"><span>Backup</span></div></div>
-    <div class="ed-actions"><button type="button" class="btn ed-save" data-sheet="backup-go">Ripristina</button><button type="button" class="btn ed-save" data-sheet="close">Lascia com'è</button></div>`;
+    <div class="ed-actions"><button type="button" class="btn primary ed-save" data-sheet="backup-go">Ripristina</button><button type="button" class="btn ed-save" data-sheet="close">Lascia com'è</button></div>`;
   $('#sheet-form').dataset.id = '';
   showSheet();
 }
@@ -3237,8 +3260,8 @@ function syncSaveAlert() {
 
 /** Dati illeggibili all'avvio: restano da parte, e si possono scaricare. */
 function showBrokenNotice({ raw, at }) {
-  const d = new Date(at);
-  const when = `${itDate(d)}, alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
+  const d = validDate(at);
+  const when = d ? `${itDate(d)}, alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}` : 'data non nota';
   const kb = Math.max(1, Math.round(raw.length / 1024));
   notice({
     key: 'rotto', sticky: true, alert: true, host: 'top',
@@ -3254,7 +3277,7 @@ function showBrokenNotice({ raw, at }) {
 function brokenRowHtml() {
   const b = brokenCopy();
   if (!b) return '';
-  const when = b.at ? ` ${itDate(b.at, 'del')}` : '';
+  const when = validDate(b.at) ? ` ${itDate(b.at, 'del')}` : '';
   if (brokenAsk) {
     return `<div class="row broken-row"><span class="lbl">Eliminare la copia${esc(when ? ' ' + when.trim() : '')}?<small>Non si può recuperare.</small></span><button type="button" class="btn danger" id="broken-yes">Elimina</button><button type="button" class="btn" id="broken-no">Tengo</button></div>`;
   }
@@ -3357,4 +3380,17 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').then((r) => r.update()).catch(() => {});
 }
 // per i test
+watchSurfaces();
+/** Le file di chip che scorrono di lato sfumano sul bordo dove continuano (solo se c'è altro da vedere). */
+function fadeChips(root = document) {
+  root.querySelectorAll('.chips-x').forEach((el) => {
+    el.style.setProperty('--fr', el.scrollLeft + el.clientWidth < el.scrollWidth - 4 ? '28px' : '0px');
+    el.style.setProperty('--fl', el.scrollLeft > 4 ? '28px' : '0px');
+  });
+}
+let fadeRaf = 0;
+const fadeSoon = () => { cancelAnimationFrame(fadeRaf); fadeRaf = requestAnimationFrame(() => fadeChips()); };
+document.addEventListener('scroll', (e) => { if (e.target.classList?.contains('chips-x')) fadeChips(e.target.parentNode); }, true);
+window.addEventListener('resize', fadeSoon);
+for (const sel of ['#sheet-form', '#focus-ctl', '#settings']) { const el = $(sel); if (el) new MutationObserver(fadeSoon).observe(el, { childList: true, subtree: true }); }
 window.__tempo = { state, get plan() { return plan; }, send, replan, renderAll, openOverview, openDay };
