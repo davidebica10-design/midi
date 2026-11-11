@@ -252,6 +252,38 @@ Il timer è in `state.focus` e si basa sugli orari: continua anche ad app chiusa
 
 **Àncora stabile:** «Adesso» resta sempre la prima carta; i widget vengono subito dopo, prima delle osservazioni. Durante un'attività la scena toglie i widget: conta solo quello che stai facendo.
 
+### Stati del tempo (contratto)
+
+Il numero di carte in vista e l'azione primaria non sono una scelta di stile: sono dati, in `STATES` (`genui.js`), allineata a mano con `MOODS` (`STATES_IN_SYNC`). `app.js` disegna ciò che `stateSpec` restituisce, nient'altro.
+
+| stato | `cards` (sotto «Adesso») | `primary` ammessa |
+| --- | --- | --- |
+| `first`, `normal`, `off` | `null` (tutte) | `start`, `complete` |
+| `empty` | 0 | `add` |
+| `before` | 2 | `start`, `complete` |
+| `doing` | 2 | `complete` |
+| `focus` | 1 | `complete` |
+| `full` | 3 | `start`, `complete` |
+| `evening` | 0 | nessuna |
+
+**Tre fasce fisse**, sempre in quest'ordine: **Cima** (altezza fissa: ora e saluto, icona o anello; cambia il contenuto, mai l'altezza) · **Adesso** (ancora a tutta larghezza, stessa posizione in ogni stato, con l'unica azione primaria) · **Il resto** (widget, osservazioni, carte, pila delle concluse).
+
+`stateSpec(scene, { now, cards, isToday }, { expanded = false })` è pura e non lancia mai. `cards` sono le carte del giorno **non concluse**, in ordine. Restituisce `{ state, primary, visible, hidden, more }`:
+
+- `state`: `scene.mood` se è in `STATES`, altrimenti `normal`. Con `scene` nulla (adattamento spento) o `isToday` falso tutto è in vista.
+- Le carte `missed` sono sempre in vista e non contano nel limite; delle altre restano le prime `cards`, il resto va in `hidden`. L'ordine originale si conserva. Con `expanded` o limite `null`, `hidden` è vuoto. Se si nasconderebbe una carta sola, resta in vista.
+- `more`: `null` oppure `{ count, from, label }`; `from` è l'`start` della prima carta nascosta che ce l'ha. Esempio: `Altre 5 · dalle 13:00` (senza orario: `Altre 5`).
+- `primary`: in `empty` è `{ type: 'add', label: 'Aggiungi' }`; altrimenti è `now.action` (`{ type, id, label }` da `viewmodel.today`) solo se il suo `type` è ammesso dallo stato, altrimenti `null`.
+
+```js
+stateSpec({ mood: 'full' }, { isToday: true, now: { action: { type: 'start', id: 'a', label: 'Inizia' } },
+  cards: [t1, t2, t3, t4, t5] })
+// → { state: 'full', primary: { type: 'start', id: 'a', label: 'Inizia' },
+//     visible: [t1, t2, t3], hidden: [t4, t5], more: { count: 2, from: '15:00', label: 'Altre 2 · dalle 15:00' } }
+```
+
+Regola ferma: il compagno e l'AI riempiono i componenti del catalogo chiuso; non scelgono mai disposizione, conteggi né azioni. Quelli li decidono il codice (`stateSpec`) e il viewmodel.
+
 ### Catalogo dei widget (carte `.pc.scene`)
 
 | type | Dati | Uso tipico |
