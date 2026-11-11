@@ -1124,4 +1124,4 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .more-handle.open .mh-chev { transform: rotate(180deg); }
 
 /* sfondo fermo: pagina nascosta, oppure stati «fermi» (prima di un impegno, giornata piena, focus) */
-.page-hidden .bg i, .bg.still i { animation-play-state: paused; }
+.page-hidden .bg i, .page-hidden .blob i, .bg.still i { animation-play-state: paused; }

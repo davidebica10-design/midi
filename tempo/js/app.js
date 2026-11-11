@@ -38,7 +38,7 @@ function planFor(k) {
   return plan[k] || (planCache[k] ||= planDay(k, state.items, { ...state.prefs, projectDue: projectDue(state) }, Date.now(), [], state.recurring, state.anchors || {}));
 }
 // dataRev cambia quando cambiano i dati (non a ogni tick): il piano lungo si ricalcola solo allora, o quando cambia il giorno
-let dataRev = 0, fitCache = null;
+let dataRev = 0, fitCache = null, lastSavedOpenAt = 0;
 /** Dove finiscono le sessioni di ogni obiettivo (orizzonte lungo, calcolato solo quando serve). */
 function goalFits() {
   if (fitCache?.rev === dataRev && fitCache.day === today()) return fitCache.fits;
@@ -1731,15 +1731,20 @@ function renderEditor() {
 }
 
 // la scheda: se si apre toccando una carta, la carta si solleva e diventa l'anteprima dell'editor
-let sheetFrom = null, sheetOpener = null;
+let sheetFrom = null, sheetOpener = null, sheetTimer = 0;
 function showSheet() {
   const sh = $('#sheet'), from = sheetFrom;
   sheetFrom = null;
+  clearTimeout(sheetTimer);
   sh.classList.remove('closing');
   sh.classList.toggle('zoom', !!from && !matchMedia('(prefers-reduced-motion: reduce)').matches);
   sh.hidden = false; $('#sheet-backdrop').hidden = false;
   const app = $('#app');
-  if (!app.inert) { sheetOpener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null; app.inert = true; }
+  if (!app.inert) {
+    const ae = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    sheetOpener = ae ? { el: ae, id: ae.closest?.('[data-item]')?.dataset.item || null } : null;
+    app.inert = true;
+  }
   const card = sh.querySelector('#ed-card');
   if (!from || !card || !sh.classList.contains('zoom')) return;
   const to = card.getBoundingClientRect();
@@ -1751,12 +1756,20 @@ function showSheet() {
 }
 function closeSheet() {
   const sh = $('#sheet'), bd = $('#sheet-backdrop');
-  if (sh.hidden) return;
   const app = $('#app'), opener = sheetOpener;
-  sheetOpener = null; app.inert = false;
-  if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
+  sheetOpener = null; app.inert = false; // sempre, anche se la scheda è già nascosta
+  if (sh.hidden) return;
+  // l'elemento che l'aveva aperta può essere stato ridisegnato: si cerca per id, poi si ripiega sul collage
+  let target = opener && document.contains(opener.el) ? opener.el : null;
+  if (!target && opener?.id) target = [...document.querySelectorAll('[data-item]')].find((e) => e.dataset.item === opener.id && !e.closest('#sheet')) || null;
+  if (!target && opener) {
+    target = $('.now-anchor') || $('#collage') || null;
+    if (target && !target.matches('a, button, input, textarea, select, [tabindex]')) target.setAttribute('tabindex', '-1');
+  }
+  target?.focus({ preventScroll: true });
   sh.classList.add('closing'); bd.classList.add('closing');
-  setTimeout(() => { sh.hidden = true; bd.hidden = true; sh.classList.remove('closing'); bd.classList.remove('closing'); }, 260);
+  clearTimeout(sheetTimer);
+  sheetTimer = setTimeout(() => { sh.hidden = true; bd.hidden = true; sh.classList.remove('closing'); bd.classList.remove('closing'); }, 260);
 }
 
 function readSheet() {
@@ -2835,7 +2848,9 @@ function bind() {
 
   // il tempo passa: aggiorna piano e carte
   const tick = () => {
-    const snap = JSON.stringify(state);
+    // solo ciò che il tick può cambiare: ancore, conteggio delle ripianificazioni di oggi, giorno d'archivio
+    const sigOf = () => `${JSON.stringify(state.anchors)}|${state.stats.replans[today()] || 0}|${state.stats.archivedOn}`;
+    const snap = sigOf();
     maybeArchive();
     const now = Date.now();
     const before = positions(plan);
@@ -2846,18 +2861,22 @@ function bind() {
     const after = positions(plan);
     if ([...after].some(([id, p]) => before.has(id) && (before.get(id).day !== p.day || before.get(id).start !== p.start))) countAutoReplan();
     // «ultima apertura» si aggiorna al massimo ogni 10 minuti; si salva solo se è cambiato qualcosa
-    let changed = JSON.stringify(state) !== snap;
+    let changed = sigOf() !== snap;
     if (!document.hidden && now - (state.stats.lastOpenAt || 0) > 600000) { state.stats.lastOpenAt = now; changed = true; }
-    if (changed) save(state);
+    if (changed) { save(state); lastSavedOpenAt = state.stats.lastOpenAt || 0; }
     if (mode === 'day') renderDayView(false, { skipSame: true }); else renderCalendar(false);
     renderComposer();
   };
   setInterval(tick, 30000);
+  document.documentElement.classList.toggle('page-hidden', document.hidden); // se la pagina parte nascosta
   document.addEventListener('visibilitychange', () => {
     document.documentElement.classList.toggle('page-hidden', document.hidden); // gli sfondi animati si fermano
     if (document.hidden) return;
     // tornato dopo 7 giorni o più (l'app era rimasta aperta in background): bentornato
-    if (noteOpen(state, Date.now())) { replan(); renderDayView(true); }
+    const welcome = noteOpen(state, Date.now());
+    if (welcome) { replan(); renderDayView(true); }
+    // noteOpen aggiorna solo la memoria: se è passato tempo dall'ultimo valore salvato, si salva ora
+    if (welcome || Date.now() - lastSavedOpenAt > 600000) { save(state); lastSavedOpenAt = state.stats.lastOpenAt || 0; }
     tick();
   });
 }
@@ -2917,6 +2936,7 @@ function exportData() {
 }
 
 // ---------------------------------------------------------------- avvio
+lastSavedOpenAt = state.stats.lastOpenAt || 0;
 noteOpen(state, Date.now()); // 7 giorni o più dall'ultima apertura: «Bentornato» (e allarmi in pausa finché non rispondi)
 replan();
 save(state);
