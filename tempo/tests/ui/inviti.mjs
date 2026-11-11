@@ -89,7 +89,7 @@ const aperti = [];
 const scenario = async (nome, fn) => {
   if (solo && !nome.startsWith(solo + '.')) return;
   console.log(nome);
-  try { await fn(); } catch (e) { ko++; console.log(`  FALLITO: ${nome}: lo scenario si è interrotto: ${String(e.message).split('\n')[0]}`); }
+  try { await fn(); } catch (e) { ko++; console.log(`  FALLITO: ${nome}: lo scenario si è interrotto: ${String(e.message).split('\n').slice(0, 6).join(' / ')}`); }
   while (aperti.length) await aperti.pop().close().catch(() => {});
 };
 
@@ -168,7 +168,7 @@ const titoli = (xs) => xs.map((i) => i.title);
 
 /** Anna propone la cena dalla scheda dell'impegno fisso e condivide. Restituisce il messaggio catturato. */
 async function annaProponeDallaScheda(page) {
-  await page.locator('#collage .pc[data-item]', { hasText: CENA }).first().locator('.pc-title').click(); await quieta(page);
+  await page.locator('#collage .pc.compact.event', { hasText: CENA }).first().locator('.pc-title').click(); await quieta(page);
   await page.locator('[data-sheet="propose"]').click(); await quieta(page);
   await page.locator('[data-inv="share"]').click(); await quieta(page);
   return ultimo(page, '__share');
@@ -178,7 +178,7 @@ async function annaProponeDallaScheda(page) {
 await scenario('1. Anna propone dalla scheda di un impegno fisso', async () => {
   const { page } = await persona({ chi: 'a', tz: ROMA, items: ANNA() });
   const prima = await voci(page);
-  await page.locator('#collage .pc[data-item]', { hasText: CENA }).first().locator('.pc-title').click(); await quieta(page);
+  await page.locator('#collage .pc.compact.event', { hasText: CENA }).first().locator('.pc-title').click(); await quieta(page);
   check(await page.locator('[data-sheet="propose"]').count() === 1, '1: nella scheda dell\'impegno fisso doveva esserci [data-sheet="propose"]');
   await page.locator('[data-sheet="propose"]').click(); await quieta(page);
   // senza firma il tocco su Condividi non manda niente
@@ -200,7 +200,7 @@ await scenario('1. Anna propone dalla scheda di un impegno fisso', async () => {
   check(anteprima.replace(/\s+/g, '') === (msg || '').replace(/\s+/g, ''), '1: l\'anteprima in .inv-msg doveva essere identica al testo mandato');
   const dopo = await voci(page);
   check(JSON.stringify(dopo.map((i) => [i.id, i.title, i.date, i.start])) === JSON.stringify(prima.map((i) => [i.id, i.title, i.date, i.start])), `1: il piano di Anna doveva restare com'era: ${JSON.stringify(titoli(dopo))}`);
-  const mark = await page.locator('#collage .pc[data-item]', { hasText: CENA }).first().evaluate((el) => ({ marcatore: el.querySelector('.inv-mark')?.textContent.trim() ?? null, nome: el.getAttribute('aria-label') }));
+  const mark = await page.locator('#collage .pc.compact.event', { hasText: CENA }).first().evaluate((el) => ({ marcatore: el.querySelector('.inv-mark')?.textContent.trim() ?? null, nome: el.getAttribute('aria-label') }));
   check(mark.marcatore === 'in attesa di risposta', `1: la tessera doveva mostrare .inv-mark «in attesa di risposta», mostra ${JSON.stringify(mark.marcatore)}`);
   check(/in attesa di risposta/.test(mark.nome), `1: il nome accessibile della tessera doveva dire «in attesa di risposta»: ${JSON.stringify(mark.nome)}`);
   const lista = await inviti(page);
@@ -238,7 +238,7 @@ await scenario('2. Anna propone dalla barra: entra nel piano solo con Condividi/
   await premiToast(page, 'Annulla');
   check((await voci(page)).length === 2, '2: Annulla doveva togliere l\'impegno appena aggiunto');
   // frasi senza giorno o senza ora: avviso e niente cambia
-  for (const frase of ['proponi a Marco cena', 'proponi a Marco', 'proponi a Marco cena alle 19', 'invita Marco a cena domani']) {
+  for (const frase of ['proponi a Marco cena', 'proponi a Marco', 'proponi a Marco cena giovedì', 'invita Marco a cena domani']) {
     const p0 = await v1(page), i0 = await ls(page, 'tempo.inviti');
     await scrivi(page, frase);
     const c = await carta(page);
@@ -311,10 +311,14 @@ await scenario('4. Bruno accetta; Annulla; la risposta arriva ad Anna', async ()
   const risposta = await ultimo(b.page, '__share');
   check(/^Va bene: Cena con Marco/.test(risposta || ''), `4: la risposta doveva iniziare con «Va bene: Cena con Marco», è ${JSON.stringify((risposta || '').slice(0, 50))}`);
   // Anna incolla la risposta
+  const p0a = await v1(a.page), i0a = await ls(a.page, 'tempo.inviti');
   await incolla(a.page, risposta || '');
   const ca = await carta(a.page);
   check(ca && /Bruno ha accettato/.test(ca.what), `4: Anna doveva vedere «Bruno ha accettato», vede ${JSON.stringify(ca?.what)}`);
-  const mark = await a.page.locator('#collage .pc[data-item]', { hasText: CENA }).first().evaluate((el) => el.querySelector('.inv-mark')?.textContent ?? null);
+  check((await v1(a.page)) === p0a && (await ls(a.page, 'tempo.inviti')) === i0a, '4: solo vedere la risposta non doveva cambiare né tempo.v1 né tempo.inviti');
+  check(ca && ca.azioni.includes('Va bene'), `4: la carta «ha accettato» doveva avere il bottone «Va bene», ha ${JSON.stringify(ca?.azioni)}`);
+  await tocca(a.page, /^Va bene$/);
+  const mark = await a.page.locator('#collage .pc.compact.event', { hasText: CENA }).first().evaluate((el) => el.querySelector('.inv-mark')?.textContent ?? null);
   check(mark === null, `4: dopo la risposta il marcatore «in attesa di risposta» doveva sparire, c'è ancora ${JSON.stringify(mark)}`);
   check((await inviti(a.page))[0]?.status === 'si', `4: la proposta di Anna doveva risultare «si», risulta ${JSON.stringify((await inviti(a.page))[0]?.status)}`);
   check(JSON.stringify(titoli(await voci(a.page))) === JSON.stringify(['Scrivere la relazione', CENA]), '4: la risposta «sì» non doveva cambiare il piano di Anna');
@@ -393,6 +397,22 @@ await scenario('6. Bruno non riesce; Anna toglie l\'impegno', async () => {
   check(JSON.stringify(await voci(a.page)) === JSON.stringify(prima), '6: Annulla doveva riportare la cena nel piano');
 });
 
+await scenario('6b. Anna ha cambiato l\'impegno dopo aver proposto: la risposta chiede conferma prima di toglierlo', async () => {
+  const proposta = { id: 'a-9', role: 'inviata', itemId: 'ea1', title: CENA, to: 'Marco', from: '', at: NOW - 3600e3, status: 'attesa', d: OGGI, s: 18 * 60 }; // quando l'ha proposta era alle 18:00, ora è alle 19:00
+  const rifiuto = messaggio(gettone({ v: 1, kind: 'risposta', id: 'r-9', re: 'a-9', ans: 'no', alt: [], t: CENA, d: OGGI, s: 18 * 60, e: 19 * 60, tz: ROMA, ts: ts(OGGI, 18 * 60, ROMA), from: 'Marco' }), 'Non riesco.');
+  for (const [scelta, rimasta] of [['Sì, toglilo', false], ['Tienilo', true]]) {
+    const { page } = await persona({ chi: 'a', tz: ROMA, items: ANNA(), nome: 'Anna', ls: { 'tempo.inviti': JSON.stringify([proposta]) } });
+    await incolla(page, rifiuto);
+    await tocca(page, /^Togli dal piano$/);
+    const c = await carta(page);
+    check(c && /Da allora hai cambiato questo impegno/.test(c.what) && c.azioni.includes('Sì, toglilo') && c.azioni.includes('Tienilo'), `6b: l'impegno era cambiato: attesa la richiesta di conferma, trovato ${JSON.stringify(c && [c.what, c.azioni])}`);
+    check((await voci(page)).some((i) => i.id === 'ea1'), '6b: prima della conferma la cena doveva restare nel piano');
+    await tocca(page, new RegExp('^' + scelta + '$'));
+    check((await voci(page)).some((i) => i.id === 'ea1') === rimasta, `6b: dopo «${scelta}» la cena ${rimasta ? 'doveva restare' : 'doveva sparire'} dal piano`);
+    check((await inviti(page))[0]?.status === 'no', `6b: dopo «${scelta}» la proposta doveva risultare «no», risulta ${JSON.stringify((await inviti(page))[0]?.status)}`);
+  }
+});
+
 // ============================================================ 7. entrare da un link
 await scenario('7. entrare dal link #invito=…', async () => {
   const a = await persona({ chi: 'a', tz: ROMA, items: ANNA(), nome: 'Anna' });
@@ -415,12 +435,12 @@ await scenario('7. entrare dal link #invito=…', async () => {
 
 // ============================================================ 8. testi ostili e rovinati
 /** Incolla `testo` come Bruno: deve comparire un avviso leggibile e non cambiare niente. */
-async function ostile(nome, testo, { atteso = /Non riesco a leggere/, tz = TOKYO, items = BRUNO_LIBERO(), ls: extra = {}, controlli = null } = {}) {
+async function ostile(nome, testo, { atteso = /Non riesco a leggere/, tz = TOKYO, items = BRUNO_LIBERO(), ls: extra = {}, controlli = null, senzaMotivo = false } = {}) {
   const { page } = await persona({ chi: 'b', tz, items, nome: 'Bruno', ls: extra });
   const p0 = await v1(page), i0 = await ls(page, 'tempo.inviti');
   await incolla(page, testo);
   const c = await carta(page);
-  check(c && atteso.test(c.what) && (c.why.length > 3 || c.next.length > 3), `8/${nome}: atteso un avviso leggibile ${atteso}, trovato ${JSON.stringify(c && [c.what, c.why, c.next])}`);
+  check(c && atteso.test(c.what) && (senzaMotivo || c.why.length > 3 || c.next.length > 3), `8/${nome}: atteso un avviso leggibile ${atteso}, trovato ${JSON.stringify(c && [c.what, c.why, c.next])}`);
   check((await v1(page)) === p0, `8/${nome}: tempo.v1 è cambiato`);
   check((await ls(page, 'tempo.inviti')) === i0, `8/${nome}: tempo.inviti è cambiato`);
   check(page.fuori.length === 0, `8/${nome}: richieste di rete: ${page.fuori.join(', ')}`);
@@ -437,14 +457,14 @@ await scenario('8. testi ostili e rovinati', async () => {
   await ostile('tipo sconosciuto', messaggio(gettone(PROPOSTA({ kind: 'ordine' }))));
   await ostile('fuso inesistente', messaggio(gettone(PROPOSTA({ tz: 'Marte/Olympus' }))));
   await ostile('data impossibile', messaggio(gettone(PROPOSTA({ d: '2026-02-31' }))));
-  await ostile('data nel passato (ieri)', messaggio(gettone(PROPOSTA({ d: '2026-11-10', ts: ts('2026-11-10', 600, ROMA) }))), { atteso: /Non riesco a leggere/ });
+  await ostile('data nel passato (ieri)', messaggio(gettone(PROPOSTA({ d: '2026-11-10', ts: ts('2026-11-10', 600, ROMA) }))), { controlli: async (page, c) => check(/già passata/.test(c.why), `8/data nel passato (ieri): il motivo doveva dire che la data è già passata, dice ${JSON.stringify(c.why)}`) });
   await ostile('data nel passato (mesi fa)', messaggio(gettone(PROPOSTA({ d: '2026-03-01', ts: ts('2026-03-01', 600, ROMA) }))));
   await ostile('codice di 6 kB', messaggio(gettone(PROPOSTA({ t: 'Titolo '.repeat(900) }))));
   await ostile('base64 che non è JSON', 'Ti propongo: qualcosa\n[tempo:inv1:' + b64u('questo non è json') + ']');
   await ostile('solo il prefisso', 'tempo:inv1:');
   // titolo con HTML: nessun elemento, testo letterale
   await ostile('titolo con HTML', messaggio(gettone(PROPOSTA({ t: '<img src=x onerror=window.__xss=1> Cena', from: '<b onmouseover=window.__xss=2>Anna</b>' }))), {
-    atteso: /ti propone/,
+    atteso: /ti propone/, senzaMotivo: true,
     controlli: async (page, c) => {
       const x = await page.evaluate(() => ({ img: document.querySelectorAll('img[src="x"], [onerror], [onmouseover]').length, xss: window.__xss ?? null, card: document.querySelector('[data-notice="invito"]').innerHTML }));
       check(x.img === 0 && x.xss === null, `8/titolo con HTML: nessun elemento doveva nascere dal titolo (elementi ${x.img}, __xss ${x.xss})`);
@@ -527,7 +547,7 @@ await scenario('9. igiene dell\'archivio: limite, dati rovinati, copia di sicure
     await incolla(b.page, msg);
     await tocca(b.page, /^Non riesco$/);
     await b.page.locator('[data-notice="invito"] [data-inv="copy"]').click(); await quieta(b.page);
-    await incolla(b.page, messaggio(gettone(PROPOSTA({ t: 'Aperitivo da Luca' }))));
+    await incolla(b.page, messaggio(gettone(PROPOSTA({ t: 'Aperitivo da Luca', from: 'Luisa', id: 'ext-9' }))));
     await tocca(b.page, /^Accetta$/);
     await b.page.locator('[data-notice="invito"] .r-x').click().catch(() => {}); await quieta(b.page);
     await b.page.click('#open-settings'); await quieta(b.page);
