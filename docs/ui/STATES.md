@@ -59,12 +59,30 @@ Il contratto è la tabella `STATES` in `genui.js` e la funzione pura `stateSpec(
 
 ## Misure («moderno» vuol dire questo)
 
-| Misura | Prima | Obiettivo |
+Misurate a 390×844 da `tempo/tests/ui/stati.mjs`, tema chiaro e scuro.
+
+| Misura | Prima | Dopo |
 |---|---|---|
-| Posizione di «Adesso» tra gli stati | 130 / 205 / 245 px | uguale, ± 2 px |
-| Carte in vista, giornata piena | 8+ | ancora + 3 + appiglio |
-| Azioni primarie per stato | 0–2 | 1 al massimo |
-| Tocchi: iniziare / finire / spostare a domani | 1 / 1 (3 col timer) / 2 | 1 / 1 / 2 |
-| Testi sotto i 12 px | 20 regole | 0 |
-| Controlli sotto i 44 px | ~10 | 0 |
+| Posizione di «Adesso» tra gli stati | 130 / 205 / 245 px | 242 px in tutti e sei |
+| Carte in vista, giornata piena | 8+ | ancora + 3 + «Altre N · dalle HH:MM» |
+| Azioni primarie per stato | 0–2 | 1 al massimo (0 la sera) |
+| Tocchi: iniziare / finire / spostare a domani | 1 / 1 (3 col timer) / 2 | invariati: 1 / 1 / 2 |
+| Regole CSS con testo sotto i 12 px | 20 | 0 |
+| Controlli sotto i 44 px nelle schermate provate | ~10 | 0 |
 | Ridisegni a vuoto dell'orologio | ogni 30 s | 0 |
+
+Scostamenti dalla tabella degli stati: la fascia «Cima» mostra saluto, icona o anello secondo `renderHero` (che dipende dal blocco in corso, non dallo stato); una sola carta in più non genera l'appiglio, quindi `before` può mostrarne 3.
+
+## Cosa non è stato fatto, e perché
+
+| Non fatto | Perché |
+|---|---|
+| Pizzico e tocco nel vuoto | invisibili, in conflitto con lo zoom di accessibilità e con lo scorrimento; al loro posto un pulsante con testo |
+| Sfera o tamburo 3D di carte | provati in un prototipo fuori dal repository e scartati dall'utente; la sfera lascia leggibili 4 carte su 8 e non ha un ordine nel tempo |
+| Nuovo stile delle carte | resta quello di Tempo: carta chiara, due colonne sfalsate |
+| Contratto in `viewmodel.js` | gli stati vivevano già in `genui.js` con i loro test: metterli altrove li avrebbe duplicati. `viewmodel.js` non è stato toccato |
+| Riscrivere le frasi di «Adesso» | vengono da `companion.js`/`viewmodel.js`, fuori dal perimetro. Da rivedere: «Fai rispondere alle email» |
+| Spostare una carta trascinandola | richiede una decisione di prodotto e tocca lo scheduler |
+| Tutti i ~112 colori nei token | spostati solo quelli ripetuti o rotti in tema scuro |
+| Celle del calendario a 44 px su schermi da 320 px | serve ridisegnare la griglia del mese |
+| Togliere i `backdrop-filter` | cambiano l'aspetto: prima va misurato su un iPhone vero |
