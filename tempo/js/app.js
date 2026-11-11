@@ -2,7 +2,7 @@ import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, f
 import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState, checklistOwner } from './store.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner } from './store.js';
 import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
@@ -23,6 +23,21 @@ import { syncNow, signIn, signOut, cloudCall, DEFAULT_CLOUD_URL } from './cloud.
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Dati illeggibili all'avvio: load() ripartirebbe da uno stato vuoto e il primo salvataggio cancellerebbe l'originale.
+// Prima di tutto, quindi, ne tengo una copia a parte (una sola, l'ultima).
+const BROKEN_KEY = 'tempo.v1.rotto';
+const brokenData = (() => {
+  try {
+    const raw = localStorage.getItem('tempo.v1');
+    if (raw == null || raw === '') return null;
+    let ok = false;
+    try { const v = JSON.parse(raw); ok = !!v && typeof v === 'object' && !Array.isArray(v); if (ok) migrate(v); } catch { ok = false; }
+    if (ok) return null;
+    const info = { raw, at: Date.now() };
+    try { localStorage.setItem(BROKEN_KEY, raw); localStorage.setItem(BROKEN_KEY + '.at', String(info.at)); } catch {}
+    return info; // se la copia non entra, resta in memoria per questa sessione
+  } catch { return null; }
+})();
 const state = load();
 let plan = {};
 let mode = 'day'; // 'day' | 'overview'
@@ -101,6 +116,7 @@ function addMsg(m) {
   return msg;
 }
 
+let lastUserMsgId = null;
 async function send(text) {
   text = text.trim();
   if (!text || busy) return;
@@ -118,7 +134,7 @@ async function send(text) {
   const aiText = selDay !== today() ? `[Sto guardando ${dayLabel(selDay, today())} (${selDay})] ${text}` : text;
   $('#input').blur();
   setComposing(false);
-  addMsg({ role: 'user', text });
+  lastUserMsgId = addMsg({ role: 'user', text }).id;
   if (pending) discardPending(true);
   const mode = aiMode();
 
@@ -223,8 +239,15 @@ function baseTurn(text, aiError = null) {
   const itemsBefore = clone(state.items);
   const r = localParse(text, state, Date.now());
   if (r.ops && selDay !== today()) for (const o of r.ops) if (o.action === 'add' && !o.date) o.date = selDay;
-  if (!r.ops) { addMsg(aiError ? { role: 'assistant', error: true, text: errorText(aiError) } : { role: 'assistant', text: r.reply }); return; }
-  const note = aiError ? `${aiError.code === 'timeout' ? 'L\'AI non risponde' : 'L\'AI ha avuto un problema'}: ho usato la modalità base. ` : '';
+  if (!r.ops && aiError) {
+    // niente è cambiato: la frase torna nella barra e l'avviso dice perché e che fare
+    state.chat = state.chat.filter((m) => m.id !== lastUserMsgId);
+    save(state); renderChat();
+    aiFailNotice(aiError, text);
+    return;
+  }
+  if (!r.ops) { addMsg({ role: 'assistant', text: r.reply }); return; }
+  const note = aiError ? `${errorInfo(aiError).what} Ho capito la frase senza assistente. ` : '';
   const draft = draftOf();
   const res = applyOps(draft, r.ops);
   finishChange({ text: note + r.reply + (res.errors.length ? '\n' + res.errors.join('\n') : ''), draft, log: res.log, confirm: r.confirm, before, itemsBefore, understood: r.understood });
@@ -232,22 +255,82 @@ function baseTurn(text, aiError = null) {
 
 const title = (s, id) => (s.items.find((x) => x.id === id) || {}).title || (String(id).startsWith('rec:') ? 'ricorrente' : id);
 
-function errorText(e) {
-  const st = e?.status;
-  if (e?.code === 'timeout') return 'L\'AI non risponde e senza AI non ho capito la frase. Riprova tra poco, o scrivila più semplice.';
-  if (e?.code === 'webgpu') return 'Questo iPhone non può far girare modelli in locale: serve Safari con WebGPU (iOS 26 o successivo). Aggiorna iOS oppure scegli «Online · gratis» in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (aiMode() === 'local' && /memory|out of memory|device lost|allocation/i.test(e?.message || '')) return 'Il modello è troppo pesante per la memoria del telefono. Scegli un modello più piccolo in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (aiMode() === 'local' && /fetch|network|load/i.test(e?.message || '')) return 'Non riesco a scaricare il modello: controlla la connessione (meglio il Wi-Fi) e riprova. Dopo il primo download funziona anche offline.';
+/** Testi di ogni guasto dell'AI: cosa è successo, perché, cosa fare. Mai il testo del motore o del server. */
+function errorInfo(e) {
+  const st = e?.status, msg = e?.message || '';
   const svc = ONLINE_PRESETS[presetOf(state.settings)]?.label || 'servizio online';
-  if (e?.code === 'nokey') return `Manca la chiave di ${svc}. Creala gratis e incollala in Impostazioni (⋯ in alto) → Assistente AI (lì trovi i passaggi).`;
-  if (e?.code === 'badkey' || (aiMode() === 'online' && st === 401)) return `${svc} non accetta la chiave (${e.message}). Ricopiala per intero in Impostazioni (⋯ in alto) → Assistente AI e tocca «Prova».`;
-  if (e?.code === 'nofree') return e.message + ' Riprova tra qualche minuto: i modelli gratuiti a volte sono sovraccarichi.';
-  if (aiMode() === 'online' && (st === 404 || st === 400)) return 'Il servizio non riconosce il modello indicato (' + (e.message || '') + '). Controlla il nome del modello in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (st === 401) return 'La chiave API non è valida. Controllala in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (st === 429) return 'Troppe richieste in poco tempo. Riprova tra qualche secondo.';
-  if (st === 529 || st === 503) return 'Il servizio AI è sovraccarico. Riprova tra poco.';
-  if (!navigator.onLine) return 'Sei offline. La giornata resta consultabile; per parlare con l\'assistente serve la connessione.';
-  return 'Qualcosa è andato storto: ' + (e?.message || e);
+  const local = aiMode() === 'local';
+  const secs = Math.round((aiMode() === 'claude' ? AI_TIMEOUT * 2 : AI_TIMEOUT) / 1000);
+  const set = 'settings';
+  if (e?.code === 'webgpu') return { code: 'webgpu', what: 'Questo iPhone non può far girare il modello in locale.', why: 'Serve Safari con WebGPU (iOS 26 o successivo).', next: 'Aggiorna iOS oppure scegli «Online · gratis» in Impostazioni, sotto Assistente AI.', action: set };
+  if (local && /memory|out of memory|device lost|allocation/i.test(msg)) return { code: 'memoria', what: 'Il modello è troppo pesante per questo telefono.', why: 'La memoria non basta.', next: 'Scegli un modello più piccolo in Impostazioni, sotto Assistente AI.', action: set };
+  if (local && /fetch|network|load/i.test(msg)) return { code: 'scarico', what: 'Non riesco a scaricare il modello.', why: 'La connessione non regge.', next: 'Riprova con il Wi-Fi. Dopo il primo download funziona anche offline.', action: 'retry' };
+  if (!local && navigator.onLine === false) return { code: 'offline', what: 'Non ho raggiunto l\'assistente.', why: 'Non c\'è connessione.', next: 'Riprova quando sei online.', action: 'retry' };
+  if (e?.code === 'timeout') return { code: 'timeout', what: `L'assistente non ha risposto in ${secs} secondi.`, why: 'Il servizio è lento o la rete è debole.', next: 'Riprova, o scrivi la frase più semplice.', action: 'retry' };
+  if (e?.code === 'nokey') return { code: 'nokey', what: `Manca la chiave di ${svc}.`, why: 'Senza chiave l\'assistente online non può rispondere.', next: 'Creala gratis e incollala in Impostazioni, sotto Assistente AI.', action: set };
+  if (e?.code === 'badkey' || st === 401 || st === 403) return { code: 'badkey', what: 'Il servizio non accetta la chiave.', why: `Ha risposto ${st === 403 ? 403 : 401}: è sbagliata o scaduta.`, next: 'Ricopiala per intero in Impostazioni e tocca «Prova».', action: set };
+  if (st === 429) return { code: '429', what: 'Il servizio ti ha fermato per un po\'.', why: 'Troppe richieste in poco tempo.', next: 'Aspetta un minuto e riprova.', action: 'retry' };
+  if (!local && (st === 404 || st === 400)) return { code: 'modello', what: 'Il servizio non riconosce il modello.', why: 'Il nome del modello è sbagliato o non c\'è più.', next: 'Controllalo in Impostazioni, sotto Assistente AI.', action: set };
+  if (e?.code === 'nofree' && presetOf(state.settings) !== 'custom') return { code: 'nofree', what: 'Nessun modello gratuito ha risposto.', why: 'I modelli gratuiti a volte sono sovraccarichi.', next: 'Riprova tra qualche minuto.', action: 'retry' };
+  if (st >= 500) return { code: '5xx', what: 'Il servizio non funziona ora.', why: `Ha risposto con un suo problema (${st}).`, next: 'Riprova tra qualche minuto.', action: 'retry' };
+  if (e instanceof SyntaxError || /formato|json|risposta vuota/i.test(msg)) return { code: 'risposta', what: 'Non ho capito la risposta dell\'assistente.', why: 'Non era in un formato che posso applicare.', next: 'Riprova o riformula la frase.', action: 'retry' };
+  console.warn('errore AI non classificato', e);
+  return { code: 'altro', what: 'L\'assistente non mi ha dato una risposta utilizzabile.', why: 'Non so dirti il motivo.', next: 'Riprova tra poco.', action: 'retry' };
+}
+/** Una frase sola, per i punti dove non c'è spazio per un avviso (stato delle Impostazioni, racconto del mese). */
+function errorText(e) {
+  const i = errorInfo(e);
+  return `${i.what} ${i.next}`;
+}
+
+// ---------------------------------------------------------------- avvisi
+const NOTICE_HOSTS = { top: '#notices-top', reply: '#notices-reply' };
+const noticeTimers = {};
+/**
+ * Un avviso con forma fissa: cosa è successo → perché → cosa puoi fare ora, al massimo un bottone.
+ * `key` identifica l'avviso (uno nuovo con la stessa chiave prende il posto del vecchio).
+ * `action`: { label, fn, keep? } (dopo il tocco l'avviso si chiude, salvo `keep`).
+ * `sticky`: resta finché non lo chiudi o non è risolto. `alert`: per perdite di dati (role="alert").
+ * `host`: 'reply' sopra la barra, 'top' in alto sopra tutto (anche pannelli e presentazione).
+ */
+function notice({ key, what, why, next, action = null, sticky = false, alert = false, host = 'reply' }) {
+  const box = $(NOTICE_HOSTS[host] || NOTICE_HOSTS.reply);
+  if (!box) return null;
+  key ||= 'n' + Date.now();
+  dismissNotice(key, true);
+  const el = document.createElement('div');
+  el.className = 'reply-card error notice anim';
+  el.setAttribute('role', alert ? 'alert' : 'status');
+  el.dataset.notice = key;
+  el.innerHTML = `<button type="button" class="r-x" aria-label="Chiudi">×</button><p class="n-what">${esc(what)}</p>${why ? `<p class="n-why">${esc(why)}</p>` : ''}${next ? `<p class="n-next">${esc(next)}</p>` : ''}${action ? `<div class="r-actions"><button type="button" class="btn primary">${esc(action.label)}</button></div>` : ''}`;
+  el.querySelector('.r-x').addEventListener('click', () => dismissNotice(key));
+  if (action) el.querySelector('.r-actions .btn').addEventListener('click', () => { if (!action.keep) dismissNotice(key); action.fn(); });
+  box.append(el);
+  if (!sticky && !action) noticeTimers[key] = setTimeout(() => dismissNotice(key), 14000);
+  return el;
+}
+function dismissNotice(key, now = false) {
+  clearTimeout(noticeTimers[key]);
+  for (const el of document.querySelectorAll('[data-notice]')) {
+    if (el.dataset.notice !== key) continue;
+    if (now || matchMedia('(prefers-reduced-motion: reduce)').matches) el.remove();
+    else { el.classList.add('out'); setTimeout(() => el.remove(), 260); }
+  }
+}
+const hasNotice = (key) => !!document.querySelector(`[data-notice="${key}"]`);
+/** L'avviso di un guasto dell'AI: la frase resta nella barra, nessuna modifica è stata fatta. */
+function aiFailNotice(e, text) {
+  const i = errorInfo(e);
+  const input = $('#input');
+  if (!input.value.trim()) { input.value = text; input.dispatchEvent(new Event('input')); }
+  renderComposer();
+  const retry = { label: 'Riprova', fn: () => { const v = input.value.trim() || text; input.value = ''; input.dispatchEvent(new Event('input')); send(v); renderComposer(); } };
+  const settings = { label: 'Apri le impostazioni', fn: () => openSettings() };
+  notice({
+    key: 'ai', what: i.what, why: i.why,
+    next: `${i.next} Non ho cambiato niente e la frase è ancora nella barra. Le frasi semplici le capisco anche senza assistente.`,
+    action: i.action === 'settings' ? settings : retry, host: 'reply',
+  });
 }
 
 function removeMsg(id) {
@@ -2353,18 +2436,101 @@ function onSettingsChange(e) {
   } else if (t.id === 'local-model') {
     state.settings.localModel = t.value; save(state); renderSettings();
   } else if (t.id === 'import-file' && t.files[0]) {
-    t.files[0].text().then((txt) => {
-      const d = JSON.parse(txt);
-      if (!Array.isArray(d.items)) throw new Error('file non valido');
-      const { archive, ...rest } = d;
-      const m = migrate({ ...rest, settings: state.settings }, Date.now());
-      commit('Ripristino backup', () => Object.assign(state, { ...m, settings: state.settings, anchors: {} }));
-      // le voci archiviate del backup tornano nell'archivio (ripulite come tutto il resto)
-      const arch = Array.isArray(archive) ? sanitizeState({ items: archive }).items : [];
-      if (arch.length && typeof indexedDB !== 'undefined') archivePut(arch).then(() => { const ids = new Set(arch.map((x) => x.id)); archived = [...archived.filter((x) => !ids.has(x.id)), ...arch]; }).catch(() => {});
-      toast('Backup ripristinato');
-    }).catch((err) => toast('Backup non valido: ' + err.message));
+    const f = t.files[0];
+    t.value = ''; // lo stesso file si può scegliere di nuovo
+    readBackup(f);
   }
+}
+
+// ---------------------------------------------------------------- ripristino da backup
+const countsOf = (st) => ({ tasks: (st.items || []).filter((x) => x.kind !== 'event').length, events: (st.items || []).filter((x) => x.kind === 'event').length, goals: (st.goals || []).length });
+const countsLabel = (c) => `${plural(c.tasks, 'attività', 'attività')}, ${plural(c.events, 'impegno', 'impegni')}, ${plural(c.goals, 'obiettivo', 'obiettivi')}`;
+let backupPending = null; // { m, archive, counts, date } in attesa della conferma
+let backupPrev = null;   // lo stato di prima, per «Annulla» (solo in questa sessione)
+
+function backupNotice(what, why, next) {
+  notice({ key: 'backup', what, why, next, host: 'top', sticky: true });
+}
+/** Legge e controlla il file; non cambia niente finché non confermi. */
+async function readBackup(file) {
+  const now = countsOf(state);
+  const keep = `Le tue ${plural(now.tasks, 'attività', 'attività')} sono com'erano.`;
+  let d;
+  try { d = JSON.parse(await file.text()); }
+  catch { return backupNotice('Non ho ripristinato il backup.', 'Il file non si legge: non è un backup di Tempo, o è stato tagliato.', `${keep} Scegli un altro file.`); }
+  if (!d || typeof d !== 'object' || Array.isArray(d) || !Array.isArray(d.items)) {
+    return backupNotice('Non ho ripristinato il backup.', 'Il file non è un backup di Tempo.', `${keep} Scegli un altro file.`);
+  }
+  if (Number.isFinite(d.schema) && d.schema > SCHEMA) {
+    return backupNotice('Questo backup viene da una versione più nuova di Tempo.', `Ha il formato ${d.schema}, questa versione arriva al ${SCHEMA}.`, 'Aggiorna l\'app e riprova. Non ho toccato niente.');
+  }
+  let m;
+  const { archive, ...rest } = d;
+  try { m = migrate({ ...rest, settings: state.settings }, Date.now()); }
+  catch { return backupNotice('Non ho ripristinato il backup.', 'Il contenuto non è in un formato che conosco.', `${keep} Scegli un altro file.`); }
+  const date = d.exportedAt && !Number.isNaN(Date.parse(d.exportedAt)) ? new Date(d.exportedAt).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }) : null;
+  backupPending = { m, archive: Array.isArray(archive) ? archive : [], counts: countsOf(m), date };
+  openBackupSheet();
+}
+function openBackupSheet() {
+  const { counts, date } = backupPending;
+  sheetMode = 'backup';
+  ed = null; red = null;
+  $('#sheet-form').innerHTML = `
+    <h2 id="sheet-title" class="sr-only">Ripristinare il backup</h2>
+    <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">Ripristinare questo backup?</div>
+      <div class="ed-sub">Ora hai ${esc(countsLabel(countsOf(state)))}.</div>
+      <div class="ed-sub">Nel backup${date ? ` (del ${esc(date)})` : ''} ci sono ${esc(countsLabel(counts))}.</div>
+      <div class="ed-sub">Sostituisce quello che hai adesso. Potrai annullare finché non chiudi l'app.</div><div class="ed-foot"><span>Backup</span></div></div>
+    <div class="ed-actions"><button type="button" class="btn ed-save" data-sheet="backup-go">Ripristina</button><button type="button" class="btn ed-save" data-sheet="close">Lascia com'è</button></div>`;
+  $('#sheet-form').dataset.id = '';
+  showSheet();
+}
+function applyBackup() {
+  const p = backupPending;
+  backupPending = null;
+  closeSheet();
+  if (!p) return;
+  const before = countsOf(state);
+  const { settings, ...prev } = clone(state);
+  Object.assign(state, { ...p.m, settings: state.settings, anchors: {} });
+  state.stats.edits = (state.stats.edits || 0) + 1;
+  replan();
+  const ok = save(state) === true && !saveStatus();
+  if (!ok) {
+    restoreState(prev);
+    renderAll();
+    return backupNotice('Non ho ripristinato il backup.', 'Non c\'è abbastanza spazio sul telefono per salvarlo.', `Le tue ${plural(before.tasks, 'attività', 'attività')} sono salve, com'erano. Togli il vecchio archivio dalle Impostazioni e riprova.`);
+  }
+  // le voci archiviate del backup tornano nell'archivio (ripulite come tutto il resto)
+  const arch = p.archive.length ? sanitizeState({ items: p.archive }).items : [];
+  if (arch.length && typeof indexedDB !== 'undefined') archivePut(arch).then(() => { const ids = new Set(arch.map((x) => x.id)); archived = [...archived.filter((x) => !ids.has(x.id)), ...arch]; }).catch(() => {});
+  backupPrev = { prev, edits: state.stats.edits };
+  renderAll();
+  scheduleSync();
+  notice({
+    key: 'backup', host: 'top',
+    what: `Ripristinato: ${plural(p.counts.tasks, 'attività', 'attività')}, ${plural(p.counts.goals, 'obiettivo', 'obiettivi')}.`,
+    next: 'Se non era il file giusto, puoi tornare a com\'era prima, finché non chiudi l\'app.',
+    action: { label: 'Annulla', fn: undoBackup },
+  });
+}
+function restoreState(prev) {
+  for (const k of Object.keys(state)) if (k !== 'settings') delete state[k];
+  Object.assign(state, clone(prev));
+  replan();
+  save(state);
+}
+function undoBackup() {
+  const b = backupPrev;
+  if (!b) return;
+  if ((state.stats.edits || 0) !== b.edits) {
+    return backupNotice('Non posso annullare il ripristino.', 'Dopo il ripristino hai già cambiato altro.', 'Annullare farebbe perdere quelle modifiche. Se serve, ripristina un altro backup.');
+  }
+  backupPrev = null;
+  restoreState(b.prev);
+  renderAll();
+  toast('Ripristino annullato');
 }
 
 function addMemory() {
@@ -2456,7 +2622,6 @@ function bind() {
     });
   }, { passive: true });
   $('#open-settings').addEventListener('click', openSettings);
-  $('#save-alert-export').addEventListener('click', exportData);
   $('#close-settings').addEventListener('click', closeSettings);
   $('#undo-btn').addEventListener('click', () => doUndo());
 
@@ -2658,7 +2823,8 @@ function bind() {
     if (!b) return;
     const id = $('#sheet-form').dataset.id;
     const a = b.dataset.sheet;
-    if (a === 'close') closeSheet();
+    if (a === 'close') { backupPending = null; closeSheet(); }
+    else if (a === 'backup-go') applyBackup();
     else if (a === 'done') quickOp('complete', id);
     else if (a === 'start') { closeSheet(); startFocusFor(id); }
     else if (a === 'reopen') quickOp('reopen', id);
@@ -2906,10 +3072,31 @@ function maybeArchive() {
   }).catch((e) => console.warn('archivio non disponibile', e)).finally(() => { archiving = false; });
 }
 
-/** Spazio finito: un avviso che resta finché il salvataggio non torna a funzionare, con l'export subito a portata. */
+/** Spazio finito: un avviso fisso (una volta sola) finché il salvataggio non torna a funzionare. */
 function syncSaveAlert() {
-  const el = $('#save-alert');
-  if (el) el.hidden = !saveStatus();
+  if (!saveStatus()) { dismissNotice('spazio', true); return; }
+  if (hasNotice('spazio')) return;
+  notice({
+    key: 'spazio', sticky: true, alert: true, host: 'top',
+    what: 'Le ultime modifiche non sono salvate sul telefono.',
+    why: 'Lo spazio di Tempo sul telefono è pieno.',
+    next: 'Se chiudi l\'app si perdono: esporta un backup adesso.',
+    action: { label: 'Esporta un backup ora', fn: exportData, keep: true },
+  });
+}
+
+/** Dati illeggibili all'avvio: restano da parte, e si possono scaricare. */
+function showBrokenNotice({ raw, at }) {
+  const d = new Date(at);
+  const when = `${d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}, ore ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
+  const kb = Math.max(1, Math.round(raw.length / 1024));
+  notice({
+    key: 'rotto', sticky: true, alert: true, host: 'top',
+    what: 'Non sono riuscito a leggere i tuoi dati.',
+    why: `Il file sul telefono era danneggiato (${kb} KB) quando l'ho aperto (${when}).`,
+    next: 'Non l\'ho cancellato: l\'ho messo da parte. Puoi ripristinare un backup in Impostazioni o scaricare la copia illeggibile.',
+    action: { label: 'Scarica la copia', fn: () => deliverFile(new File([raw], `tempo-dati-illeggibili-${today()}.txt`, { type: 'text/plain' }), 'Dati illeggibili di Tempo'), keep: true },
+  });
 }
 
 /** Promemoria di backup: niente export da 14 giorni (e l'app si usa da almeno 14). */
@@ -2923,9 +3110,12 @@ function exportData() {
   state.settings.lastExportAt = Date.now();
   state.stats.exportedEdits = state.stats.edits || 0;
   save(state);
-  const file = new File([data], `tempo-backup-${today()}.json`, { type: 'application/json' });
+  deliverFile(new File([data], `tempo-backup-${today()}.json`, { type: 'application/json' }), 'Backup Tempo');
+}
+/** Condivide il file (foglio di iOS) o lo scarica. */
+function deliverFile(file, title) {
   if (navigator.canShare?.({ files: [file] })) {
-    navigator.share({ files: [file], title: 'Backup Tempo' }).catch(() => {});
+    navigator.share({ files: [file], title }).catch(() => {});
   } else {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(file);
@@ -2949,6 +3139,11 @@ syncSaveAlert();
 renderAll();
 renderDayView(true);
 if (!state.onboarded) openOnboarding();
+if (brokenData) showBrokenNotice(brokenData);
+try { // una bozza messa da parte prima di aggiornare l'app
+  const draftText = sessionStorage.getItem('tempo.bozza');
+  if (draftText) { sessionStorage.removeItem('tempo.bozza'); $('#input').value = draftText; $('#input').dispatchEvent(new Event('input')); }
+} catch {}
 // account: sincronizza all'avvio, quando torni sull'app e ogni 5 minuti mentre è aperta
 if (state.settings.cloudToken) { setTimeout(() => runSync(), 1200); native.cloud({ url: state.settings.cloudUrl || DEFAULT_CLOUD_URL, token: state.settings.cloudToken }); }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(300); });
@@ -2972,7 +3167,20 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (hadController && !reloaded && !busy) { reloaded = true; location.reload(); }
+    if (!hadController || reloaded) return;
+    const typed = $('#input').value.trim();
+    const sheetOpen = !$('#sheet').hidden || settingsOpen;
+    if (!busy && !typed && !sheetOpen) { reloaded = true; location.reload(); return; }
+    // c'è qualcosa in corso: non si ricarica da soli, si chiede
+    notice({
+      key: 'versione', sticky: true, host: 'top',
+      what: 'C\'è una versione nuova di Tempo.',
+      next: 'Aggiornare richiede un secondo: il testo che stai scrivendo resta qui.',
+      action: { label: 'Aggiorna ora', fn: () => {
+        try { const v = $('#input').value; if (v.trim()) sessionStorage.setItem('tempo.bozza', v); } catch {}
+        reloaded = true; location.reload();
+      }, keep: true },
+    });
   });
   navigator.serviceWorker.register('sw.js').then((r) => r.update()).catch(() => {});
 }
