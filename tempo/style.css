@@ -1176,3 +1176,35 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .pc.compact .pc-check { flex: none; margin: 0 8px 0 2px; }
 .pc.compact.event::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--lilac); }
 .pc.compact.event .pc-body { padding-left: 17px; }
+
+/* proposte: un impegno scritto per l'agenda di un'altra persona (app.js, «proposte») */
+.ic-share { --m: url(icons/ui/arrow-up-right.svg); width: 18px; height: 18px; }
+.inv-mark { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 12px; line-height: 1.3; color: var(--ink-2); }
+.inv-mark::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px currentColor; }
+.pc.compact .inv-mark { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.pc.compact .inv-mark::before { display: inline-block; margin-right: 6px; vertical-align: 0; }
+.pc.compact[data-proj] .inv-mark, .pc.compact[data-c]:not([data-c=""]) .inv-mark { color: color-mix(in srgb, var(--paper-ink) 66%, transparent); }
+.inv-msg { padding: 12px 14px; border-radius: 16px; background: var(--paper); color: var(--paper-ink); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.inv-msg > div { min-height: 1.45em; }
+.inv-msg > .tech { margin-top: 4px; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inv-card .inv-msg { margin-top: 10px; font-size: 13.5px; background: var(--bg); max-height: 9.5em; overflow-y: auto; }
+.inv-hint, .inv-line { margin: 0; font-size: 12.5px; line-height: 1.4; color: var(--ink-3); }
+.inv-line { padding: 4px 4px 0; font-size: 14px; color: var(--ink-2); }
+.inv-name-wrap { display: flex; flex-direction: column; gap: 8px; padding: 10px 4px; }
+.inv-card .inv-name-wrap { padding: 10px 0 0; }
+.inv-name { height: var(--field-h); padding: 0 14px; border: 0; outline: 0; border-radius: var(--field-r); background: var(--field); color: var(--ink); font-size: 16px; -webkit-appearance: none; appearance: none; }
+.inv-name:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.inv-card { background: var(--paper); }
+.inv-card .inv-note { margin-top: 4px; font-size: 14px; color: var(--ink-2); }
+.inv-verdict { position: relative; margin-top: 8px !important; padding-left: 16px; font-size: 15px; font-weight: 600; }
+.inv-verdict::before { content: ""; position: absolute; left: 0; top: 0.5em; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.inv-verdict.bad::before { background: var(--warn); border-radius: 2px; transform: rotate(45deg); }
+.inv-alts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.inv-alts .ch { height: 44px; white-space: normal; text-align: left; line-height: 1.2; }
+.inv-card > .r-actions { margin-right: -30px; }
+.inv-share { flex-wrap: wrap; }
+.inv-share .btn { min-height: 44px; }
+.ed-actions > .inv-share { margin-top: 0; }
+.ed-actions > .inv-share .btn { flex: 1; height: var(--btn-full-h); font-size: var(--btn-full-fs); }
+.inv-card > .r-actions { gap: 6px; }
+.inv-card > .r-actions .btn { padding: 0 13px; }

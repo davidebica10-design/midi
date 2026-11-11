@@ -2,7 +2,8 @@ import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, f
 import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, lastUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner } from './store.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, lastUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner, sanitizeOps } from './store.js';
+import { makeInvite, makeReply, inviteText, findInvite, localSlot, fitInvite, inviteOp } from './invite.js';
 import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
@@ -147,6 +148,8 @@ let lastUserMsgId = null;
 async function send(text) {
   text = text.trim();
   if (!text || busy) return;
+  // una proposta incollata, o «proponi a…»: si gestisce qui, senza AI e senza chat (il testo non diventa mai un'attività)
+  if (handleInviteText(text) || handleProposeText(text)) { $('#input').blur(); setComposing(false); return; }
   if (/^annulla( l'ultima modifica)?\.?$/i.test(text)) { addMsg({ role: 'user', text }); doUndo(); return; }
   // "che faccio?": la risposta è deterministica e immediata, niente attese
   if (/^(e\s+)?(adesso\s+|ora\s+)?(che|cosa)\s+(faccio|devo fare|fare)(\s+(adesso|ora|stasera|oggi))?\s*\??$/i.test(text) && selDay === today()) {
@@ -716,7 +719,8 @@ function cardHtml(c, i) {
   const desc = [when, c.pauseBefore ? `dopo ${c.pauseBefore}' di pausa` : null, isTask && !done ? (c.part ? 'una parte' : c.resumed ? 'si riprende' : c.estimated ? 'durata stimata' : null) : null].filter(Boolean).join(' · ');
   const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : c.project ? c.project.name : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività';
   const cls = ['pc', isEvent ? 'event' : 'task', done ? 'done' : '', c.image ? 'photo' : '', changedIds.has(c.itemId) ? 'flash' : ''].join(' ');
-  const label = `${c.title}, ${when}${c.project ? ', ' + c.project.name : ''}`;
+  const waiting = inviteWaiting(c.itemId || c.id);
+  const label = `${c.title}, ${when}${waiting ? ', in attesa di risposta' : ''}${c.project ? ', ' + c.project.name : ''}`;
   const tint = !c.color && c.project ? ` data-proj style="--pc:${safeColor(c.project.color) || 'var(--accent)'};${st}"` : ` style="${st}"`;
   const open = `role="button" tabindex="0" data-item="${esc(c.id)}" data-c="${c.color || ''}" aria-label="${esc(label)}"${tint}`;
   const ckList = isEvent && c.checklist?.length ? checklistHtml(c) : '';
@@ -726,18 +730,18 @@ function cardHtml(c, i) {
   const title = `${c.important ? '<i class="imp" title="Importante"></i>' : ''}${esc(c.title)}`;
   if (c.image) {
     return `<div class="${cls}" ${open}>${imgTag(c.image)}${check}
-      <div class="ph-cap"><b>${title}</b><span>${esc(desc)}</span></div></div>`;
+      <div class="ph-cap"><b>${title}</b><span>${esc(desc)}${waiting ? ' · in attesa di risposta' : ''}</span></div></div>`;
   }
   if (!ckList) { // tessera compatta: titolo, una riga (ora · durata), icona, spunta a destra; il tipo sta nel nome accessibile
     const kind = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : 'Attività';
     const meta = done ? `Fatto alle ${c.doneAt}` : isEvent ? `${c.start} – ${c.end}` : `${c.start} · ${durLabel(c.minutes)}`;
-    const name = `${kind}: ${c.title}, ${desc}${c.project ? ', ' + c.project.name : ''}`;
+    const name = `${kind}: ${c.title}, ${desc}${waiting ? ', in attesa di risposta' : ''}${c.project ? ', ' + c.project.name : ''}`;
     return `<div class="${cls.replace('pc ', 'pc compact ')}" ${open.replace(/aria-label="[^"]*"/, `aria-label="${esc(name)}"`)}>
-      <div class="pc-body"><div class="pc-title">${title}</div><div class="pc-meta">${ic.replace('class="act-ic"', 'class="act-ic mi"')}<span>${esc(meta)}</span></div></div>${check}
+      <div class="pc-body"><div class="pc-title">${title}</div><div class="pc-meta">${ic.replace('class="act-ic"', 'class="act-ic mi"')}<span>${esc(meta)}</span></div>${waiting ? '<div class="inv-mark">in attesa di risposta</div>' : ''}</div>${check}
     </div>`;
   }
   return `<div class="${cls}" ${open}>
-    <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div>${ckList}</div>
+    <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div>${waiting ? '<div class="inv-mark">in attesa di risposta</div>' : ''}${ckList}</div>
     <div class="pc-foot">${isTask ? projMark(c.project) : ''}<span>${esc(foot)}</span>${check}</div>
   </div>`;
 }
@@ -1785,6 +1789,7 @@ function openSheet(id, preset = {}, keepPhoto = false) {
         ${it.status === 'done' ? `<button type="button" data-sheet="reopen"><i class="ic ic-undo" aria-hidden="true"></i>Riapri</button>` : `<button type="button" data-sheet="done">${ICON_CHECK}Fatto</button>`}
         ${it.status !== 'done' && it.kind === 'task' && it.status !== 'doing' ? `<button type="button" data-sheet="start">${ICON_PLAY}Inizia</button>` : ''}
         ${it.status !== 'done' ? `<button type="button" data-sheet="tomorrow"><i class="ic ic-next" aria-hidden="true"></i>Domani</button>` : ''}
+        ${it.kind === 'event' && it.date && it.start != null && it.status !== 'done' ? `<button type="button" data-sheet="propose"><i class="ic ic-share" aria-hidden="true"></i>Proponi</button>` : ''}
         <button type="button" data-sheet="delete" class="danger"><i class="ic ic-x" aria-hidden="true"></i>Elimina</button>
       </div>`}
       <button type="submit" class="btn primary ed-save">${isNew ? 'Aggiungi' : 'Salva'}</button>
@@ -2173,6 +2178,7 @@ function closeOnboarding() {
   setTimeout(() => { o.hidden = true; o.classList.remove('closing'); }, 360);
   state.onboarded = true;
   save(state);
+  releaseInviteHash();
 }
 // Dopo le domande: cosa ho capito, cosa no (da riscrivere), i primi 7 giorni. Solo allora si applica.
 let onbReview = null;
@@ -2383,6 +2389,8 @@ function renderSettings() {
     </div>
 
     ${settingsCloudHtml()}
+
+    ${proposalSettingsHtml()}
 
     <div class="group"><h2>Dati</h2>
       <div class="card">
@@ -2623,6 +2631,9 @@ function onSettingsChange(e) {
     sceneDecision = null; save(state); toast('Salvato');
   } else if (t.id === 'local-model') {
     state.settings.localModel = t.value; save(state); renderSettings();
+  } else if (t.id === 'inv-name') {
+    setMyName(t.value); t.value = myName();
+    toast(myName() ? 'Firma salvata' : 'Firma tolta');
   } else if (t.id === 'import-file' && t.files[0]) {
     const f = t.files[0];
     t.value = ''; // lo stesso file si può scegliere di nuovo
@@ -2928,6 +2939,15 @@ function bind() {
     send(v);
     renderComposer();
   });
+  // una proposta incollata nella barra: la carta compare subito, il campo resta pulito
+  input.addEventListener('paste', (e) => {
+    const t = e.clipboardData?.getData('text') || '';
+    if (!t || !INV_MARK.test(t)) return;
+    e.preventDefault();
+    input.value = ''; grow(); renderComposer();
+    handleInviteText(t);
+    input.blur(); setComposing(false);
+  });
   $('#mic').addEventListener('click', () => { setComposing(true); toggleMic(); });
   $('#plus').addEventListener('pointerdown', () => { plusAt = Date.now(); });
   $('#plus').addEventListener('click', () => togglePlus());
@@ -3020,8 +3040,9 @@ function bind() {
     if (!b) return;
     const id = $('#sheet-form').dataset.id;
     const a = b.dataset.sheet;
-    if (a === 'close') { backupPending = null; closeSheet(); }
+    if (a === 'close') { backupPending = null; invDraft = null; closeSheet(); }
     else if (a === 'backup-go') applyBackup();
+    else if (a === 'propose') proposeItem(id);
     else if (a === 'done') quickOp('complete', id);
     else if (a === 'start') { closeSheet(); startFocusFor(id); }
     else if (a === 'reopen') quickOp('reopen', id);
@@ -3099,6 +3120,9 @@ function bind() {
         .catch((err) => { if (status) status.textContent = errorText(err); t.disabled = false; });
     }
     if (t.id === 'export') exportData();
+    if (t.id === 'inv-forget') { invForgetAsk = true; renderSettings(); $('#inv-forget-no')?.focus(); }
+    if (t.id === 'inv-forget-no') { invForgetAsk = false; renderSettings(); }
+    if (t.id === 'inv-forget-yes') { invForgetAsk = false; forgetInvites(); renderAll(); toast('Proposte dimenticate'); }
     if (t.id === 'broken-dl') { const b = brokenCopies().find((c) => String(c.slot) === t.dataset.slot); if (b) deliverBroken(b.raw); }
     if (t.id === 'broken-del') { brokenAsk = +t.dataset.slot; renderSettings(); $('#broken-no')?.focus(); }
     if (t.id === 'broken-no') { brokenAsk = false; renderSettings(); }
@@ -3367,6 +3391,451 @@ function deliverFile(file, title) {
   }
 }
 
+// ---------------------------------------------------------------- proposte (inviti senza server)
+// Una persona scrive un impegno per l'agenda di un'altra: è solo una PROPOSTA, un testo da incollare.
+// Niente entra nel piano di nessuno senza il tocco di chi lo riceve. La logica sta in invite.js (pura);
+// qui ci sono solo l'archivio (chiavi a parte, fuori dallo stato salvato), le schede e le carte.
+// Ogni stringa che arriva da fuori passa da findInvite/sanitizeInvite e finisce nella pagina come testo.
+const NAME_KEY = 'tempo.nome', INV_KEY = 'tempo.inviti';
+const INV_MAX = 50, INV_DAYS = 60, INV_STATUS = ['attesa', 'si', 'no', 'altro', 'spostata'];
+const okInvId = (v) => typeof v === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(v);
+const cleanTxt = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : '');
+const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const newId = () => (typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${uid()}${uid()}${Date.now().toString(36)}`);
+const myTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } };
+const baseUrl = () => (location.protocol === 'http:' || location.protocol === 'https:' ? location.origin + location.pathname : '');
+/** «20:00»; la fine a mezzanotte si legge «24:00». */
+const hhmm = (m) => (m >= 1440 ? '24:00' : fmtMin(m));
+/** «oggi», «domani», «giovedì 12 novembre». */
+function dayFull(d) {
+  if (d === today()) return 'oggi';
+  if (d === addDays(today(), 1)) return 'domani';
+  return dateOf(d).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
+function myName() { try { return cleanTxt(localStorage.getItem(NAME_KEY) || '', 40); } catch { return ''; } }
+function setMyName(v) { try { const n = cleanTxt(v, 40); if (n) localStorage.setItem(NAME_KEY, n); else localStorage.removeItem(NAME_KEY); } catch {} }
+
+/** Le proposte mandate e ricevute: { id, role:'inviata'|'ricevuta', itemId, title, to, from, at, status }. Si legge sempre ripulito. */
+function readInvites(now = Date.now()) {
+  let raw = [];
+  try { const j = JSON.parse(localStorage.getItem(INV_KEY) || '[]'); if (Array.isArray(j)) raw = j; } catch {}
+  const seen = new Set(), out = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object' || !okInvId(r.id) || seen.has(r.id)) continue;
+    const at = Number.isFinite(r.at) ? r.at : 0;
+    if (!at || now - at > INV_DAYS * 864e5 || at > now + 864e5) continue;
+    seen.add(r.id);
+    out.push({
+      id: r.id, role: r.role === 'ricevuta' ? 'ricevuta' : 'inviata', itemId: okInvId(r.itemId) ? r.itemId : null,
+      title: cleanTxt(r.title, 80), to: cleanTxt(r.to, 40), from: cleanTxt(r.from, 40), at,
+      status: INV_STATUS.includes(r.status) ? r.status : 'attesa',
+    });
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, INV_MAX);
+}
+let invMem = null, invWait = null;
+const invites = () => (invMem ||= readInvites());
+function writeInvites(list) {
+  invMem = list.slice(0, INV_MAX); invWait = null;
+  try { localStorage.setItem(INV_KEY, JSON.stringify(invMem)); } catch {}
+}
+function upsertInvite(rec) {
+  writeInvites([rec, ...invites().filter((r) => r.id !== rec.id)]);
+}
+function forgetInvites() {
+  invMem = []; invWait = null;
+  try { localStorage.removeItem(INV_KEY); } catch {}
+}
+const inviteRec = (id) => invites().find((r) => r.id === id) || null;
+/** L'impegno ha una proposta mandata e ancora senza risposta? */
+function inviteWaiting(itemId) {
+  if (!itemId) return false;
+  invWait ||= new Set(invites().filter((r) => r.role === 'inviata' && r.status === 'attesa' && r.itemId).map((r) => r.itemId));
+  return invWait.has(itemId);
+}
+
+/** Comandi dalla pipeline di sempre: sanitizeOps → applyOps dentro commit (quindi con Annulla). */
+function pipeline(label, ops) {
+  const clean = sanitizeOps(ops).ops;
+  let res = null;
+  const undoId = commit(label, () => { res = applyOps(state, clean); });
+  if (!res || !res.log.length) { popUndo(state, undoId); replan(); renderAll(); return { undoId: null, res }; }
+  return { undoId, res };
+}
+/** «Annulla» di una proposta accettata: se l'annullamento riesce, la proposta torna a essere nuova. */
+function undoInvite(undoId, id) {
+  const u = undoAction(undoId);
+  return { ...u, fn: () => { const ok = undoable(undoId); u.fn(); if (ok) { writeInvites(invites().filter((r) => r.id !== id)); dismissNotice('invito'); } } };
+}
+
+// ---- mandare un testo: «Condividi» (foglio del telefono) o «Copia»
+async function copyOut(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  try {
+    const ta = mk('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.append(ta); ta.select();
+    const ok = document.execCommand('copy'); ta.remove();
+    if (ok) return true;
+  } catch {}
+  toast('Non riesco a copiare. Tieni premuto sul testo e copialo.');
+  return false;
+}
+/** 'shared' | 'copied' | null (annullato o non riuscito). Non dice mai che il messaggio è partito. */
+async function shareOut(text) {
+  if (typeof navigator.share === 'function') {
+    try { await navigator.share({ text }); return 'shared'; }
+    catch (e) { if (e?.name === 'AbortError') return null; }
+  }
+  return (await copyOut(text)) ? 'copied' : null;
+}
+/** I due pulsanti. `getText()` dà il testo di adesso; `guard()` può fermare (manca la firma); `onSent(how)` dopo l'invio. */
+function shareRow(getText, { guard, onSent }) {
+  const row = mk('div', 'r-actions inv-share');
+  const go = async (copy) => {
+    if (guard && !guard()) return;
+    const text = getText();
+    if (!text) return;
+    const how = copy ? ((await copyOut(text)) ? 'copied' : null) : await shareOut(text);
+    if (how) onSent(how);
+  };
+  const a = mk('button', 'btn primary', 'Condividi'); a.type = 'button'; a.dataset.inv = 'share';
+  const b = mk('button', 'btn', 'Copia'); b.type = 'button'; b.dataset.inv = 'copy';
+  a.addEventListener('click', () => go(false));
+  b.addEventListener('click', () => go(true));
+  row.append(a, b);
+  return row;
+}
+/** Il messaggio com'è: righe di testo; le ultime due (indirizzo e codice) sono per Tempo e stanno su una riga. */
+function msgPreview(text) {
+  const box = mk('div', 'inv-msg');
+  box.dataset.inv = 'msg';
+  fillMsg(box, text);
+  return box;
+}
+function fillMsg(box, text) {
+  box.replaceChildren();
+  for (const line of String(text).split('\n')) box.append(mk('div', /^(https?:\/\/|\[tempo:inv1:)/.test(line) ? 'tech' : '', line));
+}
+/** Il campo «Come ti firmi»: salva mentre scrivi. */
+function nameField(onChange) {
+  const w = mk('div', 'inv-name-wrap');
+  const l = mk('label', 'ed-k', 'Come ti firmi'); l.htmlFor = 'inv-name-in';
+  const i = mk('input', 'inv-name'); i.id = 'inv-name-in'; i.type = 'text'; i.maxLength = 40; i.autocomplete = 'off'; i.setAttribute('autocapitalize', 'words');
+  i.placeholder = 'Il tuo nome'; i.value = myName();
+  i.addEventListener('input', () => { setMyName(i.value); onChange?.(); });
+  i.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); } });
+  w.append(l, i);
+  return w;
+}
+const needName = (focusEl) => () => { if (myName()) return true; toast('Scrivi prima come ti firmi.'); focusEl?.()?.focus(); return false; };
+
+// ---- 1. proporre
+/** Dal pulsante «Proponi» della scheda: un impegno fisso con giorno e ora. */
+function proposeItem(id) {
+  const it = state.items.find((x) => x.id === id);
+  if (!it || it.kind !== 'event' || !it.date || it.start == null) { toast('Mi servono il giorno e l\'ora.'); return; }
+  openProposal({ id: newId(), itemId: it.id, ops: null, title: it.title, date: it.date, start: it.start, end: Math.min(1440, it.start + (it.duration || 60)), to: '' });
+}
+const STOP_NAMES = new Set(['i', 'il', 'lo', 'la', 'le', 'gli', 'un', 'uno', 'una', 'mio', 'mia', 'miei', 'tuoi', 'tutti', 'tutte', 'a', 'ad', 'per', 'di', 'da', 'con', 'che', 'se', 'e']);
+/** «proponi a Marco cena giovedì alle 20» / «invita Marco a cena giovedì alle 20»: la frase è letta dal parser senza AI. */
+function handleProposeText(text) {
+  const m = text.match(/^(?:proponi|invita)\s+(?:a\s+)?([\p{L}][\p{L}\p{M}'’.-]*)(?:\s+(.+))?$/isu);
+  if (!m || STOP_NAMES.has(m[1].toLowerCase())) return false;
+  const to = cleanTxt(m[1].charAt(0).toUpperCase() + m[1].slice(1), 40);
+  const lack = () => notice({ key: 'invito', what: 'Mi serve il giorno e l\'ora.', why: 'Per proporre un impegno servono tutti e due.', next: `Scrivi, per esempio: proponi a ${to} cena giovedì alle 20.` });
+  const rest = (m[2] || '').replace(/^(?:a|ad|per)\s+/i, '').trim();
+  if (!rest) { lack(); return true; }
+  let ops = [];
+  try { ops = sanitizeOps(localParse(rest, state, Date.now()).ops || []).ops; } catch {}
+  const o = ops[0];
+  if (ops.length !== 1 || o.action !== 'add' || o.kind !== 'event' || !o.date || !o.start_time) { lack(); return true; }
+  const draft = draftOf(), before = new Set(draft.items.map((x) => x.id));
+  applyOps(draft, ops);
+  const it = draft.items.find((x) => !before.has(x.id));
+  if (!it || it.kind !== 'event' || !it.date || it.start == null) { lack(); return true; }
+  openProposal({ id: newId(), itemId: null, ops, title: it.title, date: it.date, start: it.start, end: Math.min(1440, it.start + (it.duration || 60)), to });
+  return true;
+}
+
+let invDraft = null;
+const proposalOf = (p) => makeInvite({ title: p.title, date: p.date, start: p.start, end: p.end, tz: myTz(), from: myName() }, { id: p.id, now: Date.now() });
+/** La scheda della proposta: il messaggio com'è, e due modi per mandarlo. */
+function openProposal(p) {
+  if (!proposalOf(p)) { toast('Non riesco a preparare la proposta: controlla il giorno e l\'ora.'); return; }
+  closePlus();
+  sheetMode = 'invite'; ed = null; red = null; invDraft = p;
+  const form = $('#sheet-form');
+  form.dataset.id = '';
+  form.replaceChildren();
+  const h = mk('h2', 'sr-only', 'Proponi un impegno'); h.id = 'sheet-title';
+  const card = mk('div', 'ed-card event'); card.id = 'ed-card';
+  card.append(mk('div', 'ed-title', p.title), mk('div', 'ed-sub', `${cap(dayFull(p.date))}, ${hhmm(p.start)}–${hhmm(p.end)}`), (() => { const f = mk('div', 'ed-foot'); f.append(mk('span', '', p.to ? `Proposta per ${p.to}` : 'Proposta')); return f; })());
+  const msg = msgPreview('');
+  const refresh = () => { const inv = proposalOf(p); fillMsg(msg, inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''); };
+  refresh();
+  const sec = mk('section', 'ed-row');
+  const k = mk('span', 'ed-k', 'Il messaggio');
+  sec.append(k, msg, mk('p', 'inv-hint', 'Le ultime righe sono il codice che Tempo legge.'));
+  const askName = !myName();
+  const nm = askName ? nameField(refresh) : null;
+  const line = mk('p', 'inv-line', p.itemId ? 'Intanto l\'impegno resta nel tuo piano.' : 'Intanto lo metto nel tuo piano, finché non risponde.');
+  const actions = mk('div', 'ed-actions');
+  actions.append(shareRow(() => { const inv = proposalOf(p); return inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''; }, {
+    guard: needName(() => nm?.querySelector('input')),
+    onSent: proposalSent,
+  }));
+  form.append(h, card);
+  if (nm) form.append(nm);
+  form.append(sec, line, actions);
+  showSheet();
+  if (nm) setTimeout(() => nm.querySelector('input')?.focus({ preventScroll: true }), 320);
+}
+/** Condiviso o copiato: solo ora l'impegno nuovo entra nel piano, e la proposta resta segnata «in attesa». */
+function proposalSent(how) {
+  const p = invDraft;
+  if (!p) return;
+  invDraft = null;
+  let undoId = null, itemId = p.itemId;
+  if (p.ops) {
+    const before = new Set(state.items.map((x) => x.id));
+    undoId = pipeline('Impegno proposto', p.ops).undoId;
+    itemId = state.items.find((x) => !before.has(x.id))?.id || null;
+  }
+  upsertInvite({ id: p.id, role: 'inviata', itemId, title: cleanTxt(p.title, 80), to: p.to, from: '', at: Date.now(), status: 'attesa' });
+  closeSheet();
+  renderAll();
+  const undo = undoId ? undoAction(undoId) : null;
+  if (how === 'copied') toast('Copiato. Incollalo nella chat.', undo);
+  else if (undo) { const w = itemId && whereIs(itemId); toast(`${shortTitle(p.title)}: aggiunto${w ? ', ' + w.text : ''}.`, undo); }
+}
+
+// ---- 2. ricevere
+const INV_MARK = /tempo:inv1:|invito=/i;
+/** Il testo contiene una proposta o una risposta? Allora si mostra la carta e il testo non va altrove. */
+function handleInviteText(text) {
+  const t = String(text || '');
+  if (!INV_MARK.test(t)) return false;
+  const inv = findInvite(t);
+  if (!inv) { invalidNotice('Il testo si è rovinato nella copia.'); return true; }
+  if (inv.kind === 'risposta') { showAnswerCard(inv); return true; }
+  if (inv.ts < Date.now()) { invalidNotice('La sua data è già passata.'); return true; }
+  showProposalCard(inv);
+  return true;
+}
+const invalidNotice = (why) => notice({ key: 'invito', what: 'Non riesco a leggere questa proposta.', why, next: 'Chiedi di rimandartela.' });
+
+let inviteHash = '';
+function readInviteHash() {
+  if (!/(?:^|[#&])invito=/.test(location.hash)) return;
+  inviteHash = location.hash;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (state.onboarded && $('#onb').hidden) releaseInviteHash();
+}
+function releaseInviteHash() {
+  if (!inviteHash) return;
+  const h = inviteHash; inviteHash = '';
+  setTimeout(() => handleInviteText(h), 500);
+}
+
+/** La carta nell'area delle risposte; `stage(fn)` la ridisegna a ogni passo. */
+function inviteShell() {
+  const box = $('#notices-reply');
+  if (!box) return null;
+  dismissNotice('invito', true);
+  const card = mk('div', 'reply-card notice inv-card anim');
+  card.setAttribute('role', 'status');
+  card.dataset.notice = 'invito';
+  const x = mk('button', 'r-x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Chiudi');
+  x.addEventListener('click', () => dismissNotice('invito'));
+  const stage = (fn) => { card.replaceChildren(x); fn(card); };
+  box.append(card);
+  return { card, stage };
+}
+const invBtn = (label, fn, primary) => { const b = mk('button', 'btn' + (primary ? ' primary' : ''), label); b.type = 'button'; b.addEventListener('click', fn); return b; };
+const invActions = (...btns) => { const d = mk('div', 'r-actions'); d.append(...btns); return d; };
+
+function showProposalCard(inv) {
+  const prev = inviteRec(inv.id);
+  if (prev?.role === 'inviata') { notice({ key: 'invito', what: 'Questa proposta l\'hai scritta tu.', why: 'La riconosco dal codice.', next: 'Mandala a chi vuoi invitare e aspetta la risposta.' }); return; }
+  if (prev?.role === 'ricevuta') {
+    const inPlan = prev.status === 'si' && prev.itemId && state.items.some((x) => x.id === prev.itemId);
+    if (inPlan) notice({ key: 'invito', what: 'L\'hai già nel piano.', why: 'Avevi accettato questa proposta: non la aggiungo due volte.', next: 'Non serve fare altro.' });
+    else notice({ key: 'invito', what: 'Hai già risposto.', why: prev.status === 'si' ? 'Avevi accettato questa proposta, ma ora non è più nel piano.' : 'Ho già una tua risposta a questa proposta.', next: 'Se vuoi, chiedi di rimandartela con un altro codice.' });
+    return;
+  }
+  const tz = myTz(), now = Date.now();
+  const slot = localSlot(inv, tz), fit = fitInvite(state, inv, { tz, now });
+  if (!slot || !fit) { invalidNotice('Il testo si è rovinato nella copia.'); return; }
+  const cut = slot.e - slot.s < inv.e - inv.s;
+  const when = `${dayFull(slot.d)}, ${cut ? `dalle ${hhmm(slot.s)} fino a mezzanotte` : `${hhmm(slot.s)}–${hhmm(slot.e)}`}`;
+  const who = inv.from || 'Qualcuno';
+  const sh = inviteShell();
+  if (!sh) return;
+  const home = () => sh.stage((c) => {
+    c.append(mk('p', 'n-what', `${who} ti propone: ${inv.t} · ${when}.`));
+    if (inv.note) c.append(mk('p', 'inv-note', `Nota: ${inv.note}`));
+    const c0 = fit.conflicts[0];
+    const verdict = fit.fits ? 'Ci sta.' : c0
+      ? `Si sovrappone a ${c0.title || 'un tuo impegno'} (${hhmm(c0.start)}–${hhmm(c0.end)})${fit.conflicts.length > 1 ? ` e a ${fit.conflicts.length - 1 === 1 ? 'un altro impegno' : (fit.conflicts.length - 1) + ' altri impegni'}` : ''}. Se accetti, i due impegni si sovrappongono.`
+      : 'Non ci sta.';
+    c.append(mk('p', 'inv-verdict ' + (fit.fits ? 'ok' : 'bad'), verdict));
+    c.append(invActions(invBtn('Accetta', () => accept(), true), invBtn('Proponi altro', () => alternatives()), invBtn('Non riesco', () => replyStage(sh, inv, 'no', [], home))));
+  });
+  const accept = () => {
+    const op = inviteOp(inv, tz);
+    const before = new Set(state.items.map((x) => x.id));
+    const { undoId } = op ? pipeline('Proposta accettata', [op]) : { undoId: null };
+    if (!undoId) { toast('Non sono riuscito ad aggiungerla. Il piano è com\'era.'); return; }
+    const item = state.items.find((x) => !before.has(x.id));
+    upsertInvite({ id: inv.id, role: 'ricevuta', itemId: item?.id || null, title: cleanTxt(inv.t, 80), to: '', from: inv.from, at: Date.now(), status: 'si' });
+    const w = item && whereIs(item.id);
+    toast(`${shortTitle(inv.t)}: aggiunto${w ? ', ' + w.text : ''}.`, undoInvite(undoId, inv.id));
+    replyStage(sh, inv, 'si', [], null);
+  };
+  const alternatives = () => sh.stage((c) => {
+    const alts = fit.alternatives;
+    if (!alts.length) {
+      c.append(mk('p', 'n-what', 'Non trovo un\'altra fascia libera nei prossimi giorni.'), mk('p', 'n-why', 'Puoi dire che non riesci.'));
+      c.append(invActions(invBtn('Non riesco', () => replyStage(sh, inv, 'no', [], home), true), invBtn('Indietro', home)));
+      return;
+    }
+    c.append(mk('p', 'n-what', 'Quando ti va bene?'), mk('p', 'n-why', `Scegli una o più fasce libere: le propongo a ${inv.from || 'chi te l\'ha mandata'}.`));
+    const chosen = new Set();
+    const go = invBtn('Prepara la risposta', () => replyStage(sh, inv, 'altro', alts.filter((_, i) => chosen.has(i)), alternatives), true);
+    go.disabled = true;
+    const list = mk('div', 'inv-alts');
+    alts.forEach((a, i) => {
+      const b = mk('button', 'ch'); b.type = 'button'; b.dataset.alt = String(i); b.setAttribute('aria-pressed', 'false');
+      const paint = () => { const on = chosen.has(i); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); b.textContent = `${on ? '✓ ' : ''}${cap(dayFull(a.d))}, ${hhmm(a.s)}–${hhmm(a.e)}`; };
+      b.addEventListener('click', () => { chosen.has(i) ? chosen.delete(i) : chosen.add(i); paint(); go.disabled = !chosen.size; });
+      paint(); list.append(b);
+    });
+    c.append(list, invActions(go, invBtn('Indietro', home)));
+  });
+  home();
+}
+
+/** La risposta da mandare indietro: stesso componente della proposta. `back` riporta alla scelta (nessuno dopo «Accetta»). */
+function replyStage(sh, inv, answer, alts, back) {
+  const build = () => makeReply(inv, { answer, alternatives: alts, from: myName() }, { id: build.id ||= newId(), now: Date.now() });
+  const textNow = () => { const r = build(); return r ? inviteText(r, { baseUrl: baseUrl() }) : ''; };
+  sh.stage((c) => {
+    const who = inv.from || 'chi te l\'ha mandata';
+    const lead = answer === 'si' ? 'Fatto: è nel tuo piano.' : answer === 'no' ? 'Rispondi che non riesci.' : 'Rispondi con queste fasce.';
+    c.append(mk('p', 'n-what', lead), mk('p', 'n-why', `Per dirlo a ${who} manda questo messaggio: scegli Condividi o Copia.`));
+    const msg = msgPreview(textNow());
+    const refresh = () => fillMsg(msg, textNow());
+    if (!myName()) c.append(nameField(refresh));
+    c.append(msg);
+    const row = shareRow(textNow, {
+      guard: needName(() => c.querySelector('.inv-name')),
+      onSent: (how) => {
+        if (answer !== 'si') upsertInvite({ id: inv.id, role: 'ricevuta', itemId: null, title: cleanTxt(inv.t, 80), to: '', from: inv.from, at: Date.now(), status: answer });
+        if (how === 'copied') toast('Copiato. Incollalo nella chat.');
+        dismissNotice('invito');
+      },
+    });
+    row.append(invBtn(answer === 'si' ? 'Non ora' : 'Indietro', () => (answer === 'si' || !back ? dismissNotice('invito') : back())));
+    c.append(row);
+  });
+}
+
+// ---- 3. arriva la risposta
+function showAnswerCard(rep) {
+  const rec = inviteRec(rep.re);
+  if (!rec || rec.role !== 'inviata') {
+    notice({ key: 'invito', what: 'Questa risposta non è per una proposta di questo Tempo.', why: 'Non trovo la proposta a cui risponde: forse l\'hai mandata da un altro telefono, o l\'hai dimenticata.', next: 'Non ho cambiato niente.' });
+    return;
+  }
+  if (rec.status === 'spostata' && rep.ans !== 'si') { notice({ key: 'invito', what: 'Hai già risposto a questa.', why: 'Hai spostato l\'impegno in un\'altra fascia.', next: 'Non ho cambiato niente.' }); return; }
+  const tz = myTz();
+  const item = rec.itemId ? state.items.find((x) => x.id === rec.itemId) : null;
+  const who = rep.from || 'Chi ha risposto';
+  const slot = localSlot(rep, tz) || { d: rep.d, s: rep.s, e: rep.e };
+  const label = `${rec.title || rep.t} · ${dayFull(slot.d)}, ${hhmm(slot.s)}–${hhmm(slot.e)}`;
+  const sh = inviteShell();
+  if (!sh) return;
+  const mark = (status) => { if (rec.status === 'attesa' || status === 'spostata') upsertInvite({ ...rec, status, at: rec.at }); };
+  if (rep.ans === 'si') {
+    mark('si');
+    renderAll();
+    sh.stage((c) => c.append(mk('p', 'n-what', `${who} ha accettato: ${label}.`), mk('p', 'n-why', 'Non ho cambiato niente nel tuo piano.')));
+    noticeTimers.invito = setTimeout(() => dismissNotice('invito'), 14000); // senza scelte, sparisce da sola come gli altri avvisi
+    return;
+  }
+  const alts = rep.ans === 'altro' ? rep.alt.map((a) => ({ ...(localSlot({ ...a, e: a.s + (rep.e - rep.s) }, tz) || a), ts: a.ts })) : [];
+  mark(alts.length ? 'altro' : 'no');
+  renderAll();
+  const drop = () => {
+    const { undoId } = pipeline('Impegno tolto', [{ action: 'delete', id: item.id }]);
+    dismissNotice('invito');
+    if (undoId) toast(`${shortTitle(item.title)}: tolto dal piano.`, undoAction(undoId));
+  };
+  if (!alts.length) {
+    sh.stage((c) => {
+      c.append(mk('p', 'n-what', `${who} non riesce.`), mk('p', 'n-why', item ? `${item.title} è ancora nel tuo piano.` : 'L\'impegno non è più nel tuo piano.'));
+      if (item) c.append(invActions(invBtn('Togli dal piano', drop, true), invBtn('Tieni', () => dismissNotice('invito'))));
+    });
+    return;
+  }
+  sh.stage((c) => {
+    c.append(mk('p', 'n-what', `${who} propone invece:`), mk('p', 'n-why', item ? 'Scegli una fascia: sposto il tuo impegno lì. Puoi annullare.' : 'L\'impegno non è più nel tuo piano.'));
+    if (!item) return;
+    const list = mk('div', 'inv-alts');
+    alts.forEach((a, i) => {
+      const b = mk('button', 'ch', `${cap(dayFull(a.d))}, ${hhmm(a.s)}–${hhmm(a.e)}`); b.type = 'button'; b.dataset.alt = String(i);
+      b.addEventListener('click', () => moveToAlt(sh, rec, item, a));
+      list.append(b);
+    });
+    c.append(list, invActions(invBtn('Lascia com\'è', () => dismissNotice('invito'))));
+  });
+}
+/** Sposta il tuo impegno nella fascia scelta (pipeline, con Annulla) e offre la conferma da mandare. */
+function moveToAlt(sh, rec, item, a) {
+  const { undoId } = pipeline('Impegno spostato', [{ action: 'move', id: item.id, date: a.d, start_time: hhmm(a.s) }]);
+  if (!undoId) { toast('Non sono riuscito a spostarlo. Il piano è com\'era.'); return; }
+  upsertInvite({ ...rec, status: 'spostata' });
+  renderAll();
+  const w = whereIs(item.id);
+  toast(`${shortTitle(item.title)}: spostato${w ? ' a ' + w.text : ''}.`, undoAction(undoId));
+  const id = newId();
+  const conf = () => makeInvite({ title: item.title, date: a.d, start: a.s, end: Math.min(1440, a.s + (item.duration || 60)), tz: myTz(), from: myName() }, { id, now: Date.now() });
+  const textNow = () => { const x = conf(); return x ? inviteText(x, { baseUrl: baseUrl() }) : ''; };
+  sh.stage((c) => {
+    c.append(mk('p', 'n-what', 'Spostato. Vuoi mandare la conferma?'), mk('p', 'n-why', `${rec.to || 'Chi ha risposto'} la vede come nuova proposta e tocca «Accetta».`));
+    const msg = msgPreview(textNow());
+    if (!myName()) c.append(nameField(() => fillMsg(msg, textNow())));
+    c.append(msg);
+    const row = shareRow(textNow, {
+      guard: needName(() => c.querySelector('.inv-name')),
+      onSent: (how) => {
+        upsertInvite({ id, role: 'inviata', itemId: item.id, title: cleanTxt(item.title, 80), to: rec.to, from: '', at: Date.now(), status: 'attesa' });
+        renderAll();
+        if (how === 'copied') toast('Copiato. Incollalo nella chat.');
+        dismissNotice('invito');
+      },
+    });
+    row.append(invBtn('Non ora', () => dismissNotice('invito')));
+    c.append(row);
+  });
+}
+
+// ---- 4. impostazioni
+let invForgetAsk = false;
+function proposalSettingsHtml() {
+  const row = invForgetAsk
+    ? `<div class="row"><span class="lbl">Dimenticare le proposte?<small>Le risposte che arrivano non saranno più riconosciute.</small></span><button type="button" class="btn danger" id="inv-forget-yes">Dimentica</button><button type="button" class="btn" id="inv-forget-no">Tengo</button></div>`
+    : `<div class="row"><span class="lbl">Dimentica le proposte<small>quelle mandate e quelle ricevute</small></span><button type="button" class="btn" id="inv-forget">Dimentica</button></div>`;
+  return `<div class="group"><h2>Proposte</h2>
+      <div class="card">
+        <div class="row"><label for="inv-name">Come ti firmi<small>compare nelle proposte che mandi</small></label><input type="text" id="inv-name" class="wide" value="${esc(myName())}" maxlength="40" autocomplete="off" autocapitalize="words" placeholder="Il tuo nome"></div>
+        ${row}
+      </div>
+      <p class="note">Una proposta entra nel piano di chi la riceve solo se tocca «Accetta».</p>
+    </div>`;
+}
+
 // ---------------------------------------------------------------- avvio
 lastSavedOpenAt = state.stats.lastOpenAt || 0;
 noteOpen(state, Date.now()); // 7 giorni o più dall'ultima apertura: «Bentornato» (e allarmi in pausa finché non rispondi)
@@ -3398,6 +3867,8 @@ native.onIntent((e) => { if (e.kind === 'tell' && e.text) send(String(e.text).sl
   if (said) { history.replaceState(null, '', location.pathname); setTimeout(() => send(said.slice(0, 500)), 300); }
   if (q.get('open') === 'recap') { history.replaceState(null, '', location.pathname); openRecap(); }
 }
+readInviteHash(); // #invito=… (un link ricevuto): si legge una volta, poi l'indirizzo torna pulito
+addEventListener('hashchange', readInviteHash);
 // i dati non devono essere cancellati dal browser quando lo spazio scarseggia: lo si chiede una volta
 if (!state.settings.persistAsked) {
   state.settings.persistAsked = true;
