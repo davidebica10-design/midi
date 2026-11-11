@@ -1135,3 +1135,13 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 
 /* sfondo fermo: pagina nascosta, oppure stati «fermi» (prima di un impegno, giornata piena, focus) */
 .page-hidden .bg i, .page-hidden .blob i, .bg.still i { animation-play-state: paused; }
+
+/* ---------- parole lunghe e tocchi comodi (lotto B) ---------- */
+.pc-title, .pc-quote, .pc-desc, .pc-label, .ed-title, .ed-sub, .ed-foot, .sheet h2, .reply-card, .toast span, .notice p, .f-note { overflow-wrap: anywhere; }
+.pc-quote, .pc-desc { min-width: 0; }
+.toast span { min-width: 0; }
+.toast button { min-height: 44px; min-width: 44px; padding: 0 6px; }
+.notice .n-code { margin-top: 6px; font-size: 12px; color: var(--ink-3); }
+.broken-row .btn { flex: none; min-height: 44px; }
+.broken-row small { overflow-wrap: anywhere; }
+.toast { width: max-content; }
