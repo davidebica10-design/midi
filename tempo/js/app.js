@@ -23,6 +23,16 @@ import { syncNow, signIn, signOut, cloudCall, DEFAULT_CLOUD_URL } from './cloud.
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** «l'11 novembre», «il 3 novembre»; con prep 'del': «dell'8 novembre», «del 3 novembre». */
+function itDate(d, prep = 'il', withYear = false) {
+  d = d instanceof Date ? d : new Date(d);
+  const n = d.getDate(), elide = n === 8 || n === 11;
+  const art = prep === 'del' ? (elide ? 'dell\'' : 'del ') : (elide ? 'l\'' : 'il ');
+  return `${art}${n} ${d.toLocaleDateString('it-IT', { month: 'long', ...(withYear ? { year: 'numeric' } : {}) })}`;
+}
+/** Titolo corto per i messaggi di una riga: al massimo 28 caratteri, poi «…». */
+const shortTitle = (t) => { t = String(t ?? '').replace(/\s+/g, ' ').trim(); return t.length > 28 ? t.slice(0, 28).trimEnd() + '…' : t; };
+
 // Dati illeggibili all'avvio: load() ripartirebbe da uno stato vuoto e il primo salvataggio cancellerebbe l'originale.
 // Prima di tutto, quindi, ne tengo una copia a parte (una sola, l'ultima).
 const BROKEN_KEY = 'tempo.v1.rotto';
@@ -135,7 +145,7 @@ async function send(text) {
   $('#input').blur();
   setComposing(false);
   lastUserMsgId = addMsg({ role: 'user', text }).id;
-  if (pending) discardPending(true);
+  if (pending) { discardPending(true); toast('La proposta di prima è messa da parte.'); }
   const mode = aiMode();
 
   if (mode === 'online' || mode === 'local') {
@@ -160,7 +170,7 @@ async function send(text) {
         const draft = draftOf();
         const res = applyOps(draft, out.ops);
         const deletesFixed = out.ops.some((o) => o.action === 'delete' && itemsBefore.find((x) => x.id === o.id)?.kind === 'event');
-        finishChange({ text: out.text + (res.errors.length ? '\n(' + res.errors.join('; ') + ')' : ''), draft, log: res.log, confirm: out.confirm || deletesFixed, before, itemsBefore });
+        finishChange({ text: outcomeText(out.text, res), draft, log: res.log, confirm: out.confirm || deletesFixed, before, itemsBefore });
       } else addMsg({ role: 'assistant', text: out.text });
     } catch (e) {
       removeMsg(typing.id);
@@ -180,7 +190,7 @@ async function send(text) {
   const before = plan;
   const itemsBefore = JSON.parse(JSON.stringify(state.items));
   let draft = null, log = [], confirm = false;
-  const understood = [];
+  const understood = [], errs = [];
 
   const hooks = {
     apply(input) {
@@ -188,6 +198,7 @@ async function send(text) {
       const known = { items: [...itemsBefore, ...draft.items], recurring: [...state.recurring, ...draft.recurring] };
       const res = applyOps(draft, input.ops);
       log.push(...res.log);
+      errs.push(...res.errors);
       try { understood.push(...understoodOf(input.ops, { items: [...known.items, ...draft.items], recurring: [...known.recurring, ...draft.recurring] }, today())); } catch {}
       const deletesFixed = input.ops.some((o) => (o.action === 'delete' && itemsBefore.find((x) => x.id === o.id)?.kind === 'event') || o.action === 'remove_recurring');
       confirm ||= !!input.requires_confirmation || deletesFixed;
@@ -218,7 +229,7 @@ async function send(text) {
   try {
     const out = await withTimeout((signal) => runTurn({ state, plan, now: Date.now(), userText: aiText, hooks, chat: prior, signal }), AI_TIMEOUT * 2);
     removeMsg(typing.id);
-    if (draft) finishChange({ text: out.text, draft, log, confirm, before, itemsBefore, understood });
+    if (draft) finishChange({ text: outcomeText(out.text, { log, errors: errs }), draft, log, confirm, before, itemsBefore, understood });
     else addMsg({ role: 'assistant', text: out.text });
   } catch (e) {
     removeMsg(typing.id);
@@ -250,7 +261,20 @@ function baseTurn(text, aiError = null) {
   const note = aiError ? `${errorInfo(aiError).what} Ho capito la frase senza assistente. ` : '';
   const draft = draftOf();
   const res = applyOps(draft, r.ops);
-  finishChange({ text: note + r.reply + (res.errors.length ? '\n' + res.errors.join('\n') : ''), draft, log: res.log, confirm: r.confirm, before, itemsBefore, understood: r.understood });
+  finishChange({ text: note + outcomeText(r.reply, res), draft, log: res.log, confirm: r.confirm, before, itemsBefore, understood: r.understood });
+}
+
+/**
+ * Il testo di risposta quando qualche operazione non è passata: quante e perché, in parole semplici.
+ * Se nessuna è passata non si dice mai «Fatto». (Le operazioni scartate prima, da sanitizeOps, non arrivano qui.)
+ */
+function outcomeText(text, res) {
+  const errs = res?.errors || [];
+  if (!errs.length) return text;
+  const reasons = [...new Set(errs.map((e) => (/^Non trovo «/.test(e) ? 'l\'attività non esiste più' : String(e).replace(/[.\s]+$/, '').replace(/^./, (c) => c.toLowerCase()))))].slice(0, 2).join('; ');
+  const n = errs.length;
+  const lost = `${n === 1 ? '1 modifica non applicata' : n + ' modifiche non applicate'}: ${reasons}.`;
+  return res.log.length ? `${text}\n${lost}` : `Non è cambiato niente. ${lost}`;
 }
 
 const title = (s, id) => (s.items.find((x) => x.id === id) || {}).title || (String(id).startsWith('rec:') ? 'ricorrente' : id);
@@ -264,15 +288,15 @@ function errorInfo(e) {
   const set = 'settings';
   if (e?.code === 'webgpu') return { code: 'webgpu', what: 'Questo iPhone non può far girare il modello in locale.', why: 'Serve Safari con WebGPU (iOS 26 o successivo).', next: 'Aggiorna iOS oppure scegli «Online · gratis» in Impostazioni, sotto Assistente AI.', action: set };
   if (local && /memory|out of memory|device lost|allocation/i.test(msg)) return { code: 'memoria', what: 'Il modello è troppo pesante per questo telefono.', why: 'La memoria non basta.', next: 'Scegli un modello più piccolo in Impostazioni, sotto Assistente AI.', action: set };
-  if (local && /fetch|network|load/i.test(msg)) return { code: 'scarico', what: 'Non riesco a scaricare il modello.', why: 'La connessione non regge.', next: 'Riprova con il Wi-Fi. Dopo il primo download funziona anche offline.', action: 'retry' };
+  if (local && /fetch|network|load/i.test(msg)) return { code: 'scarico', what: 'Non riesco a scaricare il modello.', why: 'La connessione non regge.', next: 'Riprova con il Wi-Fi.', action: 'retry' };
   if (!local && navigator.onLine === false) return { code: 'offline', what: 'Non ho raggiunto l\'assistente.', why: 'Non c\'è connessione.', next: 'Riprova quando sei online.', action: 'retry' };
   if (e?.code === 'timeout') return { code: 'timeout', what: `L'assistente non ha risposto in ${secs} secondi.`, why: 'Il servizio è lento o la rete è debole.', next: 'Riprova, o scrivi la frase più semplice.', action: 'retry' };
   if (e?.code === 'nokey') return { code: 'nokey', what: `Manca la chiave di ${svc}.`, why: 'Senza chiave l\'assistente online non può rispondere.', next: 'Creala gratis e incollala in Impostazioni, sotto Assistente AI.', action: set };
-  if (e?.code === 'badkey' || st === 401 || st === 403) return { code: 'badkey', what: 'Il servizio non accetta la chiave.', why: `Ha risposto ${st === 403 ? 403 : 401}: è sbagliata o scaduta.`, next: 'Ricopiala per intero in Impostazioni e tocca «Prova».', action: set };
+  if (e?.code === 'badkey' || st === 401 || st === 403) return { code: 'badkey', what: 'Il servizio non accetta la chiave.', why: 'È sbagliata o scaduta.', detail: `Codice ${st === 403 ? 403 : 401}`, next: 'Ricopiala per intero in Impostazioni e tocca «Prova».', action: set };
   if (st === 429) return { code: '429', what: 'Il servizio ti ha fermato per un po\'.', why: 'Troppe richieste in poco tempo.', next: 'Aspetta un minuto e riprova.', action: 'retry' };
   if (!local && (st === 404 || st === 400)) return { code: 'modello', what: 'Il servizio non riconosce il modello.', why: 'Il nome del modello è sbagliato o non c\'è più.', next: 'Controllalo in Impostazioni, sotto Assistente AI.', action: set };
   if (e?.code === 'nofree' && presetOf(state.settings) !== 'custom') return { code: 'nofree', what: 'Nessun modello gratuito ha risposto.', why: 'I modelli gratuiti a volte sono sovraccarichi.', next: 'Riprova tra qualche minuto.', action: 'retry' };
-  if (st >= 500) return { code: '5xx', what: 'Il servizio non funziona ora.', why: `Ha risposto con un suo problema (${st}).`, next: 'Riprova tra qualche minuto.', action: 'retry' };
+  if (st >= 500) return { code: '5xx', what: 'Il servizio non funziona ora.', why: 'Ha un problema suo.', detail: `Codice ${st}`, next: 'Riprova tra qualche minuto.', action: 'retry' };
   if (e instanceof SyntaxError || /formato|json|risposta vuota/i.test(msg)) return { code: 'risposta', what: 'Non ho capito la risposta dell\'assistente.', why: 'Non era in un formato che posso applicare.', next: 'Riprova o riformula la frase.', action: 'retry' };
   console.warn('errore AI non classificato', e);
   return { code: 'altro', what: 'L\'assistente non mi ha dato una risposta utilizzabile.', why: 'Non so dirti il motivo.', next: 'Riprova tra poco.', action: 'retry' };
@@ -289,24 +313,26 @@ const noticeTimers = {};
 /**
  * Un avviso con forma fissa: cosa è successo → perché → cosa puoi fare ora, al massimo un bottone.
  * `key` identifica l'avviso (uno nuovo con la stessa chiave prende il posto del vecchio).
- * `action`: { label, fn, keep? } (dopo il tocco l'avviso si chiude, salvo `keep`).
+ * `action`: { label, fn, keep? } o un elenco di due (dopo il tocco l'avviso si chiude, salvo `keep`).
+ * `detail`: un dettaglio tecnico piccolo (un codice), mai nel testo principale.
  * `sticky`: resta finché non lo chiudi o non è risolto. `alert`: per perdite di dati (role="alert").
  * `host`: 'reply' sopra la barra, 'top' in alto sopra tutto (anche pannelli e presentazione).
  */
-function notice({ key, what, why, next, action = null, sticky = false, alert = false, host = 'reply' }) {
+function notice({ key, what, why, next, detail = '', action = null, sticky = false, alert = false, host = 'reply' }) {
   const box = $(NOTICE_HOSTS[host] || NOTICE_HOSTS.reply);
   if (!box) return null;
   key ||= 'n' + Date.now();
+  const acts = !action ? [] : [].concat(action);
   dismissNotice(key, true);
   const el = document.createElement('div');
   el.className = 'reply-card error notice anim';
   el.setAttribute('role', alert ? 'alert' : 'status');
   el.dataset.notice = key;
-  el.innerHTML = `<button type="button" class="r-x" aria-label="Chiudi">×</button><p class="n-what">${esc(what)}</p>${why ? `<p class="n-why">${esc(why)}</p>` : ''}${next ? `<p class="n-next">${esc(next)}</p>` : ''}${action ? `<div class="r-actions"><button type="button" class="btn primary">${esc(action.label)}</button></div>` : ''}`;
+  el.innerHTML = `<button type="button" class="r-x" aria-label="Chiudi">×</button><p class="n-what">${esc(what)}</p>${why ? `<p class="n-why">${esc(why)}</p>` : ''}${next ? `<p class="n-next">${esc(next)}</p>` : ''}${detail ? `<p class="n-code">${esc(detail)}</p>` : ''}${acts.length ? `<div class="r-actions">${acts.map((a, k) => `<button type="button" class="btn${k === 0 ? ' primary' : ''}">${esc(a.label)}</button>`).join('')}</div>` : ''}`;
   el.querySelector('.r-x').addEventListener('click', () => dismissNotice(key));
-  if (action) el.querySelector('.r-actions .btn').addEventListener('click', () => { if (!action.keep) dismissNotice(key); action.fn(); });
+  el.querySelectorAll('.r-actions .btn').forEach((b, k) => b.addEventListener('click', () => { if (!acts[k].keep) dismissNotice(key); acts[k].fn(); }));
   box.append(el);
-  if (!sticky && !action) noticeTimers[key] = setTimeout(() => dismissNotice(key), 14000);
+  if (!sticky && !acts.length) noticeTimers[key] = setTimeout(() => dismissNotice(key), 14000);
   return el;
 }
 function dismissNotice(key, now = false) {
@@ -327,8 +353,7 @@ function aiFailNotice(e, text) {
   const retry = { label: 'Riprova', fn: () => { const v = input.value.trim() || text; input.value = ''; input.dispatchEvent(new Event('input')); send(v); renderComposer(); } };
   const settings = { label: 'Apri le impostazioni', fn: () => openSettings() };
   notice({
-    key: 'ai', what: i.what, why: i.why,
-    next: `${i.next} Non ho cambiato niente e la frase è ancora nella barra. Le frasi semplici le capisco anche senza assistente.`,
+    key: 'ai', what: i.what, why: i.why, detail: i.detail, next: i.next,
     action: i.action === 'settings' ? settings : retry, host: 'reply',
   });
 }
@@ -358,7 +383,8 @@ function finishChange({ text, draft, log, confirm, before, itemsBefore, understo
   if (!changes.length) { addMsg({ role: 'assistant', text }); return; }
   if (confirm) {
     const msg = addMsg({ role: 'assistant', text, changes, applied: null, said });
-    pending = { draft, msgId: msg.id };
+    const asked = state.chat.find((x) => x.id === lastUserMsgId);
+    pending = { draft, msgId: msg.id, base: clone(pick(state)), day: today(), text: asked?.text || '' };
     renderChat();
     return;
   }
@@ -367,9 +393,37 @@ function finishChange({ text, draft, log, confirm, before, itemsBefore, understo
   addMsg({ role: 'assistant', text, changes, applied: true, undoId, said });
 }
 
+/** Quante cose sono cambiate dopo che la proposta è stata preparata (attività, obiettivi, preferenze…). */
+function changedSince(base) {
+  let n = 0;
+  const cur = new Map(state.items.map((x) => [x.id, JSON.stringify(x)]));
+  const old = new Map(base.items.map((x) => [x.id, JSON.stringify(x)]));
+  for (const [id, j] of cur) if (old.get(id) !== j) n++;
+  for (const id of old.keys()) if (!cur.has(id)) n++;
+  for (const k of ['prefs', 'recurring', 'memory']) if (JSON.stringify(state[k]) !== JSON.stringify(base[k])) n++;
+  const brief = (list, f) => JSON.stringify((list || []).map(f)); // di obiettivi e progetti conta ciò che scrivi tu, non i conti interni
+  if (brief(state.goals, (g) => [g.id, g.title, g.due]) !== brief(base.goals, (g) => [g.id, g.title, g.due])) n++;
+  if (brief(state.projects, (p) => [p.id, p.name]) !== brief(base.projects, (p) => [p.id, p.name])) n++;
+  return n;
+}
 function applyPending() {
   if (!pending) return;
   const m = state.chat.find((x) => x.id === pending.msgId);
+  const n = changedSince(pending.base), dayMoved = pending.day !== today();
+  if (n || dayMoved) { // i dati sono cambiati: applicarla ora cancellerebbe quello che hai fatto nel frattempo
+    const said = pending.text;
+    pending = null;
+    if (m) m.applied = false;
+    save(state);
+    renderChat();
+    notice({
+      key: 'proposta', what: 'La proposta non vale più.',
+      why: dayMoved ? 'Il giorno è cambiato.' : `Nel frattempo hai cambiato ${n === 1 ? 'una cosa' : n + ' cose'}.`,
+      next: 'Rifai la richiesta.',
+      action: { label: 'Rifai', fn: () => { openBar(); const inp = $('#input'); inp.value = said; inp.dispatchEvent(new Event('input')); inp.focus(); } },
+    });
+    return;
+  }
   const draft = pending.draft;
   pending = null;
   markChanged(state.items, draft.items);
@@ -391,6 +445,9 @@ function doUndo(id) {
   const e = popUndo(state, id);
   if (!e) { toast('Niente da annullare'); return; }
   for (const m of state.chat) if (m.undoId && !undoExists(m.undoId)) { m.undoId = null; m.undone = true; }
+  const back = focusUndo.get(e.id);
+  if (back && !state.focus && state.items.some((x) => x.id === back.itemId && x.status === 'doing')) { state.focus = back; focusOpen = back.phase !== 'ready'; heroKey = ''; }
+  focusUndo.delete(e.id);
   replan();
   save(state);
   renderAll();
@@ -1024,7 +1081,27 @@ const minOfDay = (t) => { const d = new Date(t); return d.getHours() * 60 + d.ge
 /** Il tempo della fase è finito. */
 function advanceFocus() {
   const f = state.focus;
-  const next = focusNext(f, Date.now());
+  const now = Date.now();
+  const v = focusView(f, now);
+  const endedAt = f.startedAt + f.paused + v.total;
+  if (now - endedAt > 2 * 60000) { // è finito da un po': Tempo era chiuso o il telefono dormiva
+    const worked = f.worked + (f.phase === 'work' ? v.total : 0);
+    state.focus = { ...f, worked, phase: 'done', startedAt: null, pausedAt: null, paused: 0 };
+    focusOpen = true;
+    heroKey = '';
+    save(state);
+    renderDayView(false);
+    const hm = new Date(endedAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    notice({
+      key: 'timer', sticky: true,
+      what: `Il timer è finito alle ${hm}, mentre Tempo era chiuso.`,
+      why: `«${shortTitle(f.title)}»: ${workedMin(state.focus, now) ? `hai lavorato ${durLabel(workedMin(state.focus, now))}` : 'non conto altro tempo'}.`,
+      next: 'Com\'è andata?',
+      action: [{ label: 'Fatta', fn: () => endFocus('done') }, { label: 'Non ancora', fn: () => endFocus('later') }],
+    });
+    return;
+  }
+  const next = focusNext(f, now);
   state.focus = next;
   if (next.phase === 'break') toast(`Giro ${f.round} finito: ${next.round % POMO_ROUNDS === 0 ? 15 : 5} minuti di pausa`);
   else if (next.phase === 'ready') { toast('Pausa finita: quando vuoi, il prossimo giro'); focusOpen = true; }
@@ -1058,10 +1135,21 @@ function endFocus(how, quiet = false) {
   state.focus = null;
   focusOpen = false;
   heroKey = '';
-  if (how === 'done') quickOp('complete', f.itemId, w ? { actual_min: w } : {});
-  else if (how === 'later' && w) { if (quiet) { applyOps(state, [{ action: 'progress', id: f.itemId, actual_min: w }]); save(state); } else quickOp('progress', f.itemId, { actual_min: w }); }
-  else { save(state); renderDayView(false); }
+  dismissNotice('timer', true);
+  let undoId = null;
+  if (how === 'done') undoId = quickOp('complete', f.itemId, w ? { actual_min: w } : {});
+  else if (how === 'later' && w) { if (quiet) { applyOps(state, [{ action: 'progress', id: f.itemId, actual_min: w }]); save(state); } else undoId = quickOp('progress', f.itemId, { actual_min: w }); }
+  else {
+    // timer chiuso senza lavoro: l'attività non resta «in corso» senza un timer
+    const it = state.items.find((x) => x.id === f.itemId);
+    if (it && it.status === 'doing') { applyOps(state, [{ action: 'reopen', id: f.itemId }]); replan(); }
+    save(state); renderAll();
+    if (!quiet && it) toast(`${shortTitle(it.title)}: torna da fare.`);
+  }
+  // «Annulla» riporta anche il timer, così lo stato resta coerente
+  if (undoId) focusUndo.set(undoId, f);
 }
+const focusUndo = new Map();
 
 function focusAction(act, el) {
   const now = Date.now();
@@ -1900,22 +1988,74 @@ async function sheetSave() {
     applyOps(state, []); // abitudini e controlli dopo la modifica
   });
   closeSheet();
-  toastUndo(id ? 'Salvato' : 'Aggiunto');
+  const w = whereIs(newId), t = shortTitle(clean.title), f = clean.kind === 'event' ? 'o' : 'a';
+  const at = w ? `, ${w.text}` : clean.date ? `, ${dayWord(clean.date)}` : '';
+  toast(id ? `${t}: modifiche salvate${at}.` : `${t}: aggiunt${f}${at}.`, { label: 'Annulla', fn: () => doUndo() });
 }
 
+/** Dove cade ora un'attività: il primo blocco ancora da fare nei prossimi giorni, «domani, 11:15». */
+function whereIs(id) {
+  for (const d of Object.keys(plan).sort()) {
+    const b = plan[d].blocks.find((x) => x.id === id && x.type !== 'done');
+    if (b) return { day: d, start: b.start, text: `${dayWord(d)}, ${fmtMin(b.start)}` };
+  }
+  return null;
+}
+/** «oggi», «domani», «giovedì 15» (dopo «a»: «a domani», «a giovedì 15»). */
+function dayWord(d) {
+  const t = today();
+  if (d === t) return 'oggi';
+  if (d === addDays(t, 1)) return 'domani';
+  return dateOf(d).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric' });
+}
+/**
+ * La frase del toast dopo un'azione rapida: cosa è successo e quando (una riga, titolo corto).
+ * Si basa su quello che `applyOps` ha davvero fatto (res.log), poi guarda dove cade ora nel piano.
+ */
+function actionToast(action, it, res) {
+  const t = shortTitle(it.title), f = it.kind === 'event' ? 'o' : 'a';
+  const now = state.items.find((x) => x.id === it.id) || it;
+  const w = whereIs(it.id);
+  if (action === 'complete') return `${t}: fatt${f}${now.actual ? `, ${now.actual} min reali` : ''}.`;
+  if (action === 'delete') return `${t} eliminat${f}.`;
+  if (action === 'reopen') return `${t}: riapert${f}.`;
+  if (action === 'start') return `${t}: iniziat${f}.`;
+  if (action === 'move') {
+    const to = w ? w.text : now.date ? dayWord(now.date) : null;
+    return to ? `${t}: spostat${f} a ${to}.` : `${t}: spostat${f}.`;
+  }
+  if (action === 'skip') return w ? `${t}: rimandat${f}, ora ${w.text}.` : `${t}: rimandat${f}, non entra nei prossimi giorni.`;
+  if (action === 'progress') {
+    if (now.status === 'done') return `${t}: fatt${f}, ${now.spent} min in tutto.`;
+    return `${t}: fatti ${now.spent} min, ne mancano ${Math.max(0, now.duration - (now.spent || 0))}.`;
+  }
+  const line = (res?.log?.[0] || '').replace(/^\S+\s/, '');
+  return line ? line.replace(it.title, t) + '.' : `${t}: fatto.`;
+}
+
+/** Esegue un'azione su un'attività. Restituisce l'id per annullare (o null se non è cambiato niente). */
 function quickOp(action, id, extra = {}, opts = {}) {
   const it = state.items.find((x) => x.id === id);
-  if (!it) return;
+  if (!it) return null;
   const label = { complete: 'Fatto', start: 'Iniziata', reopen: 'Riaperta', delete: 'Eliminata', move: 'Spostata', progress: 'Segnato in parte', skip: 'Rimandata' }[action];
-  commit(`${label}: ${it.title}`, () => applyOps(state, [{ action, id, ...extra }]), opts);
+  const snapshot = { ...it };
+  let res = null;
+  const undoId = commit(`${label}: ${it.title}`, () => { res = applyOps(state, [{ action, id, ...extra }]); }, opts);
   closeSheet();
+  if (res && !res.log.length) { // non è cambiato niente: niente da annullare
+    popUndo(state, undoId); replan(); renderAll();
+    toast(`${shortTitle(it.title)}: non è cambiato niente.`);
+    return null;
+  }
   // una sessione di un obiettivo: quanto manca e quando è la prossima
   const note = action === 'complete' ? sessionDoneNote(state, id, plan, Date.now()) : null;
   if (note) {
-    toast(note.text, [{ label: 'Va bene', fn: () => {} }, ...(note.nextId ? [{ label: 'Sposta', fn: () => openSheet(note.nextId) }] : [])]);
-    return;
+    const text = note.text.replace(it.title, shortTitle(it.title));
+    toast(text, [{ label: 'Annulla', fn: () => doUndo() }, ...(note.nextId ? [{ label: 'Sposta', fn: () => openSheet(note.nextId) }] : [])]);
+    return undoId;
   }
-  toastUndo(`${label}: ${it.title}`);
+  toast(actionToast(action, snapshot, res), { label: 'Annulla', fn: () => doUndo() });
+  return undoId;
 }
 
 /** Le risposte alle osservazioni del companion (la logica sta in companion.js: answerObservation). */
@@ -2199,6 +2339,7 @@ function renderSettings() {
 
     <div class="group"><h2>Dati</h2>
       <div class="card">
+        ${brokenRowHtml()}
         <div class="row"><span class="lbl">Esporta un backup</span><button class="btn" id="export">Esporta</button></div>
         <div class="row"><span class="lbl">Ripristina da backup</span><label class="btn" for="import-file">Importa</label><input type="file" id="import-file" accept="application/json,.json" hidden></div>
         <div class="row"><span class="lbl">Dimentica le richieste passate<small>l'AI non ne terrà più conto</small></span><button class="btn" id="clear-chat">Dimentica</button></div>
@@ -2453,22 +2594,21 @@ function backupNotice(what, why, next) {
 }
 /** Legge e controlla il file; non cambia niente finché non confermi. */
 async function readBackup(file) {
-  const now = countsOf(state);
-  const keep = `Le tue ${plural(now.tasks, 'attività', 'attività')} sono com'erano.`;
+  const keep = 'Non è cambiato niente:';
   let d;
   try { d = JSON.parse(await file.text()); }
-  catch { return backupNotice('Non ho ripristinato il backup.', 'Il file non si legge: non è un backup di Tempo, o è stato tagliato.', `${keep} Scegli un altro file.`); }
+  catch { return backupNotice('Non ho ripristinato il backup.', 'Il file non si legge: non è un backup di Tempo, o è stato tagliato.', `${keep} scegli un altro file.`); }
   if (!d || typeof d !== 'object' || Array.isArray(d) || !Array.isArray(d.items)) {
-    return backupNotice('Non ho ripristinato il backup.', 'Il file non è un backup di Tempo.', `${keep} Scegli un altro file.`);
+    return backupNotice('Non ho ripristinato il backup.', 'Il file non è un backup di Tempo.', `${keep} scegli un altro file.`);
   }
   if (Number.isFinite(d.schema) && d.schema > SCHEMA) {
-    return backupNotice('Questo backup viene da una versione più nuova di Tempo.', `Ha il formato ${d.schema}, questa versione arriva al ${SCHEMA}.`, 'Aggiorna l\'app e riprova. Non ho toccato niente.');
+    return backupNotice('Questo backup viene da una versione più nuova di Tempo.', `Ha il formato ${d.schema}, questa versione arriva al ${SCHEMA}.`, 'Aggiorna l\'app e riprova.');
   }
   let m;
   const { archive, ...rest } = d;
   try { m = migrate({ ...rest, settings: state.settings }, Date.now()); }
-  catch { return backupNotice('Non ho ripristinato il backup.', 'Il contenuto non è in un formato che conosco.', `${keep} Scegli un altro file.`); }
-  const date = d.exportedAt && !Number.isNaN(Date.parse(d.exportedAt)) ? new Date(d.exportedAt).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }) : null;
+  catch { return backupNotice('Non ho ripristinato il backup.', 'Il contenuto non è in un formato che conosco.', `${keep} scegli un altro file.`); }
+  const date = d.exportedAt && !Number.isNaN(Date.parse(d.exportedAt)) ? itDate(d.exportedAt, 'del', true) : null;
   backupPending = { m, archive: Array.isArray(archive) ? archive : [], counts: countsOf(m), date };
   openBackupSheet();
 }
@@ -2480,7 +2620,7 @@ function openBackupSheet() {
     <h2 id="sheet-title" class="sr-only">Ripristinare il backup</h2>
     <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">Ripristinare questo backup?</div>
       <div class="ed-sub">Ora hai ${esc(countsLabel(countsOf(state)))}.</div>
-      <div class="ed-sub">Nel backup${date ? ` (del ${esc(date)})` : ''} ci sono ${esc(countsLabel(counts))}.</div>
+      <div class="ed-sub">Nel backup${date ? ` (${esc(date)})` : ''} ci sono ${esc(countsLabel(counts))}.</div>
       <div class="ed-sub">Sostituisce quello che hai adesso. Potrai annullare finché non chiudi l'app.</div><div class="ed-foot"><span>Backup</span></div></div>
     <div class="ed-actions"><button type="button" class="btn ed-save" data-sheet="backup-go">Ripristina</button><button type="button" class="btn ed-save" data-sheet="close">Lascia com'è</button></div>`;
   $('#sheet-form').dataset.id = '';
@@ -2500,7 +2640,7 @@ function applyBackup() {
   if (!ok) {
     restoreState(prev);
     renderAll();
-    return backupNotice('Non ho ripristinato il backup.', 'Non c\'è abbastanza spazio sul telefono per salvarlo.', `Le tue ${plural(before.tasks, 'attività', 'attività')} sono salve, com'erano. Togli il vecchio archivio dalle Impostazioni e riprova.`);
+    return backupNotice('Non ho ripristinato il backup.', 'Non c\'è abbastanza spazio sul telefono per salvarlo.', `Le tue ${plural(before.tasks, 'attività', 'attività')} sono come prima: libera spazio e riprova.`);
   }
   // le voci archiviate del backup tornano nell'archivio (ripulite come tutto il resto)
   const arch = p.archive.length ? sanitizeState({ items: p.archive }).items : [];
@@ -2525,7 +2665,7 @@ function undoBackup() {
   const b = backupPrev;
   if (!b) return;
   if ((state.stats.edits || 0) !== b.edits) {
-    return backupNotice('Non posso annullare il ripristino.', 'Dopo il ripristino hai già cambiato altro.', 'Annullare farebbe perdere quelle modifiche. Se serve, ripristina un altro backup.');
+    return backupNotice('Non posso annullare il ripristino.', 'Dopo il ripristino hai già cambiato altro.', 'Annullare cancellerebbe quelle modifiche.');
   }
   backupPrev = null;
   restoreState(b.prev);
@@ -2537,7 +2677,7 @@ function addMemory() {
   const v = $('#mem-new').value.trim();
   if (!v) return;
   commit('Preferenza', () => applyOps(state, contextOps({ prefs: v }, today())));
-  toast('Me lo ricordo');
+  toastUndo(`Me lo ricordo: ${shortTitle(v)}.`);
 }
 /** Aggiunte rapide dal pannello del contesto (stessa logica della presentazione). */
 function addContext(kind) {
@@ -2547,7 +2687,7 @@ function addContext(kind) {
   const ans = kind === 'goal' ? { goals: v } : kind === 'vin' ? { constraints: v } : { projects: v };
   if (kind === 'goal') for (const p of state.projects || []) if (v.toLowerCase().includes(p.name.toLowerCase())) ans.projects = p.name;
   commit('Contesto', () => applyOps(state, contextOps(ans, today())));
-  toast('Aggiunto');
+  toastUndo(`Aggiunto: ${shortTitle(v)}.`);
 }
 
 // ---------------------------------------------------------------- utilità UI
@@ -2902,6 +3042,16 @@ function bind() {
         .catch((err) => { if (status) status.textContent = errorText(err); t.disabled = false; });
     }
     if (t.id === 'export') exportData();
+    if (t.id === 'broken-dl') { const b = brokenCopy(); if (b) deliverBroken(b.raw); }
+    if (t.id === 'broken-del') { brokenAsk = true; renderSettings(); $('#broken-no')?.focus(); }
+    if (t.id === 'broken-no') { brokenAsk = false; renderSettings(); }
+    if (t.id === 'broken-yes') {
+      brokenAsk = false;
+      try { localStorage.removeItem(BROKEN_KEY); localStorage.removeItem(BROKEN_KEY + '.at'); } catch {}
+      dismissNotice('rotto', true);
+      renderSettings();
+      toast('Copia eliminata');
+    }
     if (t.id === 'open-recap') openRecap();
     if (tt && (/^cl-/.test(tt.id) || tt.dataset.clRevoke)) cloudClick(tt.id, tt);
     if (t.matches?.('input[data-copy]')) { t.select(); navigator.clipboard?.writeText(t.value).then(() => toast('Copiato')).catch(() => {}); }
@@ -3088,16 +3238,38 @@ function syncSaveAlert() {
 /** Dati illeggibili all'avvio: restano da parte, e si possono scaricare. */
 function showBrokenNotice({ raw, at }) {
   const d = new Date(at);
-  const when = `${d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}, ore ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
+  const when = `${itDate(d)}, alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
   const kb = Math.max(1, Math.round(raw.length / 1024));
   notice({
     key: 'rotto', sticky: true, alert: true, host: 'top',
     what: 'Non sono riuscito a leggere i tuoi dati.',
-    why: `Il file sul telefono era danneggiato (${kb} KB) quando l'ho aperto (${when}).`,
-    next: 'Non l\'ho cancellato: l\'ho messo da parte. Puoi ripristinare un backup in Impostazioni o scaricare la copia illeggibile.',
-    action: { label: 'Scarica la copia', fn: () => deliverFile(new File([raw], `tempo-dati-illeggibili-${today()}.txt`, { type: 'text/plain' }), 'Dati illeggibili di Tempo'), keep: true },
+    why: 'Il file sul telefono era danneggiato.',
+    next: 'L\'ho messo da parte: scaricalo, o ripristina un backup dalle Impostazioni.',
+    detail: `${kb} KB, aperto ${when}`,
+    action: { label: 'Scarica la copia', fn: () => deliverBroken(raw), keep: true },
   });
 }
+
+/** La riga delle Impostazioni per la copia dei dati illeggibili (c'è finché la copia esiste). */
+function brokenRowHtml() {
+  const b = brokenCopy();
+  if (!b) return '';
+  const when = b.at ? ` ${itDate(b.at, 'del')}` : '';
+  if (brokenAsk) {
+    return `<div class="row broken-row"><span class="lbl">Eliminare la copia${esc(when ? ' ' + when.trim() : '')}?<small>Non si può recuperare.</small></span><button type="button" class="btn danger" id="broken-yes">Elimina</button><button type="button" class="btn" id="broken-no">Tengo</button></div>`;
+  }
+  return `<div class="row broken-row"><span class="lbl">Copia dei dati illeggibili${esc(when)}<small>messa da parte quando non riuscivo a leggerli</small></span><button type="button" class="btn" id="broken-dl">Scarica</button><button type="button" class="btn danger" id="broken-del">Elimina</button></div>`;
+}
+const deliverBroken = (raw) => deliverFile(new File([raw], `tempo-dati-illeggibili-${today()}.txt`, { type: 'text/plain' }), 'Dati illeggibili di Tempo');
+/** La copia dei dati illeggibili che resta nel telefono: { raw, at } oppure null. */
+function brokenCopy() {
+  try {
+    const raw = localStorage.getItem(BROKEN_KEY);
+    if (!raw) return brokenData;
+    return { raw, at: +localStorage.getItem(BROKEN_KEY + '.at') || 0 };
+  } catch { return brokenData; }
+}
+let brokenAsk = false; // «Elimina» chiede conferma dentro la pagina
 
 /** Promemoria di backup: niente export da 14 giorni (e l'app si usa da almeno 14). */
 const backupDue = () => backupDueOf(state, Date.now());
