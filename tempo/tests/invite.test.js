@@ -427,7 +427,7 @@ test('caratterizzazione: 02:30 del 28 marzo 2027 a Roma non esiste → l\'istant
   assert.deepEqual(findInvite(inviteText(p), Date.UTC(2027, 0, 1)), p, 'il giro completo non la rovina');
 });
 
-test('caratterizzazione: 02:30 del 31 ottobre 2027 a Roma esiste due volte → l'istante è la seconda occorrenza (CET, 01:30 UTC)', () => {
+test('caratterizzazione: 02:30 del 31 ottobre 2027 a Roma esiste due volte → l\'istante è la seconda occorrenza (CET, 01:30 UTC)', () => {
   const p = makeInvite(base({ date: '2027-10-31', start: 150, end: 210 }), { id: 'g', now: Date.UTC(2027, 0, 1) });
   assert.equal(p.ts, Date.UTC(2027, 9, 31, 1, 30), 'seconda occorrenza: 02:30 CET = 01:30 UTC (la prima sarebbe 00:30 UTC)');
   assert.deepEqual(localSlot(p, ROME), { d: '2027-10-31', s: 150, e: 210 });
