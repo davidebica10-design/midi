@@ -341,7 +341,7 @@ body.kb .bar { bottom: 8px; }
 #plus.open { transform: rotate(45deg); }
 #mic.rec { color: #fff; background: var(--accent); animation: recPulse 1.4s ease-in-out infinite; }
 @keyframes recPulse { 50% { box-shadow: 0 0 0 8px rgba(224, 69, 123, 0.18); } }
-#input { flex: 1; border: 0; outline: 0; background: transparent; resize: none; max-height: 132px; padding: 9px 4px; line-height: 1.35; }
+#input { flex: 1; border: 0; outline: 0; background: transparent; resize: none; min-height: 44px; max-height: 132px; box-sizing: border-box; padding: 11px 4px; line-height: 1.35; }
 #input::placeholder { color: var(--ink-3); }
 .send { width: 40px; height: 40px; flex: none; border-radius: 50%; background: var(--ink); color: var(--bg); display: grid; place-items: center; transition: transform 0.3s var(--spring), opacity 0.2s; }
 .send:active { transform: scale(0.85); }
