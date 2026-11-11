@@ -2,7 +2,7 @@ import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, f
 import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner } from './store.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, lastUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner } from './store.js';
 import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
@@ -41,11 +41,11 @@ const cloudMsg = (e) => {
 };
 const validDate = (v) => { if (v == null || v === '') return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; };
 /** Titolo corto per i messaggi di una riga: al massimo 28 caratteri, poi «…». */
-const shortTitle = (t) => { t = String(t ?? '').replace(/\s+/g, ' ').trim(); return t.length > 28 ? t.slice(0, 28).trimEnd() + '…' : t; };
+const shortTitle = (t) => { t = String(t ?? '').replace(/\s+/g, ' ').trim(); return [...t].length > 28 ? [...t].slice(0, 28).join('').trimEnd() + '…' : t; };
 
 // Dati illeggibili all'avvio: load() ripartirebbe da uno stato vuoto e il primo salvataggio cancellerebbe l'originale.
-// Prima di tutto, quindi, ne tengo una copia a parte (una sola, l'ultima).
-const BROKEN_KEY = 'tempo.v1.rotto';
+// Prima di tutto, quindi, ne tengo una copia a parte (al massimo due: l'ultima e la precedente).
+const BROKEN_KEY = 'tempo.v1.rotto', BROKEN_KEY2 = 'tempo.v1.rotto2';
 const brokenData = (() => {
   try {
     const raw = localStorage.getItem('tempo.v1');
@@ -53,8 +53,15 @@ const brokenData = (() => {
     let ok = false;
     try { const v = JSON.parse(raw); ok = !!v && typeof v === 'object' && !Array.isArray(v); if (ok) migrate(v); } catch { ok = false; }
     if (ok) return null;
-    const info = { raw, at: Date.now() };
-    try { localStorage.setItem(BROKEN_KEY, raw); localStorage.setItem(BROKEN_KEY + '.at', String(info.at)); } catch {}
+    const info = { raw, at: Date.now(), saved: false };
+    try {
+      const old = localStorage.getItem(BROKEN_KEY);
+      if (old === raw) { info.saved = true; info.at = +localStorage.getItem(BROKEN_KEY + '.at') || info.at; return info; }
+      // c'è già un'altra copia non ancora scaricata o eliminata: passa al secondo posto
+      if (old) { localStorage.setItem(BROKEN_KEY2, old); localStorage.setItem(BROKEN_KEY2 + '.at', localStorage.getItem(BROKEN_KEY + '.at') || '0'); }
+      localStorage.setItem(BROKEN_KEY, raw); localStorage.setItem(BROKEN_KEY + '.at', String(info.at));
+      info.saved = true;
+    } catch {}
     return info; // se la copia non entra, resta in memoria per questa sessione
   } catch { return null; }
 })();
@@ -302,13 +309,14 @@ function errorInfo(e) {
   if (!local && navigator.onLine === false) return { code: 'offline', what: 'Non ho raggiunto l\'assistente.', why: 'Non c\'è connessione.', next: 'Riprova quando sei online.', action: 'retry' };
   if (e?.code === 'timeout') return { code: 'timeout', what: `L'assistente non ha risposto in ${secs} secondi.`, why: 'Il servizio è lento o la rete è debole.', next: 'Riprova, o scrivi la frase più semplice.', action: 'retry' };
   if (e?.code === 'nokey') return { code: 'nokey', what: `Manca la chiave di ${svc}.`, why: 'Senza chiave l\'assistente online non può rispondere.', next: 'Creala gratis e incollala in Impostazioni, sotto Assistente AI.', action: set };
-  if (e?.code === 'badkey' || st === 401 || st === 403) return { code: 'badkey', what: 'Il servizio non accetta la chiave.', why: 'È sbagliata o scaduta.', detail: `Codice ${st === 403 ? 403 : 401}`, next: 'Ricopiala per intero in Impostazioni e tocca «Prova».', action: set };
+  if (st === 403 && e?.code !== 'badkey') return { code: '403', what: 'Il servizio rifiuta la richiesta.', why: 'La chiave non è valida, oppure il servizio non è disponibile dalla tua zona.', detail: 'Codice 403', next: 'Controlla la chiave in Impostazioni e tocca «Prova».', action: set };
+  if (e?.code === 'badkey' || st === 401) return { code: 'badkey', what: 'Il servizio non accetta la chiave.', why: 'È sbagliata o scaduta.', detail: `Codice ${st === 403 ? 403 : 401}`, next: 'Ricopiala per intero in Impostazioni e tocca «Prova».', action: set };
   if (st === 429) return { code: '429', what: 'Il servizio ti ha fermato per un po\'.', why: 'Troppe richieste in poco tempo.', next: 'Aspetta un minuto e riprova.', action: 'retry' };
   if (!local && (st === 404 || st === 400)) return { code: 'modello', what: 'Il servizio non riconosce il modello.', why: 'Il nome del modello è sbagliato o non c\'è più.', next: 'Controllalo in Impostazioni, sotto Assistente AI.', action: set };
   if (e?.code === 'nofree' && presetOf(state.settings) !== 'custom') return { code: 'nofree', what: 'Nessun modello gratuito ha risposto.', why: 'I modelli gratuiti a volte sono sovraccarichi.', next: 'Riprova tra qualche minuto.', action: 'retry' };
   if (st >= 500) return { code: '5xx', what: 'Il servizio non funziona ora.', why: 'Ha un problema suo.', detail: `Codice ${st}`, next: 'Riprova tra qualche minuto.', action: 'retry' };
   if (e instanceof SyntaxError || /formato|json|risposta vuota/i.test(msg)) return { code: 'risposta', what: 'Non ho capito la risposta dell\'assistente.', why: 'Non era in un formato che posso applicare.', next: 'Riprova o riformula la frase.', action: 'retry' };
-  console.warn('errore AI non classificato', e);
+  console.warn('errore AI non classificato', e?.code ?? e?.status ?? '?');
   return { code: 'altro', what: 'L\'assistente non mi ha dato una risposta utilizzabile.', why: 'Non so dirti il motivo.', next: 'Riprova tra poco.', action: 'retry' };
 }
 /** Una frase sola, per i punti dove non c'è spazio per un avviso (stato delle Impostazioni, racconto del mese). */
@@ -2008,7 +2016,7 @@ async function sheetSave() {
   };
   if ('image' in v) clean.image = v.image;
   clean.goalId = clean.project ? (state.goals || []).find((g) => g.projectId === clean.project)?.id || null : null;
-  commit(id ? 'Modifica manuale' : 'Nuova attività', () => {
+  const undoId = commit(id ? 'Modifica manuale' : 'Nuova attività', () => {
     if (old) {
       if (old.duration !== clean.duration) { old.durationEstimated = false; old.baseDuration = null; }
       Object.assign(old, clean, { updatedAt: Date.now() });
@@ -2021,7 +2029,7 @@ async function sheetSave() {
   closeSheet();
   const w = whereIs(newId), t = shortTitle(clean.title), f = clean.kind === 'event' ? 'o' : 'a';
   const at = w ? `, ${w.text}` : clean.date ? `, ${dayWord(clean.date)}` : '';
-  toast(id ? `${t}: modifiche salvate${at}.` : `${t}: aggiunt${f}${at}.`, { label: 'Annulla', fn: () => doUndo() });
+  toast(id ? `${t}: modifiche salvate${at}.` : `${t}: aggiunt${f}${at}.`, undoAction(undoId));
 }
 
 /** Dove cade ora un'attività: il primo blocco ancora da fare nei prossimi giorni, «domani, 11:15». */
@@ -2061,7 +2069,7 @@ function actionToast(action, it, res) {
     return `${t}: fatti ${now.spent} min, ne mancano ${Math.max(0, now.duration - (now.spent || 0))}.`;
   }
   const line = (res?.log?.[0] || '').replace(/^\S+\s/, '');
-  return line ? line.replace(it.title, t) + '.' : `${t}: fatto.`;
+  return line ? line.replace(it.title, () => t) + '.' : `${t}: fatto.`;
 }
 
 /** Esegue un'azione su un'attività. Restituisce l'id per annullare (o null se non è cambiato niente). */
@@ -2081,11 +2089,11 @@ function quickOp(action, id, extra = {}, opts = {}) {
   // una sessione di un obiettivo: quanto manca e quando è la prossima
   const note = action === 'complete' ? sessionDoneNote(state, id, plan, Date.now()) : null;
   if (note) {
-    const text = note.text.replace(it.title, shortTitle(it.title));
-    toast(text, [{ label: 'Annulla', fn: () => doUndo() }, ...(note.nextId ? [{ label: 'Sposta', fn: () => openSheet(note.nextId) }] : [])]);
+    const text = note.text.replace(it.title, () => shortTitle(it.title));
+    toast(text, [undoAction(undoId), ...(note.nextId ? [{ label: 'Sposta', fn: () => openSheet(note.nextId) }] : [])]);
     return undoId;
   }
-  toast(actionToast(action, snapshot, res), { label: 'Annulla', fn: () => doUndo() });
+  toast(actionToast(action, snapshot, res), undoAction(undoId));
   return undoId;
 }
 
@@ -2652,7 +2660,8 @@ function openBackupSheet() {
     <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">Ripristinare questo backup?</div>
       <div class="ed-sub">Ora hai ${esc(countsLabel(countsOf(state)))}.</div>
       <div class="ed-sub">Nel backup${date ? ` (${esc(date)})` : ''} ci sono ${esc(countsLabel(counts))}.</div>
-      <div class="ed-sub">Sostituisce quello che hai adesso. Potrai annullare finché non chiudi l'app.</div><div class="ed-foot"><span>Backup</span></div></div>
+      <div class="ed-sub">Sostituisce quello che hai adesso. Potrai annullare finché non chiudi l'app.</div>${state.settings.cloudToken ? `
+      <div class="ed-sub">Con l'account Tempo Cloud, il ripristino arriva presto anche agli altri dispositivi: annullare è sicuro solo su questo telefono e solo se gli altri non hanno già cambiato niente.</div>` : ''}<div class="ed-foot"><span>Backup</span></div></div>
     <div class="ed-actions"><button type="button" class="btn primary ed-save" data-sheet="backup-go">Ripristina</button><button type="button" class="btn ed-save" data-sheet="close">Lascia com'è</button></div>`;
   $('#sheet-form').dataset.id = '';
   showSheet();
@@ -2667,7 +2676,7 @@ function applyBackup() {
   Object.assign(state, { ...p.m, settings: state.settings, anchors: {} });
   state.stats.edits = (state.stats.edits || 0) + 1;
   replan();
-  const ok = save(state) === true && !saveStatus();
+  const ok = save(state) === true;
   if (!ok) {
     restoreState(prev);
     renderAll();
@@ -2682,7 +2691,7 @@ function applyBackup() {
   notice({
     key: 'backup', host: 'top',
     what: `Ripristinato: ${plural(p.counts.tasks, 'attività', 'attività')}, ${plural(p.counts.goals, 'obiettivo', 'obiettivi')}.`,
-    next: 'Se non era il file giusto, puoi tornare a com\'era prima, finché non chiudi l\'app.',
+    next: 'Se non era il file giusto, puoi tornare a com\'era prima, finché non chiudi l\'app.' + (state.settings.cloudToken ? ' Con l\'account, l\'annulla è sicuro solo su questo dispositivo e prima che gli altri si sincronizzino.' : ''),
     action: { label: 'Annulla', fn: undoBackup },
   });
 }
@@ -2700,8 +2709,12 @@ function undoBackup() {
   }
   backupPrev = null;
   restoreState(b.prev);
+  // da mandare di sicuro: se il ripristino era già arrivato sul server, la prossima sincronizzazione lo sostituisce con lo stato di prima
+  state.stats.edits = b.edits + 1;
+  save(state);
   renderAll();
-  toast('Ripristino annullato');
+  scheduleSync(300);
+  toast(state.settings.cloudToken ? 'Ripristino annullato su questo dispositivo' : 'Ripristino annullato');
 }
 
 function addMemory() {
@@ -2725,7 +2738,7 @@ function addContext(kind) {
 let toastTimer;
 function toast(text, action) {
   const el = $('#toast');
-  const acts = !action ? [] : Array.isArray(action) ? action : [action];
+  const acts = (!action ? [] : Array.isArray(action) ? action : [action]).filter((a) => !('undoId' in a) || undoable(a.undoId));
   el.innerHTML = `<span>${esc(text)}</span>${acts.map((a) => `<button type="button">${esc(a.label)}</button>`).join('')}`;
   el.classList.toggle('two', acts.length > 1);
   el.hidden = false;
@@ -2734,7 +2747,12 @@ function toast(text, action) {
   el.classList.remove('out');
   toastTimer = setTimeout(() => { el.classList.add('out'); setTimeout(() => { el.hidden = true; el.classList.remove('out'); }, 220); }, acts.length > 1 ? 8000 : acts.length ? 5000 : 2200);
 }
-const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
+const toastUndo = (text) => toast(text, undoAction(lastUndo()?.id)); // da chiamare subito dopo la modifica
+/** «Annulla» di un avviso: vale solo per la sua modifica, e solo finché è l'ultima (annullare una più vecchia toglierebbe anche le seguenti). */
+const undoable = (id) => !!id && lastUndo()?.id === id;
+function undoAction(id) {
+  return { label: 'Annulla', undoId: id, fn: () => { if (undoable(id)) doUndo(id); else toast('Non si può più annullare questa modifica'); } };
+}
 
 function renderAll() {
   if (state.focus && !state.items.some((x) => x.id === state.focus.itemId && x.status !== 'done')) { state.focus = null; focusOpen = false; heroKey = ''; }
@@ -3073,13 +3091,22 @@ function bind() {
         .catch((err) => { if (status) status.textContent = errorText(err); t.disabled = false; });
     }
     if (t.id === 'export') exportData();
-    if (t.id === 'broken-dl') { const b = brokenCopy(); if (b) deliverBroken(b.raw); }
-    if (t.id === 'broken-del') { brokenAsk = true; renderSettings(); $('#broken-no')?.focus(); }
+    if (t.id === 'broken-dl') { const b = brokenCopies().find((c) => String(c.slot) === t.dataset.slot); if (b) deliverBroken(b.raw); }
+    if (t.id === 'broken-del') { brokenAsk = +t.dataset.slot; renderSettings(); $('#broken-no')?.focus(); }
     if (t.id === 'broken-no') { brokenAsk = false; renderSettings(); }
     if (t.id === 'broken-yes') {
       brokenAsk = false;
-      try { localStorage.removeItem(BROKEN_KEY); localStorage.removeItem(BROKEN_KEY + '.at'); } catch {}
-      dismissNotice('rotto', true);
+      const slot = +t.dataset.slot;
+      const key = slot === 2 ? BROKEN_KEY2 : BROKEN_KEY;
+      try {
+        localStorage.removeItem(key); localStorage.removeItem(key + '.at');
+        if (slot === 1 && localStorage.getItem(BROKEN_KEY2)) { // la più vecchia diventa la copia principale
+          localStorage.setItem(BROKEN_KEY, localStorage.getItem(BROKEN_KEY2)); localStorage.setItem(BROKEN_KEY + '.at', localStorage.getItem(BROKEN_KEY2 + '.at') || '0');
+          localStorage.removeItem(BROKEN_KEY2); localStorage.removeItem(BROKEN_KEY2 + '.at');
+        }
+      } catch {}
+      if (slot === 0) brokenData.raw = '';
+      if (!brokenCopies().length) dismissNotice('rotto', true);
       renderSettings();
       toast('Copia eliminata');
     }
@@ -3267,40 +3294,44 @@ function syncSaveAlert() {
 }
 
 /** Dati illeggibili all'avvio: restano da parte, e si possono scaricare. */
-function showBrokenNotice({ raw, at }) {
+function showBrokenNotice({ raw, at, saved }) {
   const d = validDate(at);
   const when = d ? `${itDate(d)}, alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}` : 'data non nota';
   const kb = Math.max(1, Math.round(raw.length / 1024));
   notice({
     key: 'rotto', sticky: true, alert: true, host: 'top',
     what: 'Non sono riuscito a leggere i tuoi dati.',
-    why: 'Il file sul telefono era danneggiato.',
-    next: 'L\'ho messo da parte: scaricalo, o ripristina un backup dalle Impostazioni.',
+    why: saved ? 'Il file sul telefono era danneggiato.' : 'Il file sul telefono era danneggiato e non c\'è spazio per tenerne una copia.',
+    next: saved ? 'L\'ho messo da parte: scaricalo, o ripristina un backup dalle Impostazioni.' : 'La copia resta solo finché non chiudi l\'app: scaricala subito.',
     detail: `${kb} KB, aperto ${when}`,
     action: { label: 'Scarica la copia', fn: () => deliverBroken(raw), keep: true },
   });
 }
 
-/** La riga delle Impostazioni per la copia dei dati illeggibili (c'è finché la copia esiste). */
+/** Le righe delle Impostazioni per le copie dei dati illeggibili (ci sono finché le copie esistono). */
 function brokenRowHtml() {
-  const b = brokenCopy();
-  if (!b) return '';
-  const when = validDate(b.at) ? ` ${itDate(b.at, 'del')}` : '';
-  if (brokenAsk) {
-    return `<div class="row broken-row"><span class="lbl">Eliminare la copia${esc(when ? ' ' + when.trim() : '')}?<small>Non si può recuperare.</small></span><button type="button" class="btn danger" id="broken-yes">Elimina</button><button type="button" class="btn" id="broken-no">Tengo</button></div>`;
-  }
-  return `<div class="row broken-row"><span class="lbl">Copia dei dati illeggibili${esc(when)}<small>messa da parte quando non riuscivo a leggerli</small></span><button type="button" class="btn" id="broken-dl">Scarica</button><button type="button" class="btn danger" id="broken-del">Elimina</button></div>`;
+  return brokenCopies().map((b, n) => {
+    const when = validDate(b.at) ? ` ${itDate(b.at, 'del')}` : '';
+    if (brokenAsk === b.slot) {
+      return `<div class="row broken-row"><span class="lbl">Eliminare la copia${esc(when ? ' ' + when.trim() : '')}?<small>Non si può recuperare.</small></span><button type="button" class="btn danger" id="broken-yes" data-slot="${b.slot}">Elimina</button><button type="button" class="btn" id="broken-no">Tengo</button></div>`;
+    }
+    return `<div class="row broken-row"><span class="lbl">Copia dei dati illeggibili${esc(when)}<small>${n ? 'più vecchia, ' : ''}messa da parte quando non riuscivo a leggerli</small></span><button type="button" class="btn" id="broken-dl" data-slot="${b.slot}">Scarica</button><button type="button" class="btn danger" id="broken-del" data-slot="${b.slot}">Elimina</button></div>`;
+  }).join('');
 }
 const deliverBroken = (raw) => deliverFile(new File([raw], `tempo-dati-illeggibili-${today()}.txt`, { type: 'text/plain' }), 'Dati illeggibili di Tempo');
-/** La copia dei dati illeggibili che resta nel telefono: { raw, at } oppure null. */
-function brokenCopy() {
+/** Le copie dei dati illeggibili che restano nel telefono (più recente per prima): [{ slot, raw, at }]. */
+function brokenCopies() {
+  const out = [];
   try {
-    const raw = localStorage.getItem(BROKEN_KEY);
-    if (!raw) return brokenData;
-    return { raw, at: +localStorage.getItem(BROKEN_KEY + '.at') || 0 };
-  } catch { return brokenData; }
+    for (const [slot, key] of [[1, BROKEN_KEY], [2, BROKEN_KEY2]]) {
+      const raw = localStorage.getItem(key);
+      if (raw) out.push({ slot, raw, at: +localStorage.getItem(key + '.at') || 0 });
+    }
+  } catch {}
+  if (brokenData?.raw && !out.some((b) => b.raw === brokenData.raw)) out.unshift({ slot: 0, raw: brokenData.raw, at: brokenData.at });
+  return out;
 }
-let brokenAsk = false; // «Elimina» chiede conferma dentro la pagina
+let brokenAsk = false; // «Elimina» chiede conferma dentro la pagina: false, oppure il numero della copia (0 memoria, 1, 2)
 
 /** Promemoria di backup: niente export da 14 giorni (e l'app si usa da almeno 14). */
 const backupDue = () => backupDueOf(state, Date.now());
