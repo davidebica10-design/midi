@@ -309,3 +309,54 @@ export function widgetLabel(w) {
   if (w.type === 'week') return w.caption;
   return '';
 }
+
+// ---------------------------------------------------------------- gli stati del tempo (contratto)
+/** Per ogni stato: quante carte restano in vista sotto «Adesso» (null = tutte) e quale azione primaria è ammessa. */
+export const STATES = {
+  first:   { cards: null, primary: ['start', 'complete'] },
+  empty:   { cards: 0,    primary: ['add'] },
+  normal:  { cards: null, primary: ['start', 'complete'] },
+  before:  { cards: 2,    primary: ['start', 'complete'] },
+  doing:   { cards: 2,    primary: ['complete'] },
+  focus:   { cards: 1,    primary: ['complete'] },
+  full:    { cards: 3,    primary: ['start', 'complete'] },
+  evening: { cards: 0,    primary: [] },
+  off:     { cards: null, primary: ['start', 'complete'] },
+};
+/** Sicurezza di sviluppo: MOODS e STATES vanno tenute allineate a mano; questo lo dice (un test lo controlla). */
+export const STATES_IN_SYNC = Object.keys(MOODS).every((k) => k in STATES) && Object.keys(STATES).every((k) => k in MOODS);
+
+/**
+ * Cosa mostrare del giorno in questo stato. Pura, non lancia mai.
+ * cards: carte del giorno non concluse, in ordine ('missed' sempre in vista e fuori dal conto).
+ * Restituisce { state, primary, visible, hidden, more }.
+ */
+export function stateSpec(scene, ctx, opts) {
+  const { now, cards, isToday } = ctx || {};
+  const expanded = !!(opts && opts.expanded);
+  const list = Array.isArray(cards) ? cards.filter((c) => c && typeof c === 'object') : [];
+  const adapt = !!scene && isToday !== false && !!isToday;
+  const state = adapt && Object.hasOwn(STATES, scene.mood) ? scene.mood : 'normal';
+  const limit = adapt ? STATES[state].cards : null;
+
+  let hiddenSet = new Set();
+  if (limit !== null && !expanded) {
+    let kept = 0;
+    list.forEach((c, i) => { if (c.type !== 'missed' && kept++ >= limit) hiddenSet.add(i); });
+    if (hiddenSet.size === 1) hiddenSet = new Set(); // un appiglio per una sola carta non serve
+  }
+  const visible = list.filter((_, i) => !hiddenSet.has(i));
+  const hidden = list.filter((_, i) => hiddenSet.has(i));
+
+  let more = null;
+  if (hidden.length) {
+    const from = hidden.find((c) => typeof c.start === 'string' && c.start)?.start || null;
+    more = { count: hidden.length, from, label: `Altre ${hidden.length}${from ? ` · dalle ${from}` : ''}` };
+  }
+
+  let primary = null;
+  if (state === 'empty') primary = { type: 'add', label: 'Aggiungi' };
+  else if (now && typeof now === 'object' && now.action && STATES[state].primary.includes(now.action.type)) primary = now.action;
+
+  return { state, primary, visible, hidden, more };
+}

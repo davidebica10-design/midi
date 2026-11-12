@@ -1084,6 +1084,34 @@ export function understoodOf(ops, state, today) {
 }
 
 /**
+ * Una domanda o una richiesta di consiglio non è una cosa da fare: finisce con «?» o comincia con un interrogativo.
+ * (Si guarda dopo i comandi: «puoi spostare la spesa a domani?» resta un comando se il comando la riconosce.)
+ */
+const QUESTION_START = /^(?:cosa|che\s+cosa|come|quando|quant[oaie]|perch[eé]|dove|chi|quali?|mi\s+consigli|mi\s+suggerisci|secondo\s+te|che\s+mi\s+consigli|cosa\s+ne\s+pensi|ce\s+la\s+faccio|posso|devo|riesco|conviene|è\s+meglio|e'\s+meglio)\b/i;
+// «Quanto tempo ho domani?», «sono libero venerdì?»: il giorno qui fa parte della domanda, non è un impegno
+const AVAIL_START = /^(?:quanto\s+tempo|quante\s+ore|sono\s+libero|sono\s+libera|cosa\s+ho|che\s+cosa\s+ho|ho\s+tempo)\b/i;
+/** Una domanda: finisce con «?», l'ultima parte comincia con un interrogativo e non c'è un orario o una data (salvo «quanto tempo ho domani?»). */
+function isQuestionText(q, today) {
+  const last = lower(q.split(/[,;]/).pop()).trim();
+  if (!QUESTION_START.test(last)) return false;
+  if (AVAIL_START.test(last)) return true;
+  return !(timeOf(q) || dateOf(q, today));
+}
+const questionsIn = (text, today) => new Set((ap(text).match(/[^.;\n!?]+\?/g) || []).map((x) => x.slice(0, -1).trim()).filter((q) => q && isQuestionText(q, today)));
+const isQuestion = (c, qs) => [...qs].some((q) => q === c.trim() || q.includes(c.trim()));
+
+/**
+ * Testo senza senso («asdf qwerty zzz»): nessuna parola di almeno 3 lettere è plausibile. Una parola è implausibile solo se
+ * ha la stessa lettera 3 volte di fila («zzz») o 4 tasti vicini della stessa riga della tastiera («asdf», «qwerty»).
+ * Volutamente larga: sigle e marche senza vocali («DHL»), nomi e titoli brevi («Zara», «yoga») passano sempre; se un testo
+ * ha anche una sola parola dubbia ma non provata sbagliata, è un'attività. Falsi positivi noti: parole che contengono per
+ * caso 4 tasti di fila (inglese «property», «liberty»), quando sono l'unica parola. Falsi negativi: il resto della tastiera a caso.
+ */
+const KEYROWS = /asdf|sdfg|dfgh|fghj|ghjk|hjkl|qwer|wert|erty|rtyu|tyui|yuio|uiop|zxcv|xcvb|cvbn|vbnm/;
+const wordsOf3 = (c) => lower(c).match(/\p{L}{3,}/gu) || [];
+const isGibberish = (c) => { const w = wordsOf3(c); return w.length > 0 && w.every((x) => /(\p{L})\1\1/u.test(x) || KEYROWS.test(x)); };
+
+/**
  * Modalità base: un messaggio scritto nella barra → { ops?, reply, confirm?, simple? }.
  * simple = un solo comando semplice (fatto, sposta, elimina…): non serve l'AI.
  */
@@ -1094,14 +1122,17 @@ export function localParse(text, state, now) {
   const nowMin = d.getHours() * 60 + d.getMinutes();
   const ctx = { projects: [...(state.projects || [])], offDays: [...(state.prefs?.offDays || [])], today };
   const ops = [], said = [], misses = [];
-  let confirm = false, goalsMade = 0, clauses = 0, commands = 0, structured = 0;
+  let asked = false, garbled = false, confirm = false, goalsMade = 0, clauses = 0, commands = 0, structured = 0;
   const sentences = sentencesOf(keepListsTogether(text, state, today));
+  const qs = questionsIn(text, today);
   const tired = TIRED.test(lower(text)) ? commandOps('sono stanco', state, today, now) : null;
   if (tired) {
     if (!tired.ops?.length) return { reply: tired.reply };
     return { ops: tired.ops, reply: tired.reply, confirm: true };
   }
-  for (const s of sentences) {
+  for (let s of sentences) {
+    // «obiettivo: finire il portfolio»: i due punti non separano due frasi, l'obiettivo è il testo dopo
+    s = s.replace(/^((?:il\s+mio\s+)?obiettivo)\s*:\s*(?=\S)/i, '$1 ');
     // «dal 23 al 27 dicembre sono dai miei», «mercoledì non ci sono», «weekend al mare»: quei giorni sono occupati
     const away = awayOps(s, state, today);
     if (away) { ops.push(...away.ops); said.push(...away.said); clauses++; structured++; continue; }
@@ -1141,6 +1172,9 @@ export function localParse(text, state, now) {
       if (st) { ops.push(...st.ops, memoryOp(c, st.category)); said.push(...st.said); continue; }
       // un modo di essere, non una cosa da fare: lo ricordo
       if (PREF.test(c.trim())) { ops.push(memoryOp(c, 'preferenza')); said.push(`me lo ricordo: ${lower(c.trim()).replace(/[.]$/, '')}`); continue; }
+      if (isQuestion(c, qs)) { asked = true; continue; }
+      if (isGibberish(c)) { garbled = true; continue; }
+      // una domanda o un testo senza senso non diventa un'attività né un obiettivo
       const g = goalOps(c, ctx, today);
       if (g) { ops.push(...g.ops); said.push(`obiettivo «${g.title}»${g.due ? ' entro il ' + dateWithYear(g.due, today) : ''}`); goalsMade++; continue; }
       const tk = taskOps(c, state, today, nowMin, ctx, carry);
@@ -1153,6 +1187,8 @@ export function localParse(text, state, now) {
   const understood = understoodOf(ops, state, today);
   if (!ops.length) {
     if (misses.length) return { reply: misses.join(' ') };
+    if (asked && !said.length) return { reply: 'Mi sembra una domanda: non l\'ho aggiunta. Senza assistente rispondo solo a domande sul tuo piano.', reason: 'domanda' };
+    if (garbled && !said.length) return { reply: 'Non ho capito. Scrivi cosa devi fare e quando.', reason: 'incomprensibile' };
     return { reply: said.length ? cap(said.join(', ')) + '.' : 'Senza AI capisco frasi semplici: «Domani alle 16 call», «Stasera 2 ore sul beat 02», «Ho fatto 30 minuti del beat», «La domenica stacco». Per il resto scegli un\'AI gratuita in ⋯ → Assistente AI.' };
   }
   const reply = goalsMade ? `Ho preparato un piano per ${said.filter((x) => x.startsWith('obiettivo')).join(' e ')}. Guarda le sessioni e conferma.`

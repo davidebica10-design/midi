@@ -2,7 +2,8 @@ import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, f
 import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
-import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, archiveCandidates, applyArchive, sanitizeState, checklistOwner } from './store.js';
+import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, lastUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner, sanitizeOps } from './store.js';
+import { makeInvite, makeReply, inviteText, findInvite, localSlot, fitInvite, inviteOp } from './invite.js';
 import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
@@ -12,7 +13,7 @@ import * as vm from './viewmodel.js';
 import { plural, windowLabel, durLabel } from './format.js';
 import { runTurn, localParse, MODELS, claudeGoalPlan, withTimeout, askSystem, claudeAsk } from './ai.js';
 import { runOpenTurn, openGoalPlan, openAsk, preloadLocal, listModels, testOnline, presetOf, DEFAULT_PRESET, LOCAL_MODELS, ONLINE_PRESETS, webgpuAvailable, localModelLoaded, onlineComplete, heavyComplete } from './ai-open.js';
-import { sceneFor, widgetLabel, skinPrompt, sanitizeSkin, LAYOUTS, MOODS } from './genui.js';
+import { sceneFor, widgetLabel, skinPrompt, sanitizeSkin, stateSpec, LAYOUTS, MOODS } from './genui.js';
 import { decide, sceneGoalOptions, stateText, DECIDERS } from './decide.js';
 import { monthRecap, monthKeyOf, prevMonthKey, recapPrompt, sanitizeRecapAi, recapHash, timeChatSystem, recapText, monthName } from './recap.js';
 import { putImage, deleteImage, imageUrl, cachedImageUrl, compressImage } from './images.js';
@@ -23,6 +24,48 @@ import { syncNow, signIn, signOut, cloudCall, DEFAULT_CLOUD_URL } from './cloud.
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** «l'11 novembre», «il 3 novembre»; con prep 'del': «dell'8 novembre», «del 3 novembre». */
+function itDate(d, prep = 'il', withYear = false) {
+  d = d instanceof Date ? d : new Date(d);
+  const n = d.getDate(), elide = n === 8 || n === 11;
+  const art = prep === 'del' ? (elide ? 'dell\'' : 'del ') : (elide ? 'l\'' : 'il ');
+  return `${art}${n} ${d.toLocaleDateString('it-IT', { month: 'long', ...(withYear ? { year: 'numeric' } : {}) })}`;
+}
+/** Una data valida o niente: mai «Invalid Date» nella pagina. */
+/** Testo per un guasto di Tempo Cloud: le frasi scritte da noi passano, tutto il resto diventa una frase con il prossimo passo. */
+const cloudMsg = (e) => {
+  const st = e && typeof e.status === 'number' ? e.status : null;
+  if (st === 401) return 'Accesso scaduto. Entra di nuovo.';
+  if (st !== null && st >= 500) return 'Tempo Cloud ha un problema suo. Riprova tra qualche minuto.';
+  const m = st !== null && e.message ? String(e.message).slice(0, 140) : '';
+  return m && !/^errore \d+$/i.test(m) && m !== 'conflict' ? m : 'Non sono riuscito a parlare con Tempo Cloud. Riprova tra poco.';
+};
+const validDate = (v) => { if (v == null || v === '') return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; };
+/** Titolo corto per i messaggi di una riga: al massimo 28 caratteri, poi «…». */
+const shortTitle = (t) => { t = String(t ?? '').replace(/\s+/g, ' ').trim(); return [...t].length > 28 ? [...t].slice(0, 28).join('').trimEnd() + '…' : t; };
+
+// Dati illeggibili all'avvio: load() ripartirebbe da uno stato vuoto e il primo salvataggio cancellerebbe l'originale.
+// Prima di tutto, quindi, ne tengo una copia a parte (al massimo due: l'ultima e la precedente).
+const BROKEN_KEY = 'tempo.v1.rotto', BROKEN_KEY2 = 'tempo.v1.rotto2';
+const brokenData = (() => {
+  try {
+    const raw = localStorage.getItem('tempo.v1');
+    if (raw == null || raw === '') return null;
+    let ok = false;
+    try { const v = JSON.parse(raw); ok = !!v && typeof v === 'object' && !Array.isArray(v); if (ok) migrate(v); } catch { ok = false; }
+    if (ok) return null;
+    const info = { raw, at: Date.now(), saved: false };
+    try {
+      const old = localStorage.getItem(BROKEN_KEY);
+      if (old === raw) { info.saved = true; info.at = +localStorage.getItem(BROKEN_KEY + '.at') || info.at; return info; }
+      // c'è già un'altra copia non ancora scaricata o eliminata: passa al secondo posto
+      if (old) { localStorage.setItem(BROKEN_KEY2, old); localStorage.setItem(BROKEN_KEY2 + '.at', localStorage.getItem(BROKEN_KEY + '.at') || '0'); }
+      localStorage.setItem(BROKEN_KEY, raw); localStorage.setItem(BROKEN_KEY + '.at', String(info.at));
+      info.saved = true;
+    } catch {}
+    return info; // se la copia non entra, resta in memoria per questa sessione
+  } catch { return null; }
+})();
 const state = load();
 let plan = {};
 let mode = 'day'; // 'day' | 'overview'
@@ -38,7 +81,7 @@ function planFor(k) {
   return plan[k] || (planCache[k] ||= planDay(k, state.items, { ...state.prefs, projectDue: projectDue(state) }, Date.now(), [], state.recurring, state.anchors || {}));
 }
 // dataRev cambia quando cambiano i dati (non a ogni tick): il piano lungo si ricalcola solo allora, o quando cambia il giorno
-let dataRev = 0, fitCache = null;
+let dataRev = 0, fitCache = null, lastSavedOpenAt = 0;
 /** Dove finiscono le sessioni di ogni obiettivo (orizzonte lungo, calcolato solo quando serve). */
 function goalFits() {
   if (fitCache?.rev === dataRev && fitCache.day === today()) return fitCache.fits;
@@ -101,9 +144,12 @@ function addMsg(m) {
   return msg;
 }
 
+let lastUserMsgId = null;
 async function send(text) {
   text = text.trim();
   if (!text || busy) return;
+  // una proposta incollata, o «proponi a…»: si gestisce qui, senza AI e senza chat (il testo non diventa mai un'attività)
+  if (handleInviteText(text) || handleProposeText(text)) { $('#input').blur(); setComposing(false); return; }
   if (/^annulla( l'ultima modifica)?\.?$/i.test(text)) { addMsg({ role: 'user', text }); doUndo(); return; }
   // "che faccio?": la risposta è deterministica e immediata, niente attese
   if (/^(e\s+)?(adesso\s+|ora\s+)?(che|cosa)\s+(faccio|devo fare|fare)(\s+(adesso|ora|stasera|oggi))?\s*\??$/i.test(text) && selDay === today()) {
@@ -118,8 +164,8 @@ async function send(text) {
   const aiText = selDay !== today() ? `[Sto guardando ${dayLabel(selDay, today())} (${selDay})] ${text}` : text;
   $('#input').blur();
   setComposing(false);
-  addMsg({ role: 'user', text });
-  if (pending) discardPending(true);
+  lastUserMsgId = addMsg({ role: 'user', text }).id;
+  if (pending) { discardPending(true); toast('La proposta di prima è messa da parte.'); }
   const mode = aiMode();
 
   if (mode === 'online' || mode === 'local') {
@@ -144,7 +190,7 @@ async function send(text) {
         const draft = draftOf();
         const res = applyOps(draft, out.ops);
         const deletesFixed = out.ops.some((o) => o.action === 'delete' && itemsBefore.find((x) => x.id === o.id)?.kind === 'event');
-        finishChange({ text: out.text + (res.errors.length ? '\n(' + res.errors.join('; ') + ')' : ''), draft, log: res.log, confirm: out.confirm || deletesFixed, before, itemsBefore });
+        finishChange({ text: outcomeText(out.text, res), draft, log: res.log, confirm: out.confirm || deletesFixed, before, itemsBefore });
       } else addMsg({ role: 'assistant', text: out.text });
     } catch (e) {
       removeMsg(typing.id);
@@ -164,7 +210,7 @@ async function send(text) {
   const before = plan;
   const itemsBefore = JSON.parse(JSON.stringify(state.items));
   let draft = null, log = [], confirm = false;
-  const understood = [];
+  const understood = [], errs = [];
 
   const hooks = {
     apply(input) {
@@ -172,6 +218,7 @@ async function send(text) {
       const known = { items: [...itemsBefore, ...draft.items], recurring: [...state.recurring, ...draft.recurring] };
       const res = applyOps(draft, input.ops);
       log.push(...res.log);
+      errs.push(...res.errors);
       try { understood.push(...understoodOf(input.ops, { items: [...known.items, ...draft.items], recurring: [...known.recurring, ...draft.recurring] }, today())); } catch {}
       const deletesFixed = input.ops.some((o) => (o.action === 'delete' && itemsBefore.find((x) => x.id === o.id)?.kind === 'event') || o.action === 'remove_recurring');
       confirm ||= !!input.requires_confirmation || deletesFixed;
@@ -202,7 +249,7 @@ async function send(text) {
   try {
     const out = await withTimeout((signal) => runTurn({ state, plan, now: Date.now(), userText: aiText, hooks, chat: prior, signal }), AI_TIMEOUT * 2);
     removeMsg(typing.id);
-    if (draft) finishChange({ text: out.text, draft, log, confirm, before, itemsBefore, understood });
+    if (draft) finishChange({ text: outcomeText(out.text, { log, errors: errs }), draft, log, confirm, before, itemsBefore, understood });
     else addMsg({ role: 'assistant', text: out.text });
   } catch (e) {
     removeMsg(typing.id);
@@ -223,31 +270,137 @@ function baseTurn(text, aiError = null) {
   const itemsBefore = clone(state.items);
   const r = localParse(text, state, Date.now());
   if (r.ops && selDay !== today()) for (const o of r.ops) if (o.action === 'add' && !o.date) o.date = selDay;
-  if (!r.ops) { addMsg(aiError ? { role: 'assistant', error: true, text: errorText(aiError) } : { role: 'assistant', text: r.reply }); return; }
-  const note = aiError ? `${aiError.code === 'timeout' ? 'L\'AI non risponde' : 'L\'AI ha avuto un problema'}: ho usato la modalità base. ` : '';
+  if (!r.ops && aiError) {
+    // niente è cambiato: la frase torna nella barra e l'avviso dice perché e che fare
+    state.chat = state.chat.filter((m) => m.id !== lastUserMsgId);
+    save(state); renderChat();
+    aiFailNotice(aiError, text);
+    return;
+  }
+  if (!r.ops) { addMsg({ role: 'assistant', text: r.reply }); return; }
+  const note = aiError ? `${errorInfo(aiError).what} Ho capito la frase senza assistente. ` : '';
   const draft = draftOf();
   const res = applyOps(draft, r.ops);
-  finishChange({ text: note + r.reply + (res.errors.length ? '\n' + res.errors.join('\n') : ''), draft, log: res.log, confirm: r.confirm, before, itemsBefore, understood: r.understood });
+  finishChange({ text: note + outcomeText(r.reply, res), draft, log: res.log, confirm: r.confirm, before, itemsBefore, understood: r.understood });
+}
+
+/**
+ * Il testo di risposta quando qualche operazione non è passata: quante e perché, in parole semplici.
+ * Se nessuna è passata non si dice mai «Fatto». (Le operazioni scartate prima, da sanitizeOps, non arrivano qui.)
+ */
+function outcomeText(text, res) {
+  const errs = res?.errors || [];
+  if (!errs.length) return text;
+  const reasons = [...new Set(errs.map((e) => (/^Non trovo «/.test(e) ? 'l\'attività non esiste più' : String(e).replace(/[.\s]+$/, '').replace(/^./, (c) => c.toLowerCase()))))].slice(0, 2).join('; ');
+  const n = errs.length;
+  const lost = `${n === 1 ? '1 modifica non applicata' : n + ' modifiche non applicate'}: ${reasons}.`;
+  return res.log.length ? `${text}\n${lost}` : `Non è cambiato niente. ${lost}`;
 }
 
 const title = (s, id) => (s.items.find((x) => x.id === id) || {}).title || (String(id).startsWith('rec:') ? 'ricorrente' : id);
 
-function errorText(e) {
-  const st = e?.status;
-  if (e?.code === 'timeout') return 'L\'AI non risponde e senza AI non ho capito la frase. Riprova tra poco, o scrivila più semplice.';
-  if (e?.code === 'webgpu') return 'Questo iPhone non può far girare modelli in locale: serve Safari con WebGPU (iOS 26 o successivo). Aggiorna iOS oppure scegli «Online · gratis» in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (aiMode() === 'local' && /memory|out of memory|device lost|allocation/i.test(e?.message || '')) return 'Il modello è troppo pesante per la memoria del telefono. Scegli un modello più piccolo in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (aiMode() === 'local' && /fetch|network|load/i.test(e?.message || '')) return 'Non riesco a scaricare il modello: controlla la connessione (meglio il Wi-Fi) e riprova. Dopo il primo download funziona anche offline.';
+/** Testi di ogni guasto dell'AI: cosa è successo, perché, cosa fare. Mai il testo del motore o del server. */
+function errorInfo(e) {
+  const st = e?.status, msg = e?.message || '';
   const svc = ONLINE_PRESETS[presetOf(state.settings)]?.label || 'servizio online';
-  if (e?.code === 'nokey') return `Manca la chiave di ${svc}. Creala gratis e incollala in Impostazioni (⋯ in alto) → Assistente AI (lì trovi i passaggi).`;
-  if (e?.code === 'badkey' || (aiMode() === 'online' && st === 401)) return `${svc} non accetta la chiave (${e.message}). Ricopiala per intero in Impostazioni (⋯ in alto) → Assistente AI e tocca «Prova».`;
-  if (e?.code === 'nofree') return e.message + ' Riprova tra qualche minuto: i modelli gratuiti a volte sono sovraccarichi.';
-  if (aiMode() === 'online' && (st === 404 || st === 400)) return 'Il servizio non riconosce il modello indicato (' + (e.message || '') + '). Controlla il nome del modello in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (st === 401) return 'La chiave API non è valida. Controllala in Impostazioni (⋯ in alto) → Assistente AI.';
-  if (st === 429) return 'Troppe richieste in poco tempo. Riprova tra qualche secondo.';
-  if (st === 529 || st === 503) return 'Il servizio AI è sovraccarico. Riprova tra poco.';
-  if (!navigator.onLine) return 'Sei offline. La giornata resta consultabile; per parlare con l\'assistente serve la connessione.';
-  return 'Qualcosa è andato storto: ' + (e?.message || e);
+  const local = aiMode() === 'local';
+  const secs = Math.round((aiMode() === 'claude' ? AI_TIMEOUT * 2 : AI_TIMEOUT) / 1000);
+  const set = 'settings';
+  if (e?.code === 'webgpu') return { code: 'webgpu', what: 'Questo iPhone non può far girare il modello in locale.', why: 'Serve Safari con WebGPU (iOS 26 o successivo).', next: 'Aggiorna iOS oppure scegli «Online · gratis» in Impostazioni, sotto Assistente AI.', action: set };
+  if (local && /memory|out of memory|device lost|allocation/i.test(msg)) return { code: 'memoria', what: 'Il modello è troppo pesante per questo telefono.', why: 'La memoria non basta.', next: 'Scegli un modello più piccolo in Impostazioni, sotto Assistente AI.', action: set };
+  if (local && /fetch|network|load/i.test(msg)) return { code: 'scarico', what: 'Non riesco a scaricare il modello.', why: 'La connessione non regge.', next: 'Riprova con il Wi-Fi.', action: 'retry' };
+  if (!local && navigator.onLine === false) return { code: 'offline', what: 'Non ho raggiunto l\'assistente.', why: 'Non c\'è connessione.', next: 'Riprova quando sei online.', action: 'retry' };
+  if (e?.code === 'timeout') return { code: 'timeout', what: `L'assistente non ha risposto in ${secs} secondi.`, why: 'Il servizio è lento o la rete è debole.', next: 'Riprova, o scrivi la frase più semplice.', action: 'retry' };
+  if (e?.code === 'nokey') return { code: 'nokey', what: `Manca la chiave di ${svc}.`, why: 'Senza chiave l\'assistente online non può rispondere.', next: 'Creala gratis e incollala in Impostazioni, sotto Assistente AI.', action: set };
+  if (st === 403 && e?.code !== 'badkey') return { code: '403', what: 'Il servizio rifiuta la richiesta.', why: 'La chiave non è valida, oppure il servizio non è disponibile dalla tua zona.', detail: 'Codice 403', next: 'Controlla la chiave in Impostazioni e tocca «Prova».', action: set };
+  if (e?.code === 'badkey' || st === 401) return { code: 'badkey', what: 'Il servizio non accetta la chiave.', why: 'È sbagliata o scaduta.', detail: `Codice ${st === 403 ? 403 : 401}`, next: 'Ricopiala per intero in Impostazioni e tocca «Prova».', action: set };
+  if (st === 429) return { code: '429', what: 'Il servizio ti ha fermato per un po\'.', why: 'Troppe richieste in poco tempo.', next: 'Aspetta un minuto e riprova.', action: 'retry' };
+  if (!local && (st === 404 || st === 400)) return { code: 'modello', what: 'Il servizio non riconosce il modello.', why: 'Il nome del modello è sbagliato o non c\'è più.', next: 'Controllalo in Impostazioni, sotto Assistente AI.', action: set };
+  if (e?.code === 'nofree' && presetOf(state.settings) !== 'custom') return { code: 'nofree', what: 'Nessun modello gratuito ha risposto.', why: 'I modelli gratuiti a volte sono sovraccarichi.', next: 'Riprova tra qualche minuto.', action: 'retry' };
+  if (st >= 500) return { code: '5xx', what: 'Il servizio non funziona ora.', why: 'Ha un problema suo.', detail: `Codice ${st}`, next: 'Riprova tra qualche minuto.', action: 'retry' };
+  if (e instanceof SyntaxError || /formato|json|risposta vuota/i.test(msg)) return { code: 'risposta', what: 'Non ho capito la risposta dell\'assistente.', why: 'Non era in un formato che posso applicare.', next: 'Riprova o riformula la frase.', action: 'retry' };
+  console.warn('errore AI non classificato', e?.code ?? e?.status ?? '?');
+  return { code: 'altro', what: 'L\'assistente non mi ha dato una risposta utilizzabile.', why: 'Non so dirti il motivo.', next: 'Riprova tra poco.', action: 'retry' };
+}
+/** Una frase sola, per i punti dove non c'è spazio per un avviso (stato delle Impostazioni, racconto del mese). */
+function errorText(e) {
+  const i = errorInfo(e);
+  return `${i.what} ${i.next}`;
+}
+
+// ---------------------------------------------------------------- avvisi
+const NOTICE_HOSTS = { top: '#notices-top', reply: '#notices-reply' };
+const noticeTimers = {};
+/**
+ * Un avviso con forma fissa: cosa è successo → perché → cosa puoi fare ora, al massimo un bottone.
+ * `key` identifica l'avviso (uno nuovo con la stessa chiave prende il posto del vecchio).
+ * `action`: { label, fn, keep? } o un elenco di due (dopo il tocco l'avviso si chiude, salvo `keep`).
+ * `detail`: un dettaglio tecnico piccolo (un codice), mai nel testo principale.
+ * `sticky`: resta finché non lo chiudi o non è risolto. `alert`: per perdite di dati (role="alert").
+ * `host`: 'reply' sopra la barra, 'top' in alto sopra tutto (anche pannelli e presentazione).
+ */
+function notice({ key, what, why, next, detail = '', action = null, sticky = false, alert = false, host = 'reply' }) {
+  const box = $(NOTICE_HOSTS[host] || NOTICE_HOSTS.reply);
+  if (!box) return null;
+  key ||= 'n' + Date.now();
+  const acts = !action ? [] : [].concat(action);
+  dismissNotice(key, true);
+  const el = document.createElement('div');
+  el.className = 'reply-card error notice anim';
+  el.setAttribute('role', alert ? 'alert' : 'status');
+  el.dataset.notice = key;
+  el.innerHTML = `<button type="button" class="r-x" aria-label="Chiudi">×</button><p class="n-what">${esc(what)}</p>${why ? `<p class="n-why">${esc(why)}</p>` : ''}${next ? `<p class="n-next">${esc(next)}</p>` : ''}${detail ? `<p class="n-code">${esc(detail)}</p>` : ''}${acts.length ? `<div class="r-actions">${acts.map((a, k) => `<button type="button" class="btn${k === 0 ? ' primary' : ''}">${esc(a.label)}</button>`).join('')}</div>` : ''}`;
+  el.querySelector('.r-x').addEventListener('click', () => dismissNotice(key));
+  el.querySelectorAll('.r-actions .btn').forEach((b, k) => b.addEventListener('click', () => { if (!acts[k].keep) dismissNotice(key); acts[k].fn(); }));
+  if (host === 'top') { dockNotices(); if (!sticky && !acts.length) el.dataset.tied = dockedOn; }
+  box.append(el);
+  if (!sticky && !acts.length) noticeTimers[key] = setTimeout(() => dismissNotice(key), 14000);
+  return el;
+}
+/** Gli avvisi in alto non coprono mai l'intestazione di una scheda o di una schermata: dentro, sotto la testata. */
+const SURFACES = [['#sheet', '.grabber'], ['#onb', '.onb-top'], ['#recap', '.sum-head'], ['#summary', '.sum-head'], ['#panel', '.panel-head']];
+let dockedOn = '';
+function dockNotices() {
+  const host = $('#notices-top');
+  if (!host) return;
+  let anchor = null, name = '';
+  for (const [sel, head] of SURFACES) {
+    const el = $(sel);
+    if (el && !el.hidden && !el.classList.contains('closing') && (anchor = el.querySelector(head))) { name = sel; break; }
+    anchor = null;
+  }
+  if (name !== dockedOn) { // la superficie è cambiata: gli avvisi senza scelta legati alla vecchia si chiudono con lei
+    for (const el of host.querySelectorAll('[data-tied]')) if (dockedOn && el.dataset.tied === dockedOn && !el.querySelector('.r-actions')) el.remove();
+    dockedOn = name;
+  }
+  if (anchor) { if (host.previousElementSibling !== anchor) anchor.after(host); host.classList.add('docked'); }
+  else if (host.classList.contains('docked')) { host.classList.remove('docked'); document.body.insertBefore(host, $('#toast')); }
+}
+function watchSurfaces() {
+  const mo = new MutationObserver(dockNotices);
+  for (const [sel] of SURFACES) { const el = $(sel); if (el) mo.observe(el, { attributes: true, attributeFilter: ['hidden', 'class'] }); }
+}
+function dismissNotice(key, now = false) {
+  clearTimeout(noticeTimers[key]);
+  for (const el of document.querySelectorAll('[data-notice]')) {
+    if (el.dataset.notice !== key) continue;
+    if (now || matchMedia('(prefers-reduced-motion: reduce)').matches) el.remove();
+    else { el.classList.add('out'); setTimeout(() => el.remove(), 260); }
+  }
+}
+const hasNotice = (key) => !!document.querySelector(`[data-notice="${key}"]`);
+/** L'avviso di un guasto dell'AI: la frase resta nella barra, nessuna modifica è stata fatta. */
+function aiFailNotice(e, text) {
+  const i = errorInfo(e);
+  const input = $('#input');
+  if (!input.value.trim()) { input.value = text; input.dispatchEvent(new Event('input')); }
+  renderComposer();
+  const retry = { label: 'Riprova', fn: () => { const v = input.value.trim() || text; input.value = ''; input.dispatchEvent(new Event('input')); send(v); renderComposer(); } };
+  const settings = { label: 'Apri le impostazioni', fn: () => openSettings() };
+  notice({
+    key: 'ai', what: i.what, why: i.why, detail: i.detail, next: i.next,
+    action: i.action === 'settings' ? settings : retry, host: 'reply',
+  });
 }
 
 function removeMsg(id) {
@@ -275,7 +428,8 @@ function finishChange({ text, draft, log, confirm, before, itemsBefore, understo
   if (!changes.length) { addMsg({ role: 'assistant', text }); return; }
   if (confirm) {
     const msg = addMsg({ role: 'assistant', text, changes, applied: null, said });
-    pending = { draft, msgId: msg.id };
+    const asked = state.chat.find((x) => x.id === lastUserMsgId);
+    pending = { draft, msgId: msg.id, base: clone(pick(state)), day: today(), text: asked?.text || '' };
     renderChat();
     return;
   }
@@ -284,9 +438,37 @@ function finishChange({ text, draft, log, confirm, before, itemsBefore, understo
   addMsg({ role: 'assistant', text, changes, applied: true, undoId, said });
 }
 
+/** Quante cose sono cambiate dopo che la proposta è stata preparata (attività, obiettivi, preferenze…). */
+function changedSince(base) {
+  let n = 0;
+  const cur = new Map(state.items.map((x) => [x.id, JSON.stringify(x)]));
+  const old = new Map(base.items.map((x) => [x.id, JSON.stringify(x)]));
+  for (const [id, j] of cur) if (old.get(id) !== j) n++;
+  for (const id of old.keys()) if (!cur.has(id)) n++;
+  for (const k of ['prefs', 'recurring', 'memory']) if (JSON.stringify(state[k]) !== JSON.stringify(base[k])) n++;
+  const brief = (list, f) => JSON.stringify((list || []).map(f)); // di obiettivi e progetti conta ciò che scrivi tu, non i conti interni
+  if (brief(state.goals, (g) => [g.id, g.title, g.due]) !== brief(base.goals, (g) => [g.id, g.title, g.due])) n++;
+  if (brief(state.projects, (p) => [p.id, p.name]) !== brief(base.projects, (p) => [p.id, p.name])) n++;
+  return n;
+}
 function applyPending() {
   if (!pending) return;
   const m = state.chat.find((x) => x.id === pending.msgId);
+  const n = changedSince(pending.base), dayMoved = pending.day !== today();
+  if (n || dayMoved) { // i dati sono cambiati: applicarla ora cancellerebbe quello che hai fatto nel frattempo
+    const said = pending.text;
+    pending = null;
+    if (m) m.applied = false;
+    save(state);
+    renderChat();
+    notice({
+      key: 'proposta', what: 'La proposta non vale più.',
+      why: dayMoved ? 'Il giorno è cambiato.' : `Nel frattempo hai cambiato ${n === 1 ? 'una cosa' : n + ' cose'}.`,
+      next: 'Rifai la richiesta.',
+      action: { label: 'Rifai', fn: () => { openBar(); const inp = $('#input'); inp.value = said; inp.dispatchEvent(new Event('input')); inp.focus(); } },
+    });
+    return;
+  }
   const draft = pending.draft;
   pending = null;
   markChanged(state.items, draft.items);
@@ -308,6 +490,9 @@ function doUndo(id) {
   const e = popUndo(state, id);
   if (!e) { toast('Niente da annullare'); return; }
   for (const m of state.chat) if (m.undoId && !undoExists(m.undoId)) { m.undoId = null; m.undone = true; }
+  const back = focusUndo.get(e.id);
+  if (back && !state.focus && state.items.some((x) => x.id === back.itemId && x.status === 'doing')) { state.focus = back; focusOpen = back.phase !== 'ready'; heroKey = ''; }
+  focusUndo.delete(e.id);
   replan();
   save(state);
   renderAll();
@@ -368,14 +553,14 @@ function setComposing(on) {
   syncBar();
 }
 
-// La barra sta chiusa nel «+» laterale; si apre toccandolo e si richiude quando non serve più
+// La barra è sempre in basso (agganciata); «bar-open» è la composizione aperta, che si richiude quando non serve più
 let barForced = false, plusAt = 0;
 function syncBar() {
   const input = $('#input');
   const open = barForced || composing || busy || !$('#reply').hidden || !$('#plus-menu').hidden || !!input.value.trim() || !!rec;
   $('#app').classList.toggle('bar-open', open);
   $('#plus').setAttribute('aria-expanded', open);
-  $('#plus').setAttribute('aria-label', open ? 'Aggiungi un\'attività' : 'Parla con Tempo');
+  $('#plus').setAttribute('aria-label', 'Aggiungi un\'attività');
   if (!open) barForced = false;
 }
 function openBar() {
@@ -534,7 +719,8 @@ function cardHtml(c, i) {
   const desc = [when, c.pauseBefore ? `dopo ${c.pauseBefore}' di pausa` : null, isTask && !done ? (c.part ? 'una parte' : c.resumed ? 'si riprende' : c.estimated ? 'durata stimata' : null) : null].filter(Boolean).join(' · ');
   const foot = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : c.project ? c.project.name : c.energy >= 3 ? 'Concentrazione' : c.energy <= 1 ? 'Leggera' : 'Attività';
   const cls = ['pc', isEvent ? 'event' : 'task', done ? 'done' : '', c.image ? 'photo' : '', changedIds.has(c.itemId) ? 'flash' : ''].join(' ');
-  const label = `${c.title}, ${when}${c.project ? ', ' + c.project.name : ''}`;
+  const waiting = inviteWaiting(c.itemId || c.id);
+  const label = `${c.title}, ${when}${waiting ? ', in attesa di risposta' : ''}${c.project ? ', ' + c.project.name : ''}`;
   const tint = !c.color && c.project ? ` data-proj style="--pc:${safeColor(c.project.color) || 'var(--accent)'};${st}"` : ` style="${st}"`;
   const open = `role="button" tabindex="0" data-item="${esc(c.id)}" data-c="${c.color || ''}" aria-label="${esc(label)}"${tint}`;
   const ckList = isEvent && c.checklist?.length ? checklistHtml(c) : '';
@@ -544,10 +730,20 @@ function cardHtml(c, i) {
   const title = `${c.important ? '<i class="imp" title="Importante"></i>' : ''}${esc(c.title)}`;
   if (c.image) {
     return `<div class="${cls}" ${open}>${imgTag(c.image)}${check}
-      <div class="ph-cap"><b>${title}</b><span>${esc(desc)}</span></div></div>`;
+      <div class="ph-cap"><b>${title}</b><span>${esc(desc)}${waiting ? ' · in attesa di risposta' : ''}</span></div></div>`;
+  }
+  if (!ckList) { // tessera compatta: titolo, una riga (ora · durata), icona, spunta a destra; il tipo sta nel nome accessibile
+    const kind = isEvent ? (c.recurring ? 'Impegno ricorrente' : 'Impegno fisso') : 'Attività';
+    const extra = isTask && !done ? (c.part ? ' · una parte' : c.resumed ? ' · si riprende' : '') : '';
+    const meta = done ? `Fatto alle ${c.doneAt}` : isEvent ? `${c.start} – ${c.end}` : `${c.start} · ${durLabel(c.minutes)}${extra}`;
+    const dot = isTask && c.project ? `<i class="pc-dot" style="width:7px;height:7px;border-radius:50%;flex:none;background:${safeColor(c.project.color) || 'var(--accent)'}" aria-hidden="true"></i>` : '';
+    const name = `${kind}: ${c.title}, ${desc}${waiting ? ', in attesa di risposta' : ''}${c.project ? ', ' + c.project.name : ''}`;
+    return `<div class="${cls.replace('pc ', 'pc compact ')}" ${open.replace(/aria-label="[^"]*"/, `aria-label="${esc(name)}"`)}>
+      <div class="pc-body"><div class="pc-title">${title}</div><div class="pc-meta">${ic.replace('class="act-ic"', 'class="act-ic mi"')}<span>${esc(meta)}</span>${dot}</div>${waiting ? '<div class="inv-mark">in attesa di risposta</div>' : ''}</div>${check}
+    </div>`;
   }
   return `<div class="${cls}" ${open}>
-    <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div>${ckList}</div>
+    <div class="pc-body">${ic}<div class="pc-title">${title}</div><div class="pc-desc">${esc(desc)}</div>${waiting ? '<div class="inv-mark">in attesa di risposta</div>' : ''}${ckList}</div>
     <div class="pc-foot">${isTask ? projMark(c.project) : ''}<span>${esc(foot)}</span>${check}</div>
   </div>`;
 }
@@ -588,6 +784,8 @@ function doneStackHtml(cards, v) {
     </button></section>`;
 }
 
+// «Il resto di oggi» aperto: vale per un solo giorno, solo in memoria (si azzera cambiando giorno)
+let expandedDay = null, lastDayHtml = '';
 function renderDayView(animate, opts = {}) {
   const t = today();
   const v = dayModel();
@@ -615,24 +813,45 @@ function renderDayView(animate, opts = {}) {
 
   // collage su due colonne (come Dot): in ordine di lettura sinistra, destra, sinistra…
   const cols = [[], []];
-  let i = 0;
-  const put = (html) => { cols[i % 2].push(html); i++; };
+  let i = 1;
+  const put = (html) => { cols[(i - 1) % 2].push(html); i++; };
   const rot = (id) => (+tilt(id) * 0.8).toFixed(1);
 
   // 0. bentornato: prima di tutto, a tutta larghezza
   const top = v.welcome ? `<div class="top-wide">${cardHtml({ ...v.welcome, type: 'welcome', r: -0.6 }, 0)}</div>` : '';
 
-  // 1. "adesso" (oggi) come la carta-affermazione
-  if (v.now) {
-    const a = v.now;
-    const act = a.action ? `<button class="adv-go" data-adv="${a.action.type}" data-id="${esc(a.action.id)}">${a.action.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(a.action.label)}</span></button>` : '';
+  // le carte della giornata; quelle concluse (fatte, o impegni già finiti) vanno nella pila in fondo
+  const nowHM = fmtMin(nowMin());
+  const concluded = (c) => c.type === 'task' ? !!c.done : c.type === 'event' && (v.past || (v.isToday && c.end <= nowHM));
+  const doneCards = [], live = [], pauses = new Map();
+  let pauseBefore = 0;
+  for (const c of v.cards) {
+    if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
+    if (concluded(c)) { doneCards.push(c); pauseBefore = 0; continue; }
+    live.push(c); pauses.set(c, pauseBefore);
+    pauseBefore = 0;
+  }
+  // lo stato decide quante carte si vedono e quale azione è quella primaria (genui.stateSpec)
+  if (expandedDay && expandedDay !== v.day) expandedDay = null;
+  const expanded = expandedDay === v.day;
+  const spec = stateSpec(sc, { now: v.now, cards: live, isToday: v.isToday }, { expanded });
+  const collapsedMore = expanded ? stateSpec(sc, { now: v.now, cards: live, isToday: v.isToday }).more : spec.more;
+
+  // 1. «Adesso»: l'ancora, a tutta larghezza sotto la fascia fissa, con l'unica azione primaria
+  let anchor = '';
+  const a = v.now || (v.isToday && sc?.mood === 'empty' ? { title: 'Giornata libera', why: v.emptyText, mood: 'rest', block: null, action: null } : null);
+  if (a) {
+    const pr = spec.primary;
+    const act = !pr ? '' : pr.type === 'add'
+      ? `<button type="button" class="adv-go" data-adv="add"><i class="ic ic-plus" aria-hidden="true"></i><span>${esc(pr.label)}</span></button>`
+      : `<button type="button" class="adv-go" data-adv="${esc(pr.type)}" data-id="${esc(pr.id)}">${pr.type === 'complete' ? ICON_CHECK : ICON_PLAY}<span>${esc(pr.label)}</span></button>`;
     const blk = a.block ? `<div class="pc-progress" role="progressbar" aria-valuenow="${a.block.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.block.title)}"><i style="--w:${a.block.pct}%"></i></div><div class="pc-desc">${esc(a.block.title)} · fino alle ${a.block.until} · ${a.block.left} rimasti</div>` : '';
     const blkList = a.block?.checklist ? checklistHtml({ title: a.block.title, ownerId: a.block.ownerId, checklist: a.block.checklist }) : '';
     const nowId = a.block?.kind === 'rest' ? null : a.block?.itemId || a.block?.id || a.action?.id || null;
     const open = nowId ? ` role="button" tabindex="0" data-item="${esc(nowId)}"` : a.block?.kind === 'rest' ? ' role="button" tabindex="0" data-rest="1"' : '';
-    put(`<div class="pc quote adv mood-${a.mood}"${open} style="--r:-2deg;--i:0" aria-live="polite">
+    anchor = `<div class="pc quote adv now-anchor mood-${esc(a.mood)}"${open} style="--r:-0.5deg;--i:0" aria-live="polite">
       <div class="pc-body"><div class="pc-quote">${esc(a.title)}</div>${a.why ? `<div class="pc-desc">${esc(a.why)}</div>` : ''}${blk}${blkList}${act}</div>
-      <div class="pc-label">Adesso</div></div>`);
+      <div class="pc-label">Adesso</div></div>`;
   }
 
   // 1b. la scena: i widget scelti per l'obiettivo che dà il tono (pipeline, conto alla rovescia…), dopo «Adesso»
@@ -641,20 +860,23 @@ function renderDayView(animate, opts = {}) {
   // 2. osservazioni (massimo 2) come carte
   for (const o of v.observations) put(cardHtml({ ...o, type: 'obs', r: rot(o.id) }, i));
 
-  // 3. le carte della giornata; quelle concluse (fatte, o impegni già finiti) vanno nella pila in fondo
-  const nowHM = fmtMin(nowMin());
-  const concluded = (c) => c.type === 'task' ? !!c.done : c.type === 'event' && (v.past || (v.isToday && c.end <= nowHM));
-  const doneCards = [];
-  let pauseBefore = 0;
-  for (const c of v.cards) {
-    if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
-    if (concluded(c)) { doneCards.push(c); pauseBefore = 0; continue; }
-    put(cardHtml({ ...c, pauseBefore, r: rot((c.type === 'missed' ? 'm' : c.type === 'unscheduled' ? 'u' : '') + (c.id || c.at)) }, i));
-    pauseBefore = 0;
-  }
-  const html = `${top}<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>${doneStackHtml(doneCards, v)}${v.emptyText && !doneCards.length ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : ''}`;
+  // 3. le carte in vista
+  for (const c of spec.visible) put(cardHtml({ ...c, pauseBefore: pauses.get(c) || 0, r: rot((c.type === 'missed' ? 'm' : c.type === 'unscheduled' ? 'u' : '') + (c.id || c.at)) }, i));
+
+  const chev = '<svg class="mh-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  const handle = spec.more ? `<button type="button" class="more-handle" data-more="open" aria-expanded="false"><span>${esc(spec.more.label)}</span>${chev}</button>`
+    : expanded && collapsedMore ? `<button type="button" class="more-handle open" data-more="close" aria-expanded="true"><span>Mostra meno</span>${chev}</button>` : '';
+  const hint = v.emptyText && !doneCards.length && !(anchor && spec.state === 'empty') ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : '';
+  const grid = cols[0].length || cols[1].length ? `<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>` : '';
+  const html = `${top}${anchor}${grid}${handle}${doneStackHtml(doneCards, v)}${hint}`;
 
   const col = $('#collage');
+  if (opts.skipSame && !animate && html === lastDayHtml && col.childElementCount) { // l'orologio non ridisegna a vuoto
+    $('#undo-btn').hidden = !canUndo();
+    pushSnapshot(v, sc);
+    return;
+  }
+  lastDayHtml = html;
   const before = animate || opts.flip === false ? null : flipCapture(col, FLIP_SEL);
   const had = col.querySelector('.done-stack .ds-n')?.textContent;
   col.innerHTML = html;
@@ -686,6 +908,7 @@ function applyScene(sc) {
   app.dataset.layout = sc?.layout || 'standard';
   app.dataset.mood = sc?.mood || '';
   bg.dataset.motif = sc?.motif || 'none';
+  bg.classList.toggle('still', ['before', 'full', 'focus'].includes(sc?.mood)); // gli stati «fermi» non animano lo sfondo
   if (sc?.accent && safeColor(sc.accent)) app.style.setProperty('--scene-accent', sc.accent); else app.style.removeProperty('--scene-accent');
   setScenePalette(sc?.palette || null);
   const line = $('#hero-line');
@@ -875,7 +1098,8 @@ function renderFocusCtl(f) {
     html = `<div class="f-row">${b('skipbreak', 'Salta la pausa', 'primary')}${b('end', 'Termina')}</div>`;
   } else if (f.phase === 'done') {
     const w = workedMin(f, Date.now());
-    html = `<p class="f-note">${w ? `Hai lavorato ${durLabel(w)} su «${esc(f.title)}».` : `«${esc(f.title)}»`} Com'è andata?</p>
+    const late = lateEnd && lateEnd.itemId === f.itemId ? `<p class="f-note f-late">Il timer è finito alle ${esc(lateEnd.hm)}, mentre Tempo era chiuso.</p>` : '';
+    html = `${late}<p class="f-note">${w ? `Hai lavorato ${durLabel(w)} su «${esc(f.title)}».` : `«${esc(f.title)}»`} Com'è andata?</p>
       <div class="f-row">${b('done', 'Fatta', 'primary')}${f.mode === 'timer' ? b('more', 'Altri 10\'') : b('go2', 'Un altro giro')}${b('later', 'Non ancora')}</div>`;
   }
   $('#focus-ctl').innerHTML = html;
@@ -911,10 +1135,25 @@ function updateFocus() {
 }
 const minOfDay = (t) => { const d = new Date(t); return d.getHours() * 60 + d.getMinutes(); };
 
+let lateEnd = null; // { itemId, hm }: il timer è finito mentre Tempo era chiuso
 /** Il tempo della fase è finito. */
 function advanceFocus() {
   const f = state.focus;
-  const next = focusNext(f, Date.now());
+  const now = Date.now();
+  const v = focusView(f, now);
+  const endedAt = f.startedAt + f.paused + v.total;
+  if (now - endedAt > 2 * 60000) { // è finito da un po': Tempo era chiuso o il telefono dormiva
+    const worked = f.worked + (f.phase === 'work' ? v.total : 0);
+    state.focus = { ...f, worked, phase: 'done', startedAt: null, pausedAt: null, paused: 0 };
+    focusOpen = true;
+    heroKey = '';
+    save(state);
+    const hm = new Date(endedAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    lateEnd = { itemId: f.itemId, hm }; // la riga sta nel pannello del timer, sopra la sua domanda
+    renderDayView(false);
+    return;
+  }
+  const next = focusNext(f, now);
   state.focus = next;
   if (next.phase === 'break') toast(`Giro ${f.round} finito: ${next.round % POMO_ROUNDS === 0 ? 15 : 5} minuti di pausa`);
   else if (next.phase === 'ready') { toast('Pausa finita: quando vuoi, il prossimo giro'); focusOpen = true; }
@@ -948,10 +1187,22 @@ function endFocus(how, quiet = false) {
   state.focus = null;
   focusOpen = false;
   heroKey = '';
-  if (how === 'done') quickOp('complete', f.itemId, w ? { actual_min: w } : {});
-  else if (how === 'later' && w) { if (quiet) { applyOps(state, [{ action: 'progress', id: f.itemId, actual_min: w }]); save(state); } else quickOp('progress', f.itemId, { actual_min: w }); }
-  else { save(state); renderDayView(false); }
+  dismissNotice('timer', true);
+  lateEnd = null;
+  let undoId = null;
+  if (how === 'done') undoId = quickOp('complete', f.itemId, w ? { actual_min: w } : {});
+  else if (how === 'later' && w) { if (quiet) { applyOps(state, [{ action: 'progress', id: f.itemId, actual_min: w }]); save(state); } else undoId = quickOp('progress', f.itemId, { actual_min: w }); }
+  else {
+    // timer chiuso senza lavoro: l'attività non resta «in corso» senza un timer
+    const it = state.items.find((x) => x.id === f.itemId);
+    if (it && it.status === 'doing') { applyOps(state, [{ action: 'reopen', id: f.itemId }]); replan(); }
+    save(state); renderAll();
+    if (!quiet && it) toast(`${shortTitle(it.title)}: torna da fare.`);
+  }
+  // «Annulla» riporta anche il timer, così lo stato resta coerente
+  if (undoId) focusUndo.set(undoId, f);
 }
+const focusUndo = new Map();
 
 function focusAction(act, el) {
   const now = Date.now();
@@ -1540,6 +1791,7 @@ function openSheet(id, preset = {}, keepPhoto = false) {
         ${it.status === 'done' ? `<button type="button" data-sheet="reopen"><i class="ic ic-undo" aria-hidden="true"></i>Riapri</button>` : `<button type="button" data-sheet="done">${ICON_CHECK}Fatto</button>`}
         ${it.status !== 'done' && it.kind === 'task' && it.status !== 'doing' ? `<button type="button" data-sheet="start">${ICON_PLAY}Inizia</button>` : ''}
         ${it.status !== 'done' ? `<button type="button" data-sheet="tomorrow"><i class="ic ic-next" aria-hidden="true"></i>Domani</button>` : ''}
+        ${it.kind === 'event' && it.date && it.start != null && it.status !== 'done' ? `<button type="button" data-sheet="propose"><i class="ic ic-share" aria-hidden="true"></i>Proponi</button>` : ''}
         <button type="button" data-sheet="delete" class="danger"><i class="ic ic-x" aria-hidden="true"></i>Elimina</button>
       </div>`}
       <button type="submit" class="btn primary ed-save">${isNew ? 'Aggiungi' : 'Salva'}</button>
@@ -1704,13 +1956,20 @@ function renderEditor() {
 }
 
 // la scheda: se si apre toccando una carta, la carta si solleva e diventa l'anteprima dell'editor
-let sheetFrom = null;
+let sheetFrom = null, sheetOpener = null, sheetTimer = 0;
 function showSheet() {
   const sh = $('#sheet'), from = sheetFrom;
   sheetFrom = null;
+  clearTimeout(sheetTimer);
   sh.classList.remove('closing');
   sh.classList.toggle('zoom', !!from && !matchMedia('(prefers-reduced-motion: reduce)').matches);
   sh.hidden = false; $('#sheet-backdrop').hidden = false;
+  const app = $('#app');
+  if (!app.inert) {
+    const ae = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    sheetOpener = ae ? { el: ae, id: ae.closest?.('[data-item]')?.dataset.item || null } : null;
+    app.inert = true;
+  }
   const card = sh.querySelector('#ed-card');
   if (!from || !card || !sh.classList.contains('zoom')) return;
   const to = card.getBoundingClientRect();
@@ -1722,9 +1981,20 @@ function showSheet() {
 }
 function closeSheet() {
   const sh = $('#sheet'), bd = $('#sheet-backdrop');
+  const app = $('#app'), opener = sheetOpener;
+  sheetOpener = null; app.inert = false; // sempre, anche se la scheda è già nascosta
   if (sh.hidden) return;
+  // l'elemento che l'aveva aperta può essere stato ridisegnato: si cerca per id, poi si ripiega sul collage
+  let target = opener && document.contains(opener.el) ? opener.el : null;
+  if (!target && opener?.id) target = [...document.querySelectorAll('[data-item]')].find((e) => e.dataset.item === opener.id && !e.closest('#sheet')) || null;
+  if (!target && opener) {
+    target = $('.now-anchor') || $('#collage') || null;
+    if (target && !target.matches('a, button, input, textarea, select, [tabindex]')) target.setAttribute('tabindex', '-1');
+  }
+  target?.focus({ preventScroll: true });
   sh.classList.add('closing'); bd.classList.add('closing');
-  setTimeout(() => { sh.hidden = true; bd.hidden = true; sh.classList.remove('closing'); bd.classList.remove('closing'); }, 260);
+  clearTimeout(sheetTimer);
+  sheetTimer = setTimeout(() => { sh.hidden = true; bd.hidden = true; sh.classList.remove('closing'); bd.classList.remove('closing'); }, 260);
 }
 
 function readSheet() {
@@ -1761,7 +2031,7 @@ async function sheetSave() {
   };
   if ('image' in v) clean.image = v.image;
   clean.goalId = clean.project ? (state.goals || []).find((g) => g.projectId === clean.project)?.id || null : null;
-  commit(id ? 'Modifica manuale' : 'Nuova attività', () => {
+  const undoId = commit(id ? 'Modifica manuale' : 'Nuova attività', () => {
     if (old) {
       if (old.duration !== clean.duration) { old.durationEstimated = false; old.baseDuration = null; }
       Object.assign(old, clean, { updatedAt: Date.now() });
@@ -1772,22 +2042,74 @@ async function sheetSave() {
     applyOps(state, []); // abitudini e controlli dopo la modifica
   });
   closeSheet();
-  toastUndo(id ? 'Salvato' : 'Aggiunto');
+  const w = whereIs(newId), t = shortTitle(clean.title), f = clean.kind === 'event' ? 'o' : 'a';
+  const at = w ? `, ${w.text}` : clean.date ? `, ${dayWord(clean.date)}` : '';
+  toast(id ? `${t}: modifiche salvate${at}.` : `${t}: aggiunt${f}${at}.`, undoAction(undoId));
 }
 
+/** Dove cade ora un'attività: il primo blocco ancora da fare nei prossimi giorni, «domani, 11:15». */
+function whereIs(id) {
+  for (const d of Object.keys(plan).sort()) {
+    const b = plan[d].blocks.find((x) => x.id === id && x.type !== 'done');
+    if (b) return { day: d, start: b.start, text: `${dayWord(d)}, ${fmtMin(b.start)}` };
+  }
+  return null;
+}
+/** «oggi», «domani», «giovedì 15» (dopo «a»: «a domani», «a giovedì 15»). */
+function dayWord(d) {
+  const t = today();
+  if (d === t) return 'oggi';
+  if (d === addDays(t, 1)) return 'domani';
+  return dateOf(d).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric' });
+}
+/**
+ * La frase del toast dopo un'azione rapida: cosa è successo e quando (una riga, titolo corto).
+ * Si basa su quello che `applyOps` ha davvero fatto (res.log), poi guarda dove cade ora nel piano.
+ */
+function actionToast(action, it, res) {
+  const t = shortTitle(it.title), f = it.kind === 'event' ? 'o' : 'a';
+  const now = state.items.find((x) => x.id === it.id) || it;
+  const w = whereIs(it.id);
+  if (action === 'complete') return `${t}: fatt${f}${now.actual ? `, ${now.actual} min reali` : ''}.`;
+  if (action === 'delete') return `${t} eliminat${f}.`;
+  if (action === 'reopen') return `${t}: riapert${f}.`;
+  if (action === 'start') return `${t}: iniziat${f}.`;
+  if (action === 'move') {
+    const to = w ? w.text : now.date ? dayWord(now.date) : null;
+    return to ? `${t}: spostat${f} a ${to}.` : `${t}: spostat${f}.`;
+  }
+  if (action === 'skip') return w ? `${t}: rimandat${f}, ora ${w.text}.` : `${t}: rimandat${f}, non entra nei prossimi giorni.`;
+  if (action === 'progress') {
+    if (now.status === 'done') return `${t}: fatt${f}, ${now.spent} min in tutto.`;
+    return `${t}: fatti ${now.spent} min, ne mancano ${Math.max(0, now.duration - (now.spent || 0))}.`;
+  }
+  const line = (res?.log?.[0] || '').replace(/^\S+\s/, '');
+  return line ? line.replace(it.title, () => t) + '.' : `${t}: fatto.`;
+}
+
+/** Esegue un'azione su un'attività. Restituisce l'id per annullare (o null se non è cambiato niente). */
 function quickOp(action, id, extra = {}, opts = {}) {
   const it = state.items.find((x) => x.id === id);
-  if (!it) return;
+  if (!it) return null;
   const label = { complete: 'Fatto', start: 'Iniziata', reopen: 'Riaperta', delete: 'Eliminata', move: 'Spostata', progress: 'Segnato in parte', skip: 'Rimandata' }[action];
-  commit(`${label}: ${it.title}`, () => applyOps(state, [{ action, id, ...extra }]), opts);
+  const snapshot = { ...it };
+  let res = null;
+  const undoId = commit(`${label}: ${it.title}`, () => { res = applyOps(state, [{ action, id, ...extra }]); }, opts);
   closeSheet();
+  if (res && !res.log.length) { // non è cambiato niente: niente da annullare
+    popUndo(state, undoId); replan(); renderAll();
+    toast(`${shortTitle(it.title)}: non è cambiato niente.`);
+    return null;
+  }
   // una sessione di un obiettivo: quanto manca e quando è la prossima
   const note = action === 'complete' ? sessionDoneNote(state, id, plan, Date.now()) : null;
   if (note) {
-    toast(note.text, [{ label: 'Va bene', fn: () => {} }, ...(note.nextId ? [{ label: 'Sposta', fn: () => openSheet(note.nextId) }] : [])]);
-    return;
+    const text = note.text.replace(it.title, () => shortTitle(it.title));
+    toast(text, [undoAction(undoId), ...(note.nextId ? [{ label: 'Sposta', fn: () => openSheet(note.nextId) }] : [])]);
+    return undoId;
   }
-  toastUndo(`${label}: ${it.title}`);
+  toast(actionToast(action, snapshot, res), undoAction(undoId));
+  return undoId;
 }
 
 /** Le risposte alle osservazioni del companion (la logica sta in companion.js: answerObservation). */
@@ -1858,6 +2180,7 @@ function closeOnboarding() {
   setTimeout(() => { o.hidden = true; o.classList.remove('closing'); }, 360);
   state.onboarded = true;
   save(state);
+  releaseInviteHash();
 }
 // Dopo le domande: cosa ho capito, cosa no (da riscrivere), i primi 7 giorni. Solo allora si applica.
 let onbReview = null;
@@ -2069,8 +2392,11 @@ function renderSettings() {
 
     ${settingsCloudHtml()}
 
+    ${proposalSettingsHtml()}
+
     <div class="group"><h2>Dati</h2>
       <div class="card">
+        ${brokenRowHtml()}
         <div class="row"><span class="lbl">Esporta un backup</span><button class="btn" id="export">Esporta</button></div>
         <div class="row"><span class="lbl">Ripristina da backup</span><label class="btn" for="import-file">Importa</label><input type="file" id="import-file" accept="application/json,.json" hidden></div>
         <div class="row"><span class="lbl">Dimentica le richieste passate<small>l'AI non ne terrà più conto</small></span><button class="btn" id="clear-chat">Dimentica</button></div>
@@ -2102,7 +2428,7 @@ async function runSync(manual = false) {
     if (how === 'pulled' || how === 'merged') { renderAll(); if (manual) toast('Aggiornato dagli altri dispositivi'); }
     else if (manual) toast('Tutto sincronizzato');
   } catch (e) {
-    state.settings.cloudError = e.status === 401 ? 'Accesso scaduto: entra di nuovo.' : e.message;
+    state.settings.cloudError = cloudMsg(e);
     if (e.status === 401) state.settings.cloudToken = '';
     save(state);
     if (manual) toast(state.settings.cloudError);
@@ -2127,7 +2453,7 @@ function settingsCloudHtml() {
       <p class="note">Facoltativo. Con un account lo stesso tempo è su iPhone, Mac e web, e puoi parlarci da fuori: Siri e Comandi rapidi (anche in auto con CarPlay) e gli assistenti AI. Le chiavi AI restano su questo dispositivo; i dati sul server sono cifrati. Senza account tutto resta qui.</p>
     </div>`;
   }
-  const at = S.cloudAt ? new Date(S.cloudAt).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'mai';
+  const at = validDate(S.cloudAt) ? validDate(S.cloudAt).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'mai';
   const linkBox = clLink ? `<div class="cl-box" role="region" aria-label="Nuovo collegamento">
       <p><b>Collegamento «${esc(clLink.name)}» creato.</b> Il codice si vede solo adesso: copialo dove serve.</p>
       <label>Codice<input type="text" readonly value="${esc(clLink.token)}" data-copy></label>
@@ -2135,7 +2461,7 @@ function settingsCloudHtml() {
       <label>Assistenti AI (MCP)<input type="text" readonly value="${esc(url)}/mcp/t/${esc(clLink.token)}" data-copy></label>
       <p class="note">Nei Comandi rapidi aggiungi l'intestazione «Authorization: Bearer» + codice. Per dire qualcosa a Tempo: POST su ${esc(url)}/v1/tell?format=text con la frase come testo. Istruzioni complete in cloud/README.md.</p>
       <button type="button" class="btn" id="cl-link-close">Fatto</button></div>` : '';
-  const links = clLinks ? `<div class="cl-box">${clLinks.length ? clLinks.map((t) => `<div class="row"><span class="lbl">${esc(t.name)}<small>${t.scope === 'full' ? 'dispositivo' : 'collegamento esterno'}${t.current ? ' · questo' : ''} · ${new Date(t.created).toLocaleDateString('it-IT')}</small></span>${t.current ? '' : `<button type="button" class="x" data-cl-revoke="${esc(t.id)}" aria-label="Revoca ${esc(t.name)}">×</button>`}</div>`).join('') : '<p>Nessun collegamento.</p>'}<button type="button" class="btn" id="cl-links-close">Chiudi</button></div>` : '';
+  const links = clLinks ? `<div class="cl-box">${clLinks.length ? clLinks.map((t) => `<div class="row"><span class="lbl">${esc(t.name)}<small>${t.scope === 'full' ? 'dispositivo' : 'collegamento esterno'}${t.current ? ' · questo' : ''} ${validDate(t.created) ? '· ' + validDate(t.created).toLocaleDateString('it-IT') : ''}</small></span>${t.current ? '' : `<button type="button" class="x" data-cl-revoke="${esc(t.id)}" aria-label="Revoca ${esc(t.name)}">×</button>`}</div>`).join('') : '<p>Nessun collegamento.</p>'}<button type="button" class="btn" id="cl-links-close">Chiudi</button></div>` : '';
   return `<div class="group"><h2>Account e dispositivi</h2>
     <div class="card">
       <div class="row"><span class="lbl">${esc(S.cloudEmail || 'Account')}<small>${S.cloudError ? '✗ ' + esc(S.cloudError) : `sincronizzato: ${esc(at)}`}</small></span><button type="button" class="btn" id="cl-sync" ${syncing ? 'disabled' : ''}>${syncing ? 'Sincronizzo…' : 'Sincronizza'}</button></div>
@@ -2190,7 +2516,7 @@ async function cloudClick(id, el) {
       toast('Collegamento revocato');
     } else return;
   } catch (e) {
-    S.cloudError = e.message; save(state); toast(e.message);
+    S.cloudError = cloudMsg(e); save(state); toast(S.cloudError);
   }
   if (el) el.disabled = false;
   if (settingsOpen) renderSettings();
@@ -2307,26 +2633,116 @@ function onSettingsChange(e) {
     sceneDecision = null; save(state); toast('Salvato');
   } else if (t.id === 'local-model') {
     state.settings.localModel = t.value; save(state); renderSettings();
+  } else if (t.id === 'inv-name') {
+    setMyName(t.value); t.value = myName();
+    toast(myName() ? 'Firma salvata' : 'Firma tolta');
   } else if (t.id === 'import-file' && t.files[0]) {
-    t.files[0].text().then((txt) => {
-      const d = JSON.parse(txt);
-      if (!Array.isArray(d.items)) throw new Error('file non valido');
-      const { archive, ...rest } = d;
-      const m = migrate({ ...rest, settings: state.settings }, Date.now());
-      commit('Ripristino backup', () => Object.assign(state, { ...m, settings: state.settings, anchors: {} }));
-      // le voci archiviate del backup tornano nell'archivio (ripulite come tutto il resto)
-      const arch = Array.isArray(archive) ? sanitizeState({ items: archive }).items : [];
-      if (arch.length && typeof indexedDB !== 'undefined') archivePut(arch).then(() => { const ids = new Set(arch.map((x) => x.id)); archived = [...archived.filter((x) => !ids.has(x.id)), ...arch]; }).catch(() => {});
-      toast('Backup ripristinato');
-    }).catch((err) => toast('Backup non valido: ' + err.message));
+    const f = t.files[0];
+    t.value = ''; // lo stesso file si può scegliere di nuovo
+    readBackup(f);
   }
+}
+
+// ---------------------------------------------------------------- ripristino da backup
+const countsOf = (st) => ({ tasks: (st.items || []).filter((x) => x.kind !== 'event').length, events: (st.items || []).filter((x) => x.kind === 'event').length, goals: (st.goals || []).length });
+const countsLabel = (c) => `${plural(c.tasks, 'attività', 'attività')}, ${plural(c.events, 'impegno', 'impegni')}, ${plural(c.goals, 'obiettivo', 'obiettivi')}`;
+let backupPending = null; // { m, archive, counts, date } in attesa della conferma
+let backupPrev = null;   // lo stato di prima, per «Annulla» (solo in questa sessione)
+
+function backupNotice(what, why, next) {
+  notice({ key: 'backup', what, why, next, host: 'top', sticky: true });
+}
+/** Legge e controlla il file; non cambia niente finché non confermi. */
+async function readBackup(file) {
+  const keep = 'Non è cambiato niente:';
+  let d;
+  try { d = JSON.parse(await file.text()); }
+  catch { return backupNotice('Non ho ripristinato il backup.', 'Il file non si legge: non è un backup di Tempo, o è stato tagliato.', `${keep} scegli un altro file.`); }
+  if (!d || typeof d !== 'object' || Array.isArray(d) || !Array.isArray(d.items)) {
+    return backupNotice('Non ho ripristinato il backup.', 'Il file non è un backup di Tempo.', `${keep} scegli un altro file.`);
+  }
+  if (Number.isFinite(d.schema) && d.schema > SCHEMA) {
+    return backupNotice('Questo backup viene da una versione più nuova di Tempo.', `Ha il formato ${d.schema}, questa versione arriva al ${SCHEMA}.`, 'Aggiorna l\'app e riprova.');
+  }
+  let m;
+  const { archive, ...rest } = d;
+  try { m = migrate({ ...rest, settings: state.settings }, Date.now()); }
+  catch { return backupNotice('Non ho ripristinato il backup.', 'Il contenuto non è in un formato che conosco.', `${keep} scegli un altro file.`); }
+  const date = d.exportedAt && !Number.isNaN(Date.parse(d.exportedAt)) ? itDate(d.exportedAt, 'del', true) : null;
+  backupPending = { m, archive: Array.isArray(archive) ? archive : [], counts: countsOf(m), date };
+  openBackupSheet();
+}
+function openBackupSheet() {
+  const { counts, date } = backupPending;
+  sheetMode = 'backup';
+  ed = null; red = null;
+  $('#sheet-form').innerHTML = `
+    <h2 id="sheet-title" class="sr-only">Ripristinare il backup</h2>
+    <div class="ed-card" id="ed-card"><div class="ed-title" style="padding-bottom:4px">Ripristinare questo backup?</div>
+      <div class="ed-sub">Ora hai ${esc(countsLabel(countsOf(state)))}.</div>
+      <div class="ed-sub">Nel backup${date ? ` (${esc(date)})` : ''} ci sono ${esc(countsLabel(counts))}.</div>
+      <div class="ed-sub">Sostituisce quello che hai adesso. Potrai annullare finché non chiudi l'app.</div>${state.settings.cloudToken ? `
+      <div class="ed-sub">Con l'account Tempo Cloud, il ripristino arriva presto anche agli altri dispositivi: annullare è sicuro solo su questo telefono e solo se gli altri non hanno già cambiato niente.</div>` : ''}<div class="ed-foot"><span>Backup</span></div></div>
+    <div class="ed-actions"><button type="button" class="btn primary ed-save" data-sheet="backup-go">Ripristina</button><button type="button" class="btn ed-save" data-sheet="close">Lascia com'è</button></div>`;
+  $('#sheet-form').dataset.id = '';
+  showSheet();
+}
+function applyBackup() {
+  const p = backupPending;
+  backupPending = null;
+  closeSheet();
+  if (!p) return;
+  const before = countsOf(state);
+  const { settings, ...prev } = clone(state);
+  Object.assign(state, { ...p.m, settings: state.settings, anchors: {} });
+  state.stats.edits = (state.stats.edits || 0) + 1;
+  replan();
+  const ok = save(state) === true;
+  if (!ok) {
+    restoreState(prev);
+    renderAll();
+    return backupNotice('Non ho ripristinato il backup.', 'Non c\'è abbastanza spazio sul telefono per salvarlo.', `Le tue ${plural(before.tasks, 'attività', 'attività')} sono come prima: libera spazio e riprova.`);
+  }
+  // le voci archiviate del backup tornano nell'archivio (ripulite come tutto il resto)
+  const arch = p.archive.length ? sanitizeState({ items: p.archive }).items : [];
+  if (arch.length && typeof indexedDB !== 'undefined') archivePut(arch).then(() => { const ids = new Set(arch.map((x) => x.id)); archived = [...archived.filter((x) => !ids.has(x.id)), ...arch]; }).catch(() => {});
+  backupPrev = { prev, edits: state.stats.edits };
+  renderAll();
+  scheduleSync();
+  notice({
+    key: 'backup', host: 'top',
+    what: `Ripristinato: ${plural(p.counts.tasks, 'attività', 'attività')}, ${plural(p.counts.goals, 'obiettivo', 'obiettivi')}.`,
+    next: 'Se non era il file giusto, puoi tornare a com\'era prima, finché non chiudi l\'app.' + (state.settings.cloudToken ? ' Con l\'account, l\'annulla è sicuro solo su questo dispositivo e prima che gli altri si sincronizzino.' : ''),
+    action: { label: 'Annulla', fn: undoBackup },
+  });
+}
+function restoreState(prev) {
+  for (const k of Object.keys(state)) if (k !== 'settings') delete state[k];
+  Object.assign(state, clone(prev));
+  replan();
+  save(state);
+}
+function undoBackup() {
+  const b = backupPrev;
+  if (!b) return;
+  if ((state.stats.edits || 0) !== b.edits) {
+    return backupNotice('Non posso annullare il ripristino.', 'Dopo il ripristino hai già cambiato altro.', 'Annullare cancellerebbe quelle modifiche.');
+  }
+  backupPrev = null;
+  restoreState(b.prev);
+  // da mandare di sicuro: se il ripristino era già arrivato sul server, la prossima sincronizzazione lo sostituisce con lo stato di prima
+  state.stats.edits = b.edits + 1;
+  save(state);
+  renderAll();
+  scheduleSync(300);
+  toast(state.settings.cloudToken ? 'Ripristino annullato su questo dispositivo' : 'Ripristino annullato');
 }
 
 function addMemory() {
   const v = $('#mem-new').value.trim();
   if (!v) return;
   commit('Preferenza', () => applyOps(state, contextOps({ prefs: v }, today())));
-  toast('Me lo ricordo');
+  toastUndo(`Me lo ricordo: ${shortTitle(v)}.`);
 }
 /** Aggiunte rapide dal pannello del contesto (stessa logica della presentazione). */
 function addContext(kind) {
@@ -2336,14 +2752,14 @@ function addContext(kind) {
   const ans = kind === 'goal' ? { goals: v } : kind === 'vin' ? { constraints: v } : { projects: v };
   if (kind === 'goal') for (const p of state.projects || []) if (v.toLowerCase().includes(p.name.toLowerCase())) ans.projects = p.name;
   commit('Contesto', () => applyOps(state, contextOps(ans, today())));
-  toast('Aggiunto');
+  toastUndo(`Aggiunto: ${shortTitle(v)}.`);
 }
 
 // ---------------------------------------------------------------- utilità UI
 let toastTimer;
 function toast(text, action) {
   const el = $('#toast');
-  const acts = !action ? [] : Array.isArray(action) ? action : [action];
+  const acts = (!action ? [] : Array.isArray(action) ? action : [action]).filter((a) => !('undoId' in a) || undoable(a.undoId));
   el.innerHTML = `<span>${esc(text)}</span>${acts.map((a) => `<button type="button">${esc(a.label)}</button>`).join('')}`;
   el.classList.toggle('two', acts.length > 1);
   el.hidden = false;
@@ -2352,7 +2768,12 @@ function toast(text, action) {
   el.classList.remove('out');
   toastTimer = setTimeout(() => { el.classList.add('out'); setTimeout(() => { el.hidden = true; el.classList.remove('out'); }, 220); }, acts.length > 1 ? 8000 : acts.length ? 5000 : 2200);
 }
-const toastUndo = (text) => toast(text, { label: 'Annulla', fn: () => doUndo() });
+const toastUndo = (text) => toast(text, undoAction(lastUndo()?.id)); // da chiamare subito dopo la modifica
+/** «Annulla» di un avviso: vale solo per la sua modifica, e solo finché è l'ultima (annullare una più vecchia toglierebbe anche le seguenti). */
+const undoable = (id) => !!id && lastUndo()?.id === id;
+function undoAction(id) {
+  return { label: 'Annulla', undoId: id, fn: () => { if (undoable(id)) doUndo(id); else toast('Non si può più annullare questa modifica'); } };
+}
 
 function renderAll() {
   if (state.focus && !state.items.some((x) => x.id === state.focus.itemId && x.status !== 'done')) { state.focus = null; focusOpen = false; heroKey = ''; }
@@ -2411,7 +2832,6 @@ function bind() {
     });
   }, { passive: true });
   $('#open-settings').addEventListener('click', openSettings);
-  $('#save-alert-export').addEventListener('click', exportData);
   $('#close-settings').addEventListener('click', closeSettings);
   $('#undo-btn').addEventListener('click', () => doUndo());
 
@@ -2457,8 +2877,10 @@ function bind() {
       if (a2.dataset.act2 === 'move') quickOp('move', id, { date: addDays(selDay, 1) });
       return;
     }
+    const mh = e.target.closest('[data-more]');
+    if (mh) { e.stopPropagation(); expandedDay = mh.dataset.more === 'open' ? selDay : null; renderDayView(false); col.querySelector('.more-handle')?.focus({ preventScroll: true }); return; }
     const ad = e.target.closest('[data-adv]');
-    if (ad) { e.stopPropagation(); if (ad.dataset.adv === 'start') startFocusFor(ad.dataset.id); else quickOp(ad.dataset.adv, ad.dataset.id); return; }
+    if (ad) { e.stopPropagation(); if (ad.dataset.adv === 'add') openBar(); else if (ad.dataset.adv === 'start') startFocusFor(ad.dataset.id); else quickOp(ad.dataset.adv, ad.dataset.id); return; }
     const ox = e.target.closest('[data-obs-close]');
     if (ox) { e.stopPropagation(); closeObservation(state, ox.dataset.obsClose, Date.now()); save(state); renderDayView(false); return; }
     const wl = e.target.closest('[data-welcome]');
@@ -2519,9 +2941,19 @@ function bind() {
     send(v);
     renderComposer();
   });
+  // una proposta incollata nella barra: la carta compare subito, il campo resta pulito
+  input.addEventListener('paste', (e) => {
+    const t = e.clipboardData?.getData('text') || '';
+    if (!t || !INV_MARK.test(t)) return;
+    if (!findInvite(t, Date.now()) && !/tempo:inv1:/i.test(t)) return; // un link qualsiasi: si incolla come testo
+    e.preventDefault();
+    input.value = ''; grow(); renderComposer();
+    handleInviteText(t);
+    input.blur(); setComposing(false);
+  });
   $('#mic').addEventListener('click', () => { setComposing(true); toggleMic(); });
-  $('#plus').addEventListener('pointerdown', () => { if ($('#app').classList.contains('bar-open')) plusAt = Date.now(); });
-  $('#plus').addEventListener('click', () => { if (!$('#app').classList.contains('bar-open')) openBar(); else togglePlus(); });
+  $('#plus').addEventListener('pointerdown', () => { plusAt = Date.now(); });
+  $('#plus').addEventListener('click', () => togglePlus());
   $('#plus-menu').addEventListener('click', (e) => {
     const b = e.target.closest('[data-plus]');
     if (!b) return;
@@ -2611,7 +3043,9 @@ function bind() {
     if (!b) return;
     const id = $('#sheet-form').dataset.id;
     const a = b.dataset.sheet;
-    if (a === 'close') closeSheet();
+    if (a === 'close') { backupPending = null; invDraft = null; closeSheet(); }
+    else if (a === 'backup-go') applyBackup();
+    else if (a === 'propose') proposeItem(id);
     else if (a === 'done') quickOp('complete', id);
     else if (a === 'start') { closeSheet(); startFocusFor(id); }
     else if (a === 'reopen') quickOp('reopen', id);
@@ -2689,6 +3123,28 @@ function bind() {
         .catch((err) => { if (status) status.textContent = errorText(err); t.disabled = false; });
     }
     if (t.id === 'export') exportData();
+    if (t.id === 'inv-forget') { invForgetAsk = true; renderSettings(); $('#inv-forget-no')?.focus(); }
+    if (t.id === 'inv-forget-no') { invForgetAsk = false; renderSettings(); }
+    if (t.id === 'inv-forget-yes') { invForgetAsk = false; forgetInvites(); renderAll(); toast('Proposte dimenticate'); }
+    if (t.id === 'broken-dl') { const b = brokenCopies().find((c) => String(c.slot) === t.dataset.slot); if (b) deliverBroken(b.raw); }
+    if (t.id === 'broken-del') { brokenAsk = +t.dataset.slot; renderSettings(); $('#broken-no')?.focus(); }
+    if (t.id === 'broken-no') { brokenAsk = false; renderSettings(); }
+    if (t.id === 'broken-yes') {
+      brokenAsk = false;
+      const slot = +t.dataset.slot;
+      const key = slot === 2 ? BROKEN_KEY2 : BROKEN_KEY;
+      try {
+        localStorage.removeItem(key); localStorage.removeItem(key + '.at');
+        if (slot === 1 && localStorage.getItem(BROKEN_KEY2)) { // la più vecchia diventa la copia principale
+          localStorage.setItem(BROKEN_KEY, localStorage.getItem(BROKEN_KEY2)); localStorage.setItem(BROKEN_KEY + '.at', localStorage.getItem(BROKEN_KEY2 + '.at') || '0');
+          localStorage.removeItem(BROKEN_KEY2); localStorage.removeItem(BROKEN_KEY2 + '.at');
+        }
+      } catch {}
+      if (slot === 0) brokenData.raw = '';
+      if (!brokenCopies().length) dismissNotice('rotto', true);
+      renderSettings();
+      toast('Copia eliminata');
+    }
     if (t.id === 'open-recap') openRecap();
     if (tt && (/^cl-/.test(tt.id) || tt.dataset.clRevoke)) cloudClick(tt.id, tt);
     if (t.matches?.('input[data-copy]')) { t.select(); navigator.clipboard?.writeText(t.value).then(() => toast('Copiato')).catch(() => {}); }
@@ -2723,8 +3179,10 @@ function bind() {
         .then((r) => { const st2 = $('#dec-status'); if (st2) st2.textContent = r.error ? `✗ ${r.error}: decidono le regole` : `✓ ${r.source}: «${options.find((o) => o.id === r.id)?.text.slice(0, 40)}» (${Math.round(r.confidence * 100)}%)`; });
     }
     if (t.id === 'clear-chat' && confirm('Dimenticare le richieste passate? Attività e memoria restano.')) { state.chat = []; pending = null; replyId = null; save(state); renderReply(); toast('Fatto'); }
-    if (t.id === 'reset' && confirm('Cancellare tutte le attività, la memoria e la chat? (La chiave API resta.)')) {
+    if (t.id === 'reset' && confirm('Cancellare tutte le attività, la memoria e la chat, il nome con cui ti firmi, le proposte e la bozza? Le copie illeggibili di sicurezza restano. La chiave API resta.')) {
       commit('Cancella tutto', () => Object.assign(state, { items: [], recurring: [], memory: [], anchors: {}, chat: [] }));
+      forgetInvites(); setMyName('');
+      try { sessionStorage.removeItem('tempo.bozza'); } catch {}
       toastUndo('Tutto cancellato');
     }
   });
@@ -2801,9 +3259,11 @@ function bind() {
 
   // il tempo passa: aggiorna piano e carte
   const tick = () => {
+    // solo ciò che il tick può cambiare: ancore, conteggio delle ripianificazioni di oggi, giorno d'archivio
+    const sigOf = () => `${JSON.stringify(state.anchors)}|${state.stats.replans[today()] || 0}|${state.stats.archivedOn}`;
+    const snap = sigOf();
     maybeArchive();
     const now = Date.now();
-    if (!document.hidden) state.stats.lastOpenAt = now;
     const before = positions(plan);
     // di solito cambia solo oggi (il tempo passa): il resto del piano e il piano lungo restano quelli
     const next = refreshToday(state, plan, now);
@@ -2811,15 +3271,23 @@ function bind() {
     else { const keep = dataRev; replan(); dataRev = keep; }
     const after = positions(plan);
     if ([...after].some(([id, p]) => before.has(id) && (before.get(id).day !== p.day || before.get(id).start !== p.start))) countAutoReplan();
-    save(state);
-    if (mode === 'day') renderDayView(false); else renderCalendar(false);
+    // «ultima apertura» si aggiorna al massimo ogni 10 minuti; si salva solo se è cambiato qualcosa
+    let changed = sigOf() !== snap;
+    if (!document.hidden && now - (state.stats.lastOpenAt || 0) > 600000) { state.stats.lastOpenAt = now; changed = true; }
+    if (changed) { save(state); lastSavedOpenAt = state.stats.lastOpenAt || 0; }
+    if (mode === 'day') renderDayView(false, { skipSame: true }); else renderCalendar(false);
     renderComposer();
   };
   setInterval(tick, 30000);
+  document.documentElement.classList.toggle('page-hidden', document.hidden); // se la pagina parte nascosta
   document.addEventListener('visibilitychange', () => {
+    document.documentElement.classList.toggle('page-hidden', document.hidden); // gli sfondi animati si fermano
     if (document.hidden) return;
     // tornato dopo 7 giorni o più (l'app era rimasta aperta in background): bentornato
-    if (noteOpen(state, Date.now())) { replan(); renderDayView(true); }
+    const welcome = noteOpen(state, Date.now());
+    if (welcome) { replan(); renderDayView(true); }
+    // noteOpen aggiorna solo la memoria: se è passato tempo dall'ultimo valore salvato, si salva ora
+    if (welcome || Date.now() - lastSavedOpenAt > 600000) { save(state); lastSavedOpenAt = state.stats.lastOpenAt || 0; }
     tick();
   });
 }
@@ -2849,11 +3317,58 @@ function maybeArchive() {
   }).catch((e) => console.warn('archivio non disponibile', e)).finally(() => { archiving = false; });
 }
 
-/** Spazio finito: un avviso che resta finché il salvataggio non torna a funzionare, con l'export subito a portata. */
+/** Spazio finito: un avviso fisso (una volta sola) finché il salvataggio non torna a funzionare. */
 function syncSaveAlert() {
-  const el = $('#save-alert');
-  if (el) el.hidden = !saveStatus();
+  if (!saveStatus()) { dismissNotice('spazio', true); return; }
+  if (hasNotice('spazio')) return;
+  notice({
+    key: 'spazio', sticky: true, alert: true, host: 'top',
+    what: 'Le ultime modifiche non sono salvate sul telefono.',
+    why: 'Lo spazio di Tempo sul telefono è pieno.',
+    next: 'Se chiudi l\'app si perdono: esporta un backup adesso.',
+    action: { label: 'Esporta un backup ora', fn: exportData, keep: true },
+  });
 }
+
+/** Dati illeggibili all'avvio: restano da parte, e si possono scaricare. */
+function showBrokenNotice({ raw, at, saved }) {
+  const d = validDate(at);
+  const when = d ? `${itDate(d)}, alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}` : 'data non nota';
+  const kb = Math.max(1, Math.round(raw.length / 1024));
+  notice({
+    key: 'rotto', sticky: true, alert: true, host: 'top',
+    what: 'Non sono riuscito a leggere i tuoi dati.',
+    why: saved ? 'Il file sul telefono era danneggiato.' : 'Il file sul telefono era danneggiato e non c\'è spazio per tenerne una copia.',
+    next: saved ? 'L\'ho messo da parte: scaricalo, o ripristina un backup dalle Impostazioni.' : 'La copia resta solo finché non chiudi l\'app: scaricala subito.',
+    detail: `${kb} KB, aperto ${when}`,
+    action: { label: 'Scarica la copia', fn: () => deliverBroken(raw), keep: true },
+  });
+}
+
+/** Le righe delle Impostazioni per le copie dei dati illeggibili (ci sono finché le copie esistono). */
+function brokenRowHtml() {
+  return brokenCopies().map((b, n) => {
+    const when = validDate(b.at) ? ` ${itDate(b.at, 'del')}` : '';
+    if (brokenAsk === b.slot) {
+      return `<div class="row broken-row"><span class="lbl">Eliminare la copia${esc(when ? ' ' + when.trim() : '')}?<small>Non si può recuperare.</small></span><button type="button" class="btn danger" id="broken-yes" data-slot="${b.slot}">Elimina</button><button type="button" class="btn" id="broken-no">Tengo</button></div>`;
+    }
+    return `<div class="row broken-row"><span class="lbl">Copia dei dati illeggibili${esc(when)}<small>${n ? 'più vecchia, ' : ''}messa da parte quando non riuscivo a leggerli</small></span><button type="button" class="btn" id="broken-dl" data-slot="${b.slot}">Scarica</button><button type="button" class="btn danger" id="broken-del" data-slot="${b.slot}">Elimina</button></div>`;
+  }).join('');
+}
+const deliverBroken = (raw) => deliverFile(new File([raw], `tempo-dati-illeggibili-${today()}.txt`, { type: 'text/plain' }), 'Dati illeggibili di Tempo');
+/** Le copie dei dati illeggibili che restano nel telefono (più recente per prima): [{ slot, raw, at }]. */
+function brokenCopies() {
+  const out = [];
+  try {
+    for (const [slot, key] of [[1, BROKEN_KEY], [2, BROKEN_KEY2]]) {
+      const raw = localStorage.getItem(key);
+      if (raw) out.push({ slot, raw, at: +localStorage.getItem(key + '.at') || 0 });
+    }
+  } catch {}
+  if (brokenData?.raw && !out.some((b) => b.raw === brokenData.raw)) out.unshift({ slot: 0, raw: brokenData.raw, at: brokenData.at });
+  return out;
+}
+let brokenAsk = false; // «Elimina» chiede conferma dentro la pagina: false, oppure il numero della copia (0 memoria, 1, 2)
 
 /** Promemoria di backup: niente export da 14 giorni (e l'app si usa da almeno 14). */
 const backupDue = () => backupDueOf(state, Date.now());
@@ -2866,9 +3381,12 @@ function exportData() {
   state.settings.lastExportAt = Date.now();
   state.stats.exportedEdits = state.stats.edits || 0;
   save(state);
-  const file = new File([data], `tempo-backup-${today()}.json`, { type: 'application/json' });
+  deliverFile(new File([data], `tempo-backup-${today()}.json`, { type: 'application/json' }), 'Backup Tempo');
+}
+/** Condivide il file (foglio di iOS) o lo scarica. */
+function deliverFile(file, title) {
   if (navigator.canShare?.({ files: [file] })) {
-    navigator.share({ files: [file], title: 'Backup Tempo' }).catch(() => {});
+    navigator.share({ files: [file], title }).catch(() => {});
   } else {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(file);
@@ -2878,7 +3396,473 @@ function exportData() {
   }
 }
 
+// ---------------------------------------------------------------- proposte (inviti senza server)
+// Una persona scrive un impegno per l'agenda di un'altra: è solo una PROPOSTA, un testo da incollare.
+// Niente entra nel piano di nessuno senza il tocco di chi lo riceve. La logica sta in invite.js (pura);
+// qui ci sono solo l'archivio (chiavi a parte, fuori dallo stato salvato), le schede e le carte.
+// Ogni stringa che arriva da fuori passa da findInvite/sanitizeInvite e finisce nella pagina come testo.
+const NAME_KEY = 'tempo.nome', INV_KEY = 'tempo.inviti';
+const INV_MAX = 50, INV_DAYS = 60, INV_STATUS = ['attesa', 'si', 'no', 'altro', 'spostata'];
+const okInvId = (v) => typeof v === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(v);
+const cleanTxt = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : '');
+const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const newId = () => (typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${uid()}${uid()}${Date.now().toString(36)}`);
+const myTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } };
+const baseUrl = () => (location.protocol === 'http:' || location.protocol === 'https:' ? location.origin + location.pathname : '');
+/** «20:00»; la fine a mezzanotte si legge «24:00». */
+const hhmm = (m) => (m >= 1440 ? '24:00' : fmtMin(m));
+/** «oggi», «domani», «giovedì 12 novembre». */
+function dayFull(d) {
+  if (d === today()) return 'oggi';
+  if (d === addDays(today(), 1)) return 'domani';
+  return dateOf(d).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
+function myName() { try { return cleanTxt(localStorage.getItem(NAME_KEY) || '', 40); } catch { return ''; } }
+function setMyName(v) { try { const n = cleanTxt(v, 40); if (n) localStorage.setItem(NAME_KEY, n); else localStorage.removeItem(NAME_KEY); } catch {} }
+
+/** Le proposte mandate e ricevute: { id, role:'inviata'|'ricevuta', itemId, title, to, from, at, status }. Si legge sempre ripulito. */
+function readInvites(now = Date.now()) {
+  let raw = [];
+  try { const j = JSON.parse(localStorage.getItem(INV_KEY) || '[]'); if (Array.isArray(j)) raw = j; } catch {}
+  const seen = new Set(), out = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object' || !okInvId(r.id) || seen.has(r.id)) continue;
+    const at = Number.isFinite(r.at) ? r.at : 0;
+    if (!at || now - at > INV_DAYS * 864e5 || at > now + 864e5) continue;
+    seen.add(r.id);
+    out.push({
+      id: r.id, role: r.role === 'ricevuta' ? 'ricevuta' : 'inviata', itemId: okInvId(r.itemId) ? r.itemId : null,
+      title: cleanTxt(r.title, 80), to: cleanTxt(r.to, 40), from: cleanTxt(r.from, 40), at,
+      status: INV_STATUS.includes(r.status) ? r.status : 'attesa',
+      ...(/^\d{4}-\d{2}-\d{2}$/.test(r.d) && Number.isFinite(r.s) ? { d: r.d, s: r.s } : {}),
+    });
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, INV_MAX);
+}
+let invMem = null, invWait = null;
+const invites = () => (invMem ||= readInvites());
+/** Rilegge dall'archivio: un'altra scheda può averlo cambiato. */
+const freshInvites = () => { invMem = null; invWait = null; return invites(); };
+function writeInvites(list) {
+  invMem = list.slice(0, INV_MAX); invWait = null;
+  try { localStorage.setItem(INV_KEY, JSON.stringify(invMem)); } catch {}
+}
+function upsertInvite(rec) {
+  writeInvites([rec, ...freshInvites().filter((r) => r.id !== rec.id)]);
+}
+function forgetInvites() {
+  invMem = []; invWait = null;
+  try { localStorage.removeItem(INV_KEY); } catch {}
+}
+const inviteRec = (id) => freshInvites().find((r) => r.id === id) || null;
+/** L'impegno ha una proposta mandata e ancora senza risposta? */
+function inviteWaiting(itemId) {
+  if (!itemId) return false;
+  invWait ||= new Set(invites().filter((r) => r.role === 'inviata' && r.status === 'attesa' && r.itemId).map((r) => r.itemId));
+  return invWait.has(itemId);
+}
+
+/** Comandi dalla pipeline di sempre: sanitizeOps → applyOps dentro commit (quindi con Annulla). */
+function pipeline(label, ops) {
+  const clean = sanitizeOps(ops).ops;
+  let res = null;
+  const undoId = commit(label, () => { res = applyOps(state, clean); });
+  if (!res || !res.log.length) { popUndo(state, undoId); replan(); renderAll(); return { undoId: null, res }; }
+  return { undoId, res };
+}
+/** «Annulla» di una proposta accettata: se l'annullamento riesce, la proposta torna a essere nuova. */
+function undoInvite(undoId, id) {
+  const u = undoAction(undoId);
+  return { ...u, fn: () => { const ok = undoable(undoId); u.fn(); if (ok) { writeInvites(freshInvites().filter((r) => r.id !== id)); dismissNotice('invito'); } } };
+}
+
+// ---- mandare un testo: «Condividi» (foglio del telefono) o «Copia»
+async function copyOut(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  try {
+    const ta = mk('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.append(ta); ta.select();
+    const ok = document.execCommand('copy'); ta.remove();
+    if (ok) return true;
+  } catch {}
+  toast('Non riesco a copiare. Tieni premuto sul testo e copialo.');
+  return false;
+}
+/** 'shared' | 'copied' | null (annullato o non riuscito). Non dice mai che il messaggio è partito. */
+async function shareOut(text) {
+  if (typeof navigator.share === 'function') {
+    try { await navigator.share({ text }); return 'shared'; }
+    catch (e) { if (e?.name === 'AbortError') return null; }
+  }
+  return (await copyOut(text)) ? 'copied' : null;
+}
+/** I due pulsanti. `getText()` dà il testo di adesso; `guard()` può fermare (manca la firma); `onSent(how)` dopo l'invio. */
+function shareRow(getText, { guard, onSent }) {
+  const row = mk('div', 'r-actions inv-share');
+  const go = async (copy) => {
+    if (guard && !guard()) return;
+    const text = getText();
+    if (!text) return;
+    const how = copy ? ((await copyOut(text)) ? 'copied' : null) : await shareOut(text);
+    if (how) onSent(how);
+  };
+  const a = mk('button', 'btn primary', 'Condividi'); a.type = 'button'; a.dataset.inv = 'share';
+  const b = mk('button', 'btn', 'Copia'); b.type = 'button'; b.dataset.inv = 'copy';
+  a.addEventListener('click', () => go(false));
+  b.addEventListener('click', () => go(true));
+  row.append(a, b);
+  return row;
+}
+/** Il messaggio com'è: righe di testo; le ultime due (indirizzo e codice) sono per Tempo e stanno su una riga. */
+function msgPreview(text) {
+  const box = mk('div', 'inv-msg');
+  box.dataset.inv = 'msg';
+  fillMsg(box, text);
+  return box;
+}
+function fillMsg(box, text) {
+  box.replaceChildren();
+  for (const line of String(text).split('\n')) box.append(mk('div', /^(https?:\/\/|\[tempo:inv1:)/.test(line) ? 'tech' : '', line));
+}
+/** Il campo «Come ti firmi»: salva mentre scrivi. */
+function nameField(onChange) {
+  const w = mk('div', 'inv-name-wrap');
+  const l = mk('label', 'ed-k', 'Come ti firmi'); l.htmlFor = 'inv-name-in';
+  const i = mk('input', 'inv-name'); i.id = 'inv-name-in'; i.type = 'text'; i.maxLength = 40; i.autocomplete = 'off'; i.setAttribute('autocapitalize', 'words');
+  i.placeholder = 'Il tuo nome'; i.value = myName();
+  i.addEventListener('input', () => { setMyName(i.value); onChange?.(); });
+  i.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); } });
+  w.append(l, i);
+  return w;
+}
+const needName = (focusEl) => () => { if (myName()) return true; toast('Scrivi prima come ti firmi.'); focusEl?.()?.focus(); return false; };
+
+// ---- 1. proporre
+/** Dal pulsante «Proponi» della scheda: un impegno fisso con giorno e ora. */
+function proposeItem(id) {
+  const it = state.items.find((x) => x.id === id);
+  if (!it || it.kind !== 'event' || !it.date || it.start == null) { toast('Mi servono il giorno e l\'ora.'); return; }
+  openProposal({ id: newId(), itemId: it.id, ops: null, title: it.title, date: it.date, start: it.start, end: Math.min(1440, it.start + (it.duration || 60)), to: '' });
+}
+const STOP_NAMES = new Set(['i', 'il', 'lo', 'la', 'le', 'gli', 'un', 'uno', 'una', 'mio', 'mia', 'miei', 'tuoi', 'tutti', 'tutte', 'a', 'ad', 'per', 'di', 'da', 'con', 'che', 'se', 'e']);
+/** «proponi a Marco cena giovedì alle 20» / «invita Marco a cena giovedì alle 20»: la frase è letta dal parser senza AI. */
+function handleProposeText(text) {
+  const m = text.match(/^(?:proponi|invita)\s+(?:a\s+)?([\p{L}][\p{L}\p{M}'’.-]*)(?:\s+(.+))?$/isu);
+  if (!m || STOP_NAMES.has(m[1].toLowerCase())) return false;
+  const to = cleanTxt(m[1].charAt(0).toUpperCase() + m[1].slice(1), 40);
+  const lack = () => notice({ key: 'invito', what: 'Mi serve il giorno e l\'ora.', why: 'Per proporre un impegno servono tutti e due.', next: `Scrivi, per esempio: proponi a ${to} cena giovedì alle 20.` });
+  const rest = (m[2] || '').replace(/^(?:a|ad|per)\s+/i, '').trim();
+  if (!rest) { lack(); return true; }
+  let ops = [];
+  try { ops = sanitizeOps(localParse(rest, state, Date.now()).ops || []).ops; } catch {}
+  const o = ops[0];
+  if (ops.length !== 1 || o.action !== 'add' || o.kind !== 'event' || !o.date || !o.start_time) { lack(); return true; }
+  const draft = draftOf(), before = new Set(draft.items.map((x) => x.id));
+  applyOps(draft, ops);
+  const it = draft.items.find((x) => !before.has(x.id));
+  if (!it || it.kind !== 'event' || !it.date || it.start == null) { lack(); return true; }
+  openProposal({ id: newId(), itemId: null, ops, title: it.title, date: it.date, start: it.start, end: Math.min(1440, it.start + (it.duration || 60)), to });
+  return true;
+}
+
+let invDraft = null;
+const proposalOf = (p) => makeInvite({ title: p.title, date: p.date, start: p.start, end: p.end, tz: myTz(), from: myName() }, { id: p.id, now: Date.now() });
+/** La scheda della proposta: il messaggio com'è, e due modi per mandarlo. */
+function openProposal(p) {
+  if (!proposalOf(p)) { toast('Non riesco a preparare la proposta: controlla il giorno e l\'ora.'); return; }
+  closePlus();
+  sheetMode = 'invite'; ed = null; red = null; invDraft = p;
+  const form = $('#sheet-form');
+  form.dataset.id = '';
+  form.replaceChildren();
+  const h = mk('h2', 'sr-only', 'Proponi un impegno'); h.id = 'sheet-title';
+  const card = mk('div', 'ed-card event'); card.id = 'ed-card';
+  card.append(mk('div', 'ed-title', p.title), mk('div', 'ed-sub', `${cap(dayFull(p.date))}, ${hhmm(p.start)}–${hhmm(p.end)}`), (() => { const f = mk('div', 'ed-foot'); f.append(mk('span', '', p.to ? `Proposta per ${p.to}` : 'Proposta')); return f; })());
+  const msg = msgPreview('');
+  const refresh = () => { const inv = proposalOf(p); fillMsg(msg, inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''); };
+  refresh();
+  const sec = mk('section', 'ed-row');
+  const k = mk('span', 'ed-k', 'Il messaggio');
+  sec.append(k, msg, mk('p', 'inv-hint', 'Le ultime righe sono il codice che Tempo legge.'));
+  const askName = !myName();
+  const nm = askName ? nameField(refresh) : null;
+  const line = mk('p', 'inv-line', p.itemId ? 'Intanto l\'impegno resta nel tuo piano.' : 'Intanto lo metto nel tuo piano, finché non risponde.');
+  const actions = mk('div', 'ed-actions');
+  actions.append(shareRow(() => { const inv = proposalOf(p); return inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''; }, {
+    guard: needName(() => nm?.querySelector('input')),
+    onSent: proposalSent,
+  }));
+  form.append(h, card);
+  if (nm) form.append(nm);
+  form.append(sec, line, actions);
+  showSheet();
+  if (nm) setTimeout(() => nm.querySelector('input')?.focus({ preventScroll: true }), 320);
+}
+/** Condiviso o copiato: solo ora l'impegno nuovo entra nel piano, e la proposta resta segnata «in attesa». */
+function proposalSent(how) {
+  const p = invDraft;
+  if (!p) return;
+  invDraft = null;
+  let undoId = null, itemId = p.itemId;
+  if (p.ops) {
+    const before = new Set(state.items.map((x) => x.id));
+    undoId = pipeline('Impegno proposto', p.ops).undoId;
+    itemId = state.items.find((x) => !before.has(x.id))?.id || null;
+  }
+  upsertInvite({ id: p.id, role: 'inviata', itemId, title: cleanTxt(p.title, 80), to: p.to, from: '', at: Date.now(), status: 'attesa', d: p.date, s: p.start });
+  closeSheet();
+  renderAll();
+  const undo = undoId ? undoAction(undoId) : null;
+  if (how === 'copied') toast('Copiato. Incollalo nella chat.', undo);
+  else if (undo) { const w = itemId && whereIs(itemId); toast(`${shortTitle(p.title)}: aggiunto${w ? ', ' + w.text : ''}.`, undo); }
+}
+
+// ---- 2. ricevere
+const INV_MARK = /tempo:inv1:|invito=/i;
+/** Il testo contiene una proposta o una risposta? Allora si mostra la carta e il testo non va altrove. */
+function handleInviteText(text, strict = false) {
+  const t = String(text || '');
+  if (!INV_MARK.test(t)) return false;
+  const inv = findInvite(t, Date.now());
+  // un semplice link con «?invito=…» che non è una proposta di Tempo segue la strada di ogni altro testo
+  if (!inv) { if (!strict && !/tempo:inv1:/i.test(t)) return false; invalidNotice('Il testo si è rovinato nella copia.'); return true; }
+  if (inv.kind === 'risposta') { showAnswerCard(inv); return true; }
+  if (inv.ts < Date.now()) { invalidNotice('La sua data è già passata.'); return true; }
+  showProposalCard(inv);
+  return true;
+}
+const invalidNotice = (why) => notice({ key: 'invito', what: 'Non riesco a leggere questa proposta.', why, next: 'Chiedi di rimandartela.' });
+
+let inviteHash = '';
+function readInviteHash() {
+  if (!/(?:^|[#&])invito=/.test(location.hash)) return;
+  inviteHash = location.hash;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (state.onboarded && $('#onb').hidden) releaseInviteHash();
+}
+function releaseInviteHash() {
+  if (!inviteHash) return;
+  const h = inviteHash; inviteHash = '';
+  setTimeout(() => handleInviteText(h, true), 500);
+}
+
+/** La carta nell'area delle risposte; `stage(fn)` la ridisegna a ogni passo. */
+function inviteShell() {
+  const box = $('#notices-reply');
+  if (!box) return null;
+  dismissNotice('invito', true);
+  const card = mk('div', 'reply-card notice inv-card anim');
+  card.setAttribute('role', 'status');
+  card.dataset.notice = 'invito';
+  const x = mk('button', 'r-x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Chiudi');
+  x.addEventListener('click', () => dismissNotice('invito'));
+  const stage = (fn) => { card.replaceChildren(x); fn(card); };
+  box.append(card);
+  return { card, stage };
+}
+const invBtn = (label, fn, primary) => { const b = mk('button', 'btn' + (primary ? ' primary' : ''), label); b.type = 'button'; b.addEventListener('click', fn); return b; };
+const invActions = (...btns) => { const d = mk('div', 'r-actions'); d.append(...btns); return d; };
+
+function showProposalCard(inv) {
+  let prev = inviteRec(inv.id);
+  // accettata ma tolta dal piano (anche con l'Annulla generale): la proposta torna nuova
+  if (prev?.role === 'ricevuta' && prev.status === 'si' && !(prev.itemId && state.items.some((x) => x.id === prev.itemId))) { writeInvites(freshInvites().filter((r) => r.id !== inv.id)); prev = null; }
+  if (prev?.role === 'inviata') { notice({ key: 'invito', what: 'Questa proposta l\'hai scritta tu.', why: 'La riconosco dal codice.', next: 'Mandala a chi vuoi invitare e aspetta la risposta.' }); return; }
+  if (prev?.role === 'ricevuta') {
+    const inPlan = prev.status === 'si' && prev.itemId && state.items.some((x) => x.id === prev.itemId);
+    if (inPlan) notice({ key: 'invito', what: 'L\'hai già nel piano.', why: 'Avevi accettato questa proposta: non la aggiungo due volte.', next: 'Non serve fare altro.' });
+    else notice({ key: 'invito', what: 'Hai già risposto.', why: prev.status === 'si' ? 'Avevi accettato questa proposta, ma ora non è più nel piano.' : 'Ho già una tua risposta a questa proposta.', next: 'Se vuoi, chiedi di rimandartela con un altro codice.' });
+    return;
+  }
+  const tz = myTz(), now = Date.now();
+  const slot = localSlot(inv, tz), fit = fitInvite(state, inv, { tz, now });
+  if (!slot || !fit) { invalidNotice('Il testo si è rovinato nella copia.'); return; }
+  const cut = slot.e - slot.s < inv.e - inv.s;
+  const when = `${dayFull(slot.d)}, ${cut ? `dalle ${hhmm(slot.s)} fino a mezzanotte` : `${hhmm(slot.s)}–${hhmm(slot.e)}`}`;
+  const who = inv.from || 'Qualcuno';
+  const sh = inviteShell();
+  if (!sh) return;
+  const home = () => sh.stage((c) => {
+    c.append(mk('p', 'n-what', `${who} ti propone: ${inv.t} · ${when}.`));
+    if (inv.note) c.append(mk('p', 'inv-note', `Nota: ${inv.note}`));
+    const c0 = fit.conflicts[0];
+    const verdict = fit.fits ? 'Ci sta.' : c0
+      ? `Si sovrappone a ${c0.title || 'un tuo impegno'} (${hhmm(c0.start)}–${hhmm(c0.end)})${fit.conflicts.length > 1 ? ` e a ${fit.conflicts.length - 1 === 1 ? 'un altro impegno' : (fit.conflicts.length - 1) + ' altri impegni'}` : ''}. Se accetti, i due impegni si sovrappongono.`
+      : 'Non ci sta.';
+    c.append(mk('p', 'inv-verdict ' + (fit.fits ? 'ok' : 'bad'), verdict));
+    c.append(invActions(invBtn('Accetta', () => accept(), true), invBtn('Proponi altro', () => alternatives()), invBtn('Non riesco', () => replyStage(sh, inv, 'no', [], home))));
+  });
+  const accept = () => {
+    const was = inviteRec(inv.id);
+    if (was?.role === 'ricevuta' && was.status === 'si' && was.itemId && state.items.some((x) => x.id === was.itemId)) { toast('L\'hai già nel piano.'); dismissNotice('invito'); return; }
+    const op = inviteOp(inv, tz);
+    const before = new Set(state.items.map((x) => x.id));
+    const { undoId } = op ? pipeline('Proposta accettata', [op]) : { undoId: null };
+    if (!undoId) { toast('Non sono riuscito ad aggiungerla. Il piano è com\'era.'); return; }
+    const item = state.items.find((x) => !before.has(x.id));
+    upsertInvite({ id: inv.id, role: 'ricevuta', itemId: item?.id || null, title: cleanTxt(inv.t, 80), to: '', from: inv.from, at: Date.now(), status: 'si' });
+    const w = item && whereIs(item.id);
+    toast(`${shortTitle(inv.t)}: aggiunto${w ? ', ' + w.text : ''}.`, undoInvite(undoId, inv.id));
+    replyStage(sh, inv, 'si', [], null);
+  };
+  const alternatives = () => sh.stage((c) => {
+    const alts = fit.alternatives;
+    if (!alts.length) {
+      c.append(mk('p', 'n-what', 'Non trovo un\'altra fascia libera nei prossimi giorni.'), mk('p', 'n-why', 'Puoi dire che non riesci.'));
+      c.append(invActions(invBtn('Non riesco', () => replyStage(sh, inv, 'no', [], home), true), invBtn('Indietro', home)));
+      return;
+    }
+    c.append(mk('p', 'n-what', 'Quando ti va bene?'), mk('p', 'n-why', `Scegli una o più fasce libere: le propongo a ${inv.from || 'chi te l\'ha mandata'}.`));
+    const chosen = new Set();
+    const go = invBtn('Prepara la risposta', () => replyStage(sh, inv, 'altro', alts.filter((_, i) => chosen.has(i)), alternatives), true);
+    go.disabled = true;
+    const list = mk('div', 'inv-alts');
+    alts.forEach((a, i) => {
+      const b = mk('button', 'ch'); b.type = 'button'; b.dataset.alt = String(i); b.setAttribute('aria-pressed', 'false');
+      const paint = () => { const on = chosen.has(i); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); b.textContent = `${on ? '✓ ' : ''}${cap(dayFull(a.d))}, ${hhmm(a.s)}–${hhmm(a.e)}`; };
+      b.addEventListener('click', () => { chosen.has(i) ? chosen.delete(i) : chosen.add(i); paint(); go.disabled = !chosen.size; });
+      paint(); list.append(b);
+    });
+    c.append(list, invActions(go, invBtn('Indietro', home)));
+  });
+  home();
+}
+
+/** La risposta da mandare indietro: stesso componente della proposta. `back` riporta alla scelta (nessuno dopo «Accetta»). */
+function replyStage(sh, inv, answer, alts, back) {
+  const build = () => makeReply(inv, { answer, alternatives: alts, from: myName() }, { id: build.id ||= newId(), now: Date.now() });
+  const textNow = () => { const r = build(); return r ? inviteText(r, { baseUrl: baseUrl() }) : ''; };
+  sh.stage((c) => {
+    const who = inv.from || 'chi te l\'ha mandata';
+    const lead = answer === 'si' ? 'Fatto: è nel tuo piano.' : answer === 'no' ? 'Rispondi che non riesci.' : 'Rispondi con queste fasce.';
+    c.append(mk('p', 'n-what', lead), mk('p', 'n-why', `Per dirlo a ${who} manda questo messaggio: scegli Condividi o Copia.`));
+    const msg = msgPreview(textNow());
+    const refresh = () => fillMsg(msg, textNow());
+    if (!myName()) c.append(nameField(refresh));
+    c.append(msg);
+    const row = shareRow(textNow, {
+      guard: needName(() => c.querySelector('.inv-name')),
+      onSent: (how) => {
+        if (answer !== 'si') upsertInvite({ id: inv.id, role: 'ricevuta', itemId: null, title: cleanTxt(inv.t, 80), to: '', from: inv.from, at: Date.now(), status: answer });
+        if (how === 'copied') toast('Copiato. Incollalo nella chat.');
+        dismissNotice('invito');
+      },
+    });
+    row.append(invBtn(answer === 'si' ? 'Non ora' : 'Indietro', () => (answer === 'si' || !back ? dismissNotice('invito') : back())));
+    c.append(row);
+  });
+}
+
+// ---- 3. arriva la risposta
+function showAnswerCard(rep) {
+  const rec = inviteRec(rep.re);
+  if (!rec || rec.role !== 'inviata') {
+    notice({ key: 'invito', what: 'Questa risposta non è per una proposta di questo Tempo.', why: 'Non trovo la proposta a cui risponde: forse l\'hai mandata da un altro telefono, o l\'hai dimenticata.', next: 'Non ho cambiato niente.' });
+    return;
+  }
+  if (rec.status === 'spostata' && rep.ans !== 'si') { notice({ key: 'invito', what: 'Hai già risposto a questa.', why: 'Hai spostato l\'impegno in un\'altra fascia.', next: 'Non ho cambiato niente.' }); return; }
+  const tz = myTz();
+  const item = rec.itemId ? state.items.find((x) => x.id === rec.itemId) : null;
+  const who = rep.from || 'Chi ha risposto';
+  const slot = localSlot(rep, tz) || { d: rep.d, s: rep.s, e: rep.e };
+  const label = `${rec.title || rep.t} · ${dayFull(slot.d)}, ${hhmm(slot.s)}–${hhmm(slot.e)}`;
+  const sh = inviteShell();
+  if (!sh) return;
+  // mostrare la carta non cambia niente: lo stato si segna solo quando tocchi un'azione
+  const mark = (status) => { const r = inviteRec(rec.id) || rec; if (r.status === 'attesa') upsertInvite({ ...r, status, at: r.at }); renderAll(); };
+  const seen = (status) => { mark(status); dismissNotice('invito'); };
+  if (rep.ans === 'si') {
+    sh.stage((c) => {
+      c.append(mk('p', 'n-what', `${who} ha accettato: ${label}.`), mk('p', 'n-why', 'Non ho cambiato niente nel tuo piano.'));
+      c.append(invActions(invBtn('Va bene', () => seen('si'), true)));
+    });
+    return;
+  }
+  const alts = rep.ans === 'altro' ? rep.alt.map((a) => ({ ...(localSlot({ ...a, e: a.s + (rep.e - rep.s) }, tz) || a), ts: a.ts })) : [];
+  const status = alts.length ? 'altro' : 'no';
+  const drop = (sure) => {
+    const cur = state.items.find((x) => x.id === item?.id);
+    if (!cur) { seen(status); return; }
+    const changed = Number.isFinite(rec.s) && rec.d && (cur.date !== rec.d || cur.start !== rec.s || cleanTxt(cur.title, 80) !== rec.title);
+    if (changed && !sure) {
+      sh.stage((c) => {
+        c.append(mk('p', 'n-what', `Da allora hai cambiato questo impegno: ora è «${cur.title}», ${cur.date ? dayFull(cur.date) : 'senza giorno'}${cur.start != null ? ', ' + hhmm(cur.start) : ''}.`), mk('p', 'n-why', 'Vuoi toglierlo lo stesso?'));
+        c.append(invActions(invBtn('Sì, toglilo', () => drop(true), true), invBtn('Tienilo', () => seen(status))));
+      });
+      return;
+    }
+    mark(status);
+    const { undoId } = pipeline('Impegno tolto', [{ action: 'delete', id: cur.id }]);
+    dismissNotice('invito');
+    if (undoId) toast(`${shortTitle(cur.title)}: tolto dal piano.`, undoAction(undoId));
+  };
+  if (!alts.length) {
+    sh.stage((c) => {
+      c.append(mk('p', 'n-what', `${who} non riesce.`), mk('p', 'n-why', item ? `${item.title} è ancora nel tuo piano.` : 'L\'impegno non è più nel tuo piano.'));
+      c.append(item ? invActions(invBtn('Togli dal piano', () => drop(false), true), invBtn('Tieni', () => seen(status))) : invActions(invBtn('Ho visto', () => seen(status), true)));
+    });
+    return;
+  }
+  sh.stage((c) => {
+    c.append(mk('p', 'n-what', `${who} propone invece:`), mk('p', 'n-why', item ? 'Scegli una fascia: sposto il tuo impegno lì. Puoi annullare.' : 'L\'impegno non è più nel tuo piano.'));
+    if (!item) { c.append(invActions(invBtn('Ho visto', () => seen(status), true))); return; }
+    const list = mk('div', 'inv-alts');
+    alts.forEach((a, i) => {
+      const b = mk('button', 'ch', `${cap(dayFull(a.d))}, ${hhmm(a.s)}–${hhmm(a.e)}`); b.type = 'button'; b.dataset.alt = String(i);
+      b.addEventListener('click', () => moveToAlt(sh, inviteRec(rec.id) || rec, item, a));
+      list.append(b);
+    });
+    c.append(list, invActions(invBtn('Lascia com\'è', () => seen(status))));
+  });
+}
+/** Sposta il tuo impegno nella fascia scelta (pipeline, con Annulla) e offre la conferma da mandare. */
+function moveToAlt(sh, rec, item, a) {
+  const { undoId } = pipeline('Impegno spostato', [{ action: 'move', id: item.id, date: a.d, start_time: hhmm(a.s) }]);
+  if (!undoId) { toast('Non sono riuscito a spostarlo. Il piano è com\'era.'); return; }
+  upsertInvite({ ...rec, status: 'spostata' });
+  renderAll();
+  const w = whereIs(item.id);
+  toast(`${shortTitle(item.title)}: spostato${w ? ' a ' + w.text : ''}.`, undoAction(undoId));
+  const id = newId();
+  const conf = () => makeInvite({ title: item.title, date: a.d, start: a.s, end: Math.min(1440, a.s + (item.duration || 60)), tz: myTz(), from: myName() }, { id, now: Date.now() });
+  const textNow = () => { const x = conf(); return x ? inviteText(x, { baseUrl: baseUrl() }) : ''; };
+  sh.stage((c) => {
+    c.append(mk('p', 'n-what', 'Spostato. Vuoi mandare la conferma?'), mk('p', 'n-why', `${rec.to || 'Chi ha risposto'} la vede come nuova proposta e tocca «Accetta».`));
+    const msg = msgPreview(textNow());
+    if (!myName()) c.append(nameField(() => fillMsg(msg, textNow())));
+    c.append(msg);
+    const row = shareRow(textNow, {
+      guard: needName(() => c.querySelector('.inv-name')),
+      onSent: (how) => {
+        upsertInvite({ id, role: 'inviata', itemId: item.id, title: cleanTxt(item.title, 80), to: rec.to, from: '', at: Date.now(), status: 'attesa', d: a.d, s: a.s });
+        renderAll();
+        if (how === 'copied') toast('Copiato. Incollalo nella chat.');
+        dismissNotice('invito');
+      },
+    });
+    row.append(invBtn('Non ora', () => dismissNotice('invito')));
+    c.append(row);
+  });
+}
+
+// ---- 4. impostazioni
+let invForgetAsk = false;
+function proposalSettingsHtml() {
+  const row = invForgetAsk
+    ? `<div class="row"><span class="lbl">Dimenticare le proposte?<small>Le risposte che arrivano non saranno più riconosciute.</small></span><button type="button" class="btn danger" id="inv-forget-yes">Dimentica</button><button type="button" class="btn" id="inv-forget-no">Tengo</button></div>`
+    : `<div class="row"><span class="lbl">Dimentica le proposte<small>quelle mandate e quelle ricevute</small></span><button type="button" class="btn" id="inv-forget">Dimentica</button></div>`;
+  return `<div class="group"><h2>Proposte</h2>
+      <div class="card">
+        <div class="row"><label for="inv-name">Come ti firmi<small>compare nelle proposte che mandi</small></label><input type="text" id="inv-name" class="wide" value="${esc(myName())}" maxlength="40" autocomplete="off" autocapitalize="words" placeholder="Il tuo nome"></div>
+        ${row}
+      </div>
+      <p class="note">Una proposta entra nel piano di chi la riceve solo se tocca «Accetta».</p>
+    </div>`;
+}
+
 // ---------------------------------------------------------------- avvio
+lastSavedOpenAt = state.stats.lastOpenAt || 0;
 noteOpen(state, Date.now()); // 7 giorni o più dall'ultima apertura: «Bentornato» (e allarmi in pausa finché non rispondi)
 replan();
 save(state);
@@ -2891,6 +3875,11 @@ syncSaveAlert();
 renderAll();
 renderDayView(true);
 if (!state.onboarded) openOnboarding();
+if (brokenData) showBrokenNotice(brokenData);
+try { // una bozza messa da parte prima di aggiornare l'app
+  const draftText = sessionStorage.getItem('tempo.bozza');
+  if (draftText) { sessionStorage.removeItem('tempo.bozza'); $('#input').value = draftText; $('#input').dispatchEvent(new Event('input')); }
+} catch {}
 // account: sincronizza all'avvio, quando torni sull'app e ogni 5 minuti mentre è aperta
 if (state.settings.cloudToken) { setTimeout(() => runSync(), 1200); native.cloud({ url: state.settings.cloudUrl || DEFAULT_CLOUD_URL, token: state.settings.cloudToken }); }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(300); });
@@ -2903,6 +3892,8 @@ native.onIntent((e) => { if (e.kind === 'tell' && e.text) send(String(e.text).sl
   if (said) { history.replaceState(null, '', location.pathname); setTimeout(() => send(said.slice(0, 500)), 300); }
   if (q.get('open') === 'recap') { history.replaceState(null, '', location.pathname); openRecap(); }
 }
+readInviteHash(); // #invito=… (un link ricevuto): si legge una volta, poi l'indirizzo torna pulito
+addEventListener('hashchange', readInviteHash);
 // i dati non devono essere cancellati dal browser quando lo spazio scarseggia: lo si chiede una volta
 if (!state.settings.persistAsked) {
   state.settings.persistAsked = true;
@@ -2914,9 +3905,35 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (hadController && !reloaded && !busy) { reloaded = true; location.reload(); }
+    if (!hadController || reloaded) return;
+    const typed = $('#input').value.trim();
+    const sheetOpen = !$('#sheet').hidden || settingsOpen;
+    if (!busy && !typed && !sheetOpen) { reloaded = true; location.reload(); return; }
+    // c'è qualcosa in corso: non si ricarica da soli, si chiede
+    notice({
+      key: 'versione', sticky: true, host: 'top',
+      what: 'C\'è una versione nuova di Tempo.',
+      next: 'Aggiornare richiede un secondo: il testo che stai scrivendo resta qui.',
+      action: { label: 'Aggiorna ora', fn: () => {
+        try { const v = $('#input').value; if (v.trim()) sessionStorage.setItem('tempo.bozza', v); } catch {}
+        reloaded = true; location.reload();
+      }, keep: true },
+    });
   });
   navigator.serviceWorker.register('sw.js').then((r) => r.update()).catch(() => {});
 }
 // per i test
+watchSurfaces();
+/** Le file di chip che scorrono di lato sfumano sul bordo dove continuano (solo se c'è altro da vedere). */
+function fadeChips(root = document) {
+  root.querySelectorAll('.chips-x').forEach((el) => {
+    el.style.setProperty('--fr', el.scrollLeft + el.clientWidth < el.scrollWidth - 4 ? '28px' : '0px');
+    el.style.setProperty('--fl', el.scrollLeft > 4 ? '28px' : '0px');
+  });
+}
+let fadeRaf = 0;
+const fadeSoon = () => { cancelAnimationFrame(fadeRaf); fadeRaf = requestAnimationFrame(() => fadeChips()); };
+document.addEventListener('scroll', (e) => { if (e.target.classList?.contains('chips-x')) fadeChips(e.target.parentNode); }, true);
+window.addEventListener('resize', fadeSoon);
+for (const sel of ['#sheet-form', '#focus-ctl', '#settings']) { const el = $(sel); if (el) new MutationObserver(fadeSoon).observe(el, { childList: true, subtree: true }); }
 window.__tempo = { state, get plan() { return plan; }, send, replan, renderAll, openOverview, openDay };
