@@ -1,8 +1,8 @@
 // Cache di tempo studio per l'uso offline. Aggiorna VERSION a ogni rilascio e aggiungi qui i file nuovi.
-const VERSION = 'tempo-studio-v1';
+const VERSION = 'tempo-studio-v2';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png',
-  'js/app.js', 'js/store.js', 'js/chat.js', 'js/share.js', 'js/hash.js', 'js/audio.js', 'js/ai.js', 'js/covers.js', 'js/copy.js', 'js/util.js',
+  'js/app.js', 'js/store.js', 'js/chat.js', 'js/share.js', 'js/hash.js', 'js/audio.js', 'js/ai.js', 'js/covers.js', 'js/copy.js', 'js/util.js', 'js/icons.js',
 ];
 
 self.addEventListener('install', (e) => {
