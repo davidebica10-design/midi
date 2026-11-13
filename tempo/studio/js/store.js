@@ -36,7 +36,7 @@ export function sanitizeState(raw) {
   const withId = (list) => arr(list).filter((x) => x && typeof x === 'object' && sid(x.id));
   s.me = { name: str(s.me?.name, 40), phone: str(s.me?.phone, 20) };
   s.ai = { base: str(s.ai?.base, 200), key: str(s.ai?.key, 200), model: str(s.ai?.model, 80) };
-  s.tracks = withId(s.tracks).map((t) => ({ id: t.id, title: str(t.title, 80) || 'senza titolo', artist: str(t.artist, 40), stage: num(t.stage, 0, STAGES.length - 1, 0) | 0, createdAt: time(t.createdAt, Date.now()) }));
+  s.tracks = withId(s.tracks).map((t) => ({ id: t.id, title: str(t.title, 80) || 'senza titolo', artist: str(t.artist, 40), stage: num(t.stage, 0, STAGES.length - 1, 0) | 0, createdAt: time(t.createdAt, Date.now()), sharedAt: t.sharedAt ? time(t.sharedAt, null) : null }));
   const tids = new Set(s.tracks.map((t) => t.id));
   s.versions = withId(s.versions).filter((v) => tids.has(v.trackId)).map((v) => ({
     id: v.id, trackId: v.trackId, n: num(v.n, 1, 999, 1) | 0, fileName: str(v.fileName, 120), size: num(v.size, 0, 1e11),
@@ -134,7 +134,7 @@ function addLog(s, trackId, kind, who, text, at = Date.now()) {
 }
 
 export function addTrack(s, { title, artist }, now = Date.now()) {
-  const t = { id: uid(), title: str(title, 80).trim() || 'senza titolo', artist: str(artist, 40).trim(), stage: 0, createdAt: now };
+  const t = { id: uid(), title: str(title, 80).trim() || 'senza titolo', artist: str(artist, 40).trim(), stage: 0, createdAt: now, sharedAt: null };
   s.tracks.unshift(t);
   addLog(s, t.id, 'brano', s.me.name, 'brano creato', now);
   return t;
@@ -270,6 +270,39 @@ export function applyOps(s, tid, ops, now = Date.now()) {
 
 export const todayKey = (now = Date.now()) => dateKey(now);
 
+// ---- condividi: una foto dello stato del brano, da mandare al collaboratore
+/** Dati compatti per il link di stato. `since` = quando era partito il link precedente (per «novità»). */
+export function snapshotOf(s, tid, { audio = null, now = Date.now() } = {}) {
+  const t = trackOf(s, tid);
+  if (!t) return null;
+  return {
+    v: 1,
+    k: t.id,
+    t: t.title,
+    w: t.artist,
+    by: s.me.name,
+    p: s.me.phone,
+    st: t.stage,
+    at: now,
+    sn: t.sharedAt || null,
+    a: audio || undefined,
+    vs: versionsOf(s, tid).slice(0, 12).map((v) => {
+      const ok = approvalsOf(s, v.id)[0];
+      return [v.n, v.fileName, v.duration, v.hash.slice(0, 12), ok ? ok.by : null, ok ? ok.at : null, v.addedAt];
+    }),
+    ts: openTasks(s, tid).slice(0, 12).map((k) => [k.who, k.what, k.due]),
+    lg: logOf(s, tid).slice(0, 12).map((l) => [l.at, l.who, l.kind, l.text]),
+  };
+}
+
+/** Novità rispetto al link precedente: voci di registro dopo `sn`. */
+export const changesSince = (snap) => (snap.sn ? snap.lg.filter((l) => l[0] > snap.sn) : []);
+
+export function markShared(s, tid, now = Date.now()) {
+  const t = trackOf(s, tid);
+  if (t) t.sharedAt = now;
+}
+
 // ---- demo: un brano finto per vedere com'è, senza audio sul dispositivo
 export function demoState(now = Date.now()) {
   const s = emptyState();
@@ -278,7 +311,7 @@ export function demoState(now = Date.now()) {
   const D = 24 * H;
   const hex = (seed) => { let x = seed, o = ''; while (o.length < 64) { x = (Math.imul(x, 1103515245) + 12345) >>> 0; o += x.toString(16).padStart(8, '0'); } return o.slice(0, 64); };
   const wave = (seed, len = 48) => Array.from({ length: len }, (_, i) => Math.round((0.35 + 0.65 * Math.abs(Math.sin(i * 0.37 + seed) * Math.cos(i * 0.11 + seed * 2))) * 100) / 100);
-  const t1 = { id: 'demo1', title: 'notte a ortigia', artist: 'midi', stage: 3, createdAt: now - 12 * D };
+  const t1 = { id: 'demo1', title: 'notte a ortigia', artist: 'midi', stage: 3, createdAt: now - 12 * D, sharedAt: now - 3 * D };
   const t2 = { id: 'demo2', title: 'vetro', artist: 'sara', stage: 1, createdAt: now - 4 * D };
   const t3 = { id: 'demo3', title: 'scirocco', artist: 'midi', stage: 5, createdAt: now - 40 * D };
   s.tracks = [t1, t2, t3];

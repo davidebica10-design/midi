@@ -3,13 +3,15 @@ import {
   load, save, saveFailed, snapshot, undo, canUndo, sanitizeState, emptyState, demoState, STAGES,
   trackOf, versionsOf, latestVersion, approvalsOf, openTasks, logOf, statusOf, findByHash, approvedVersion,
   addTrack, deleteTrack, addVersion, deleteVersion, setStage, toggleTask, renameTrack, applyOps,
+  snapshotOf, changesSince, markShared,
 } from './store.js';
 import { h, fmtDur, fmtDay, fmtTime, fmtDue, fmtSize, fmtPrint, extOf, count, dateKey } from './util.js';
 import { sha256 } from './hash.js';
 import { putAudio, deleteAudio, audioUrl, analyze } from './audio.js';
 import { parseChat, participants, extract, readChatFile, sampleChat } from './chat.js';
 import { aiExtract, aiReady, PRESETS } from './ai.js';
-import { encodeAsk, decodeAsk, askLink, askText, replyText, waLink, safeUrl } from './share.js';
+import { encodeAsk, decodeAsk, askLink, askText, replyText, waLink, safeUrl, encodeSnap, decodeSnap, snapLink, snapText } from './share.js';
+import { icon } from './icons.js';
 import { cover } from './covers.js';
 import { C, stageNum } from './copy.js';
 
@@ -33,7 +35,7 @@ function commit(label, fn) {
 }
 
 function route() {
-  const m = location.hash.match(/^#\/(t|ok)\/(.+)$/);
+  const m = location.hash.match(/^#\/(t|ok|s)\/(.+)$/);
   return m ? { name: m[1], arg: decodeURIComponent(m[2]) } : { name: 'lib' };
 }
 const go = (hash) => { if (location.hash !== hash) location.hash = hash; else render(); };
@@ -43,8 +45,10 @@ function render() {
   document.body.dataset.route = r.name;
   $app.replaceChildren();
   if (saveFailed()) $app.append(h('div', { class: 'alert', role: 'alert' }, C.saveFail));
-  if (r.name === 't' && trackOf(S, r.arg)) $app.append(trackView(trackOf(S, r.arg)));
+  // il dock sta fuori dalla vista: l'animazione d'entrata usa transform, che romperebbe position: fixed
+  if (r.name === 't' && trackOf(S, r.arg)) $app.append(trackView(trackOf(S, r.arg)), dock(trackOf(S, r.arg)));
   else if (r.name === 'ok') $app.append(artistView(r.arg));
+  else if (r.name === 's') $app.append(snapView(r.arg));
   else $app.append(libraryView());
   renderPlayer();
 }
@@ -56,7 +60,7 @@ function libraryView() {
   const open = S.tasks.filter((t) => !t.done).length;
   const waiting = S.tracks.filter((t) => statusOf(S, t.id).kind === 'attesa').length;
   return h('main', { class: 'view lib' },
-    topbar([h('div', { class: 'brand' }, h('b', {}, C.brand), h('span', {}, C.sub))], [iconBtn('⋯', C.settings, openSettings)]),
+    topbar([h('div', { class: 'brand' }, h('b', {}, C.brand), h('span', {}, C.sub))], [iconBtn('more', C.settings, openSettings)]),
     h('h1', { class: 'big' }, C.library, h('sup', { class: 'mono' }, count(S.tracks.length))),
     S.tracks.length
       ? h('p', { class: 'lede mono' }, `${count(waiting)} senza ok · ${count(open)} cose aperte`)
@@ -92,7 +96,7 @@ function trackView(t) {
   const tasks = openTasks(S, t.id);
 
   const view = h('main', { class: 'view track' },
-    topbar([h('button', { class: 'crumb mono', onclick: () => go('#/') }, `← ${C.back}`)], [iconBtn('⋯', 'opzioni brano', () => openTrackMenu(t))]),
+    topbar([h('button', { class: 'crumb mono', onclick: () => go('#/') }, icon('back', 16), C.back)], [iconBtn('more', 'opzioni brano', () => openTrackMenu(t))]),
     h('section', { class: 'hero' },
       h('div', { class: 'cover hero-cover' }, cover(t.id)),
       h('div', { class: 'hero-text' },
@@ -100,7 +104,7 @@ function trackView(t) {
         h('h1', { class: 'title' }, t.title),
         h('p', { class: 'muted' }, t.artist ? `con ${t.artist}` : 'da solo, per ora', ` · dal ${fmtDay(t.createdAt)}`),
         h('div', { class: 'row actions' },
-          h('button', { class: 'btn primary', disabled: !last, onclick: () => last && play(last) }, '▶ ', C.listen),
+          h('button', { class: 'btn light play-btn', disabled: !last, onclick: () => last && play(last) }, icon('play', 16), C.listen),
           h('button', { class: 'btn', disabled: !last, onclick: () => last && openAsk(t, last) }, C.askOk),
           h('button', { class: 'btn', onclick: () => pickAudio(t.id) }, C.addBounce)))),
 
@@ -129,10 +133,8 @@ function trackView(t) {
     ]),
 
     block('04', C.log, [
-      h('ol', { class: 'log mono' }, logOf(S, t.id).slice(0, 40).map((l) => h('li', { class: `k-${l.kind}` },
-        h('span', { class: 'when' }, `${fmtDay(l.at)} ${fmtTime(l.at)}`),
-        h('span', { class: 'who' }, l.who || '—'),
-        h('span', { class: 'what' }, l.text)))),
+      h('ol', { class: 'log mono' }, logOf(S, t.id).slice(0, 40).map((l) => logRow(l, !!t.sharedAt && l.at > t.sharedAt))),
+      t.sharedAt ? h('p', { class: 'mono muted small' }, `ultimo link condiviso: ${fmtDay(t.sharedAt)} ${fmtTime(t.sharedAt)}. evidenziato quello che è cambiato dopo.`) : null,
     ]),
   );
 
@@ -175,7 +177,7 @@ function versionRow(t, v) {
     h('span', { class: 'vside' },
       oks.length ? h('span', { class: 'chip ok mono', title: oks.map((a) => `${a.by} · ${fmtDay(a.at)}`).join('\n') }, `✓ ${oks[0].by || 'ok'}`)
         : h('button', { class: 'chip mono', onclick: () => openAsk(t, v) }, 'chiedi ok'),
-      iconBtn('⋯', `opzioni v${v.n}`, () => openVersionMenu(t, v), 'small')));
+      iconBtn('more', `opzioni v${v.n}`, () => openVersionMenu(t, v), 'small')));
 }
 
 function wave(peaks, on) {
@@ -269,7 +271,7 @@ function renderPlayer() {
     h('div', { class: 'pl-row' },
       h('button', { class: 'pl-cover', onclick: () => go(`#/t/${t.id}`), 'aria-label': `apri ${t.title}` }, cover(t.id)),
       h('div', { class: 'pl-text' }, h('b', {}, t.title), h('span', { class: 'mono muted' }, `v${v.n} · `, h('span', { class: 'pl-time' }, '0:00'), ` / ${fmtDur(v.duration)}`)),
-      h('button', { class: 'pl-btn', 'aria-label': 'riproduci o pausa', onclick: () => (player.audio.paused ? player.audio.play() : player.audio.pause()) }, '▶')));
+      h('button', { class: 'pl-btn', 'aria-label': 'riproduci', onclick: () => (player.audio.paused ? player.audio.play() : player.audio.pause()) }, h('span', { class: 'swap' }, icon('play', 18), icon('pause', 18)))));
   updatePlayer();
 }
 
@@ -277,7 +279,7 @@ function updatePlayer() {
   if ($player.hidden) return;
   const a = player.audio;
   const btn = $player.querySelector('.pl-btn');
-  if (btn) btn.textContent = a.paused ? '▶' : '❚❚';
+  if (btn) { btn.classList.toggle('is-playing', !a.paused); btn.setAttribute('aria-label', a.paused ? 'riproduci' : 'pausa'); }
   const seek = $player.querySelector('.seek');
   if (seek && a.duration && document.activeElement !== seek) seek.value = Math.round((a.currentTime / a.duration) * 1000);
   if (seek) seek.style.setProperty('--p', `${a.duration ? (a.currentTime / a.duration) * 100 : 0}%`);
@@ -290,7 +292,7 @@ function openAsk(t, v) {
   const audio = h('input', { class: 'field', type: 'url', inputmode: 'url', placeholder: 'https://… (drive, dropbox, wetransfer)', 'aria-label': 'link di ascolto facoltativo' });
   const preview = h('pre', { class: 'msg mono' });
   const ask = () => ({ key: t.id, title: t.title, artist: t.artist, n: v.n, fileName: v.fileName, hash: v.hash.slice(0, 16), audio: safeUrl(audio.value), phone: S.me.phone, by: S.me.name });
-  const link = () => askLink(location.href, encodeAsk(ask()));
+  const link = () => askLink(appBase(), encodeAsk(ask()));
   const refresh = () => { preview.textContent = askText(ask(), link()); };
   audio.addEventListener('input', refresh);
   refresh();
@@ -307,6 +309,141 @@ function openAsk(t, v) {
       h('button', { class: 'btn', onclick: () => copy(preview.textContent, 'messaggio copiato.') }, 'copia'),
       h('button', { class: 'btn ghost', onclick: () => { closeSheets(); location.hash = `#/ok/${encodeAsk(ask())}`; } }, 'anteprima')),
   ]);
+}
+
+// ---------------------------------------------------------------- condividi lo stato del brano
+/** Indirizzo dell'app senza query (?demo) né frammento: base dei link condivisi. */
+const appBase = () => `${location.origin}${location.pathname}`;
+const newsOf = (t) => (t.sharedAt ? logOf(S, t.id).filter((l) => l.at > t.sharedAt).length : 0);
+
+function dock(t) {
+  const news = newsOf(t);
+  return h('div', { class: 'dock' },
+    h('button', { class: 'btn primary dock-btn', onclick: () => openShare(t) },
+      icon('share', 18),
+      h('span', {}, t.artist ? `condividi con ${t.artist}` : 'condividi'),
+      news ? h('span', { class: 'dock-badge mono' }, `${count(news)} novità`) : null));
+}
+
+async function openShare(t) {
+  const versions = versionsOf(S, t.id);
+  const st = statusOf(S, t.id);
+  const tasks = openTasks(S, t.id);
+  const news = newsOf(t);
+  const audio = h('input', { class: 'field', type: 'url', inputmode: 'url', placeholder: 'https://… (drive, dropbox)', 'aria-label': 'link di ascolto facoltativo' });
+  const preview = h('pre', { class: 'msg mono' }, '…');
+  let link = '';
+  let payload = '';
+  let message = '';
+  const build = async () => {
+    const snap = snapshotOf(S, t.id, { audio: safeUrl(audio.value) });
+    payload = await encodeSnap(snap);
+    link = snapLink(appBase(), payload);
+    message = snapText(snap, link, news);
+    // nell'anteprima il link lungo si accorcia; nel messaggio vero resta intero
+    preview.replaceChildren(message.replace(link, ''), h('span', { class: 'msg-link' }, `${link.slice(0, link.indexOf('#') + 7)}… · ${link.length} caratteri`));
+  };
+  let timer = null;
+  audio.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(build, 200); });
+  const shared = (how) => {
+    markShared(S, t.id);
+    save(S);
+    closeSheets();
+    render();
+    toast(how);
+  };
+  const canShare = typeof navigator.share === 'function';
+  sheet(t.artist ? `condividi con ${t.artist}` : 'condividi', [
+    h('p', { class: 'muted' }, `un link con lo stato di «${t.title}». si apre dal telefono, senza account. ${t.artist || 'chi lo riceve'} vede versioni, ok, cose da fare e cosa è cambiato dall’ultima volta.`),
+    h('ul', { class: 'inside mono' },
+      h('li', {}, h('span', {}, count(versions.length)), ' versioni'),
+      h('li', {}, h('span', {}, st.ok ? `v${st.ok.version.n}` : '—'), ' approvata'),
+      h('li', {}, h('span', {}, count(tasks.length)), ' cose aperte'),
+      h('li', { class: news ? 'hot' : '' }, h('span', {}, t.sharedAt ? count(news) : 'prima'), t.sharedAt ? ' novità' : ' volta')),
+    h('label', { class: 'lab mono' }, 'link di ascolto · facoltativo'),
+    audio,
+    h('label', { class: 'lab mono' }, 'messaggio'),
+    preview,
+    h('div', { class: 'row' },
+      canShare ? h('button', { class: 'btn primary', onclick: async () => {
+        try { await navigator.share({ text: message }); shared('condiviso. la prossima volta vedrà solo le novità.'); } catch (e) { if (e?.name !== 'AbortError') toast('condivisione non riuscita. copia il link.'); }
+      } }, icon('share', 16), 'condividi…') : null,
+      h('button', { class: `btn${canShare ? '' : ' primary'}`, onclick: () => { window.open(waLink('', message), '_blank', 'noopener'); shared('aperto whatsapp. link segnato come inviato.'); } }, icon('chat', 16), 'whatsapp'),
+      h('button', { class: 'btn', onclick: async () => { await copy(link, 'link copiato.'); markShared(S, t.id); save(S); } }, icon('link', 16), 'copia'),
+      h('button', { class: 'btn ghost', onclick: () => { closeSheets(); location.hash = `#/s/${payload}`; } }, icon('eye', 16), 'anteprima')),
+    h('p', { class: 'muted small foot' }, 'è una foto di adesso: non si aggiorna da sola. quando cambia qualcosa, condividi di nuovo. niente server: tutto sta nel link.'),
+  ]);
+  await build();
+}
+
+// ---------------------------------------------------------------- pagina di stato (per il collaboratore)
+function snapView(payload) {
+  const main = h('main', { class: 'view snap' }, h('p', { class: 'mono muted loading' }, 'apro il link…'));
+  decodeSnap(payload).then((sn) => {
+    if (!sn) { main.replaceChildren(h('p', { class: 'mono muted' }, 'stato del brano'), h('h1', { class: 'title' }, 'mmh.'), h('p', {}, C.badLink)); return; }
+    const items = snapContent(sn);
+    const bar = items.pop();
+    main.replaceChildren(...items.filter(Boolean));
+    if (main.isConnected) main.after(bar);
+  });
+  return main;
+}
+
+function snapContent(sn) {
+  const last = sn.versions[0];
+  const ok = sn.versions.find((v) => v.okBy);
+  const isNew = (at) => !!(sn.since && at && at > sn.since);
+  const news = sn.since ? sn.log.filter((l) => l.at > sn.since) : [];
+  const ask = last ? { n: last.n, hash: last.hash, title: sn.title } : null;
+  const reply = waLink(sn.phone, `re: ${sn.title} · `);
+  return [
+    h('div', { class: 'brand small' }, h('b', {}, C.brand), h('span', {}, 'stato del brano')),
+    h('section', { class: 'hero' },
+      h('div', { class: 'cover hero-cover' }, cover(sn.key || sn.title)),
+      h('div', { class: 'hero-text' },
+        h('p', { class: 'mono muted' }, `brano · ${stageNum(sn.stage)} ${STAGES[sn.stage]}`),
+        h('h1', { class: 'title' }, sn.title),
+        h('p', { class: 'muted' }, [sn.by && `da ${sn.by}`, sn.artist && `con ${sn.artist}`].filter(Boolean).join(' · ') || ' '),
+        h('p', { class: 'mono muted small' }, `foto del ${fmtDay(sn.at)} alle ${fmtTime(sn.at)}`))),
+    h('div', { class: 'stages ro', role: 'img', 'aria-label': `fase ${stageNum(sn.stage)} di 06: ${STAGES[sn.stage]}` },
+      STAGES.map((name, i) => h('span', { class: `stage${i === sn.stage ? ' on' : ''}${i < sn.stage ? ' past' : ''}` }, h('span', { class: 'mono' }, stageNum(i)), h('span', {}, name)))),
+    news.length ? h('section', { class: 'block news' },
+      h('h2', { class: 'label mono' }, h('span', {}, '◆'), ` ${count(news.length)} novità dall’ultimo link`),
+      h('ol', { class: 'log mono' }, news.map((l) => logRow(l, true)))) : null,
+    block('01', C.now, [
+      ok ? h('p', { class: 'okline' }, h('span', { class: 'dot ok' }), `v${ok.n} approvata${ok.okBy ? ` da ${ok.okBy}` : ''}${ok.okAt ? ` · ${fmtDay(ok.okAt)}` : ''}`)
+        : h('p', { class: 'okline muted' }, h('span', { class: 'dot' }), last ? 'nessun ok ancora.' : 'niente da approvare.'),
+      ok && last && ok.n !== last.n ? h('p', { class: 'okline warn' }, h('span', { class: 'dot warn' }), `v${last.n} è più nuova dell’ok.`) : null,
+      sn.tasks.length ? h('ul', { class: 'tasks' }, sn.tasks.map((k) => h('li', { class: 'task ro' },
+        h('span', { class: 'check ro', 'aria-hidden': 'true' }),
+        h('span', { class: 'task-main' }, h('span', { class: 'task-who mono' }, '→ ', k.who || '?'), h('span', { class: 'task-what' }, k.what)),
+        k.due ? h('span', { class: 'task-due mono' }, fmtDue(k.due)) : null))) : h('p', { class: 'muted' }, C.nothingOpen),
+    ]),
+    block('02', C.versions, [
+      sn.versions.length ? h('ol', { class: 'versions' }, sn.versions.map((v) => h('li', { class: `vrow ro${v.okBy ? ' ok' : ''}` },
+        h('span', { class: 'vmain' },
+          h('span', { class: 'vn mono' }, `v${v.n}`),
+          h('span', { class: 'vbody' },
+            h('span', { class: 'vname' }, v.fileName || `versione ${v.n}`, isNew(v.addedAt) ? h('span', { class: 'badge-new mono' }, 'nuova') : null),
+            h('span', { class: 'vmeta mono' }, `${fmtDur(v.duration)} · #${fmtPrint(v.hash)}`))),
+        h('span', { class: 'vside' }, v.okBy ? h('span', { class: 'chip ok mono' }, h('span', {}, icon('check', 12)), v.okBy) : h('span', { class: 'chip mono quiet' }, 'da sentire'))))) : h('p', { class: 'muted' }, 'nessun bounce, per ora.'),
+      sn.audio ? h('a', { class: 'link', href: sn.audio, target: '_blank', rel: 'noopener noreferrer' }, 'apri il link di ascolto ↗') : null,
+    ]),
+    sn.log.length ? block('03', C.log, [h('ol', { class: 'log mono' }, sn.log.map((l) => logRow(l, isNew(l.at))))]) : null,
+    h('p', { class: 'mono muted small foot' }, 'questa è una foto: non si aggiorna da sola. per vedere le novità chiedi un link nuovo.'),
+    h('div', { class: 'dock' },
+      last && (!ok || ok.n !== last.n)
+        ? h('a', { class: 'btn primary dock-btn', href: waLink(sn.phone, replyText('ok', ask)), target: '_blank', rel: 'noopener noreferrer' }, icon('check', 18), h('span', {}, `approvo v${last.n}`))
+        : h('a', { class: 'btn primary dock-btn', href: reply, target: '_blank', rel: 'noopener noreferrer' }, icon('chat', 18), h('span', {}, sn.by ? `rispondi a ${sn.by}` : 'rispondi su whatsapp')),
+      last && (!ok || ok.n !== last.n) ? h('a', { class: 'icon-btn big', href: reply, target: '_blank', rel: 'noopener noreferrer', 'aria-label': 'rispondi su whatsapp', title: 'rispondi su whatsapp' }, icon('chat', 20)) : null),
+  ];
+}
+
+function logRow(l, fresh) {
+  return h('li', { class: `k-${l.kind}${fresh ? ' fresh' : ''}` },
+    h('span', { class: 'when' }, `${fmtDay(l.at)} ${fmtTime(l.at)}`),
+    h('span', { class: 'who' }, l.who || '—'),
+    h('span', { class: 'what' }, l.text));
 }
 
 // ---------------------------------------------------------------- pagina dell'artista
@@ -479,7 +616,7 @@ function openVersionMenu(t, v) {
       h('dt', {}, 'caricata'), h('dd', {}, `${fmtDay(v.addedAt)} ${fmtTime(v.addedAt)}`),
       h('dt', {}, 'sha-256'), h('dd', { class: 'small' }, v.hash)),
     h('div', { class: 'row' },
-      h('button', { class: 'btn', onclick: () => { closeSheets(); play(v); } }, '▶ riproduci'),
+      h('button', { class: 'btn', onclick: () => { closeSheets(); play(v); } }, icon('play', 15), 'riproduci'),
       h('button', { class: 'btn', onclick: () => { closeSheets(); openAsk(t, v); } }, C.askOk),
       h('button', { class: 'btn ghost', onclick: () => copy(v.hash, 'impronta copiata.') }, 'copia impronta')),
     h('label', { class: 'lab mono' }, 'ok a mano (detto a voce, in studio…)'),
@@ -553,24 +690,29 @@ function exportBackup() {
 function topbar(left, right) {
   return h('header', { class: 'topbar' }, h('div', { class: 'tb-l' }, left), h('div', { class: 'tb-r' }, right));
 }
-function iconBtn(glyph, label, onclick, extra = '') {
-  return h('button', { class: `icon-btn ${extra}`, 'aria-label': label, title: label, onclick }, glyph);
+function iconBtn(name, label, onclick, extra = '') {
+  return h('button', { class: `icon-btn ${extra}`, 'aria-label': label, title: label, onclick }, icon(name, extra === 'small' ? 16 : 18));
 }
 
 function sheet(title, kids) {
-  closeSheets();
+  closeSheets(true);
   const panel = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
-    h('div', { class: 'sheet-head' }, h('h2', { class: 'sheet-title' }, title), iconBtn('×', 'chiudi', closeSheets)),
+    h('div', { class: 'sheet-head' }, h('h2', { class: 'sheet-title' }, title), iconBtn('x', 'chiudi', closeSheets)),
     h('div', { class: 'sheet-body' }, kids));
   const wrap = h('div', { class: 'sheet-wrap', onclick: (e) => { if (e.target === wrap) closeSheets(); } }, panel);
   $sheets.append(wrap);
   document.body.classList.add('sheet-open');
-  requestAnimationFrame(() => wrap.classList.add('in'));
+  requestAnimationFrame(() => { wrap.classList.add('in'); if (!panel.contains(document.activeElement)) panel.querySelector('.sheet-head .icon-btn')?.focus({ preventScroll: true }); });
   return panel;
 }
-function closeSheets() {
-  $sheets.replaceChildren();
+// uscita più corta e piccola dell'entrata; istantanea quando un foglio ne sostituisce un altro
+function closeSheets(instant = false) {
   document.body.classList.remove('sheet-open');
+  const wraps = [...$sheets.children];
+  if (!wraps.length) return;
+  if (instant || matchMedia('(prefers-reduced-motion: reduce)').matches) { $sheets.replaceChildren(); return; }
+  wraps.forEach((w) => { w.classList.remove('in'); w.classList.add('out'); });
+  setTimeout(() => wraps.forEach((w) => w.remove()), 220);
 }
 function confirmSheet(q, detail, yes) {
   sheet(q, [h('p', { class: 'muted' }, detail), h('div', { class: 'row' },
