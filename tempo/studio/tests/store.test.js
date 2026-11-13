@@ -152,3 +152,47 @@ test('link di ok: andata e ritorno, e niente roba strana', () => {
   assert.equal(back[0].op.version, 'a1b2c3d4e5f6');
   assert.match(waLink('393331234567', 'ciao'), /^https:\/\/wa\.me\/393331234567\?text=ciao$/);
 });
+
+// ---- condividi: foto dello stato del brano
+import { snapshotOf, changesSince, markShared } from '../js/store.js';
+import { encodeSnap, decodeSnap, snapLink, snapText } from '../js/share.js';
+import { b64urlEncode } from '../js/util.js';
+
+test('foto del brano: andata e ritorno compressa, con novità dall’ultimo link', async () => {
+  const { s, t } = track();
+  markShared(s, t.id, NOW - 3.5e6); // dopo v1, prima di v2
+  applyOps(s, t.id, [{ action: 'approve', version: 'v2', by: 'midi', at: NOW }]);
+  const snap = snapshotOf(s, t.id, { audio: 'https://dropbox.com/x', now: NOW });
+  assert.ok(changesSince(snap).length >= 2); // v2 caricata + ok
+  const enc = await encodeSnap(snap);
+  assert.equal(enc[0], 'z');
+  const sn = await decodeSnap(enc);
+  assert.equal(sn.title, 'notte a ortigia');
+  assert.equal(sn.versions[0].n, 2);
+  assert.equal(sn.versions[0].okBy, 'midi');
+  assert.equal(sn.versions[1].okBy, null);
+  assert.equal(sn.since, NOW - 3.5e6);
+  assert.equal(sn.audio, 'https://dropbox.com/x');
+  assert.match(snapLink('https://x.it/app/#/t/abc', enc), /^https:\/\/x\.it\/app\/#\/s\/z/);
+  assert.match(snapText(snap, 'L', 2), /02 novità/);
+});
+
+test('foto ostile: campi ripuliti o scartati', async () => {
+  const evil = { v: 1, k: '<script>', t: 'x'.repeat(900), p: 'chiamami', st: 99, a: 'javascript:alert(1)',
+    vs: [[1, '<b>', 'lungo', 'zz'], [2, 'ok.wav', 10, 'abcdef012345', '<img>', 'ieri', 5]],
+    ts: [[1, ''], ['midi', 'rifare', 'domani']], lg: [[1, 'a', 'rm', 'testo'], ['x', 'b', 'ok', 'y']] };
+  const sn = await decodeSnap(`j${b64urlEncode(JSON.stringify(evil))}`);
+  assert.equal(sn.key, null);
+  assert.equal(sn.title.length, 80);
+  assert.equal(sn.phone, null);
+  assert.equal(sn.stage, 0);
+  assert.equal(sn.audio, null);
+  assert.equal(sn.versions.length, 1); // la prima ha impronta non valida
+  assert.equal(sn.versions[0].okAt, null);
+  assert.equal(sn.tasks.length, 1);
+  assert.equal(sn.tasks[0].due, null);
+  assert.equal(sn.log.length, 1);
+  assert.equal(sn.log[0].kind, 'nota');
+  assert.equal(await decodeSnap('zzzz-non-deflate'), null);
+  assert.equal(await decodeSnap(`j${b64urlEncode(JSON.stringify({ v: 2, t: 'x' }))}`), null);
+});
