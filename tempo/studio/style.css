@@ -1,23 +1,24 @@
 /* tempo studio — nero, carta, un solo arancione. titoli grandi, etichette mono, niente decorazioni. */
 :root {
-  --bg: #0b0b0b;
-  --bg2: #141414;
-  --bg3: #1c1c1c;
-  --line: #242424;
-  --line2: #343434;
-  --text: #f1f0ec;
-  --muted: #8d8c87;
+  --bg: #0e0e0e;
+  --bg2: #141514;
+  --bg3: #1c1d1c;
+  --line: #252724;
+  --line2: #343633;
+  --sep: #292a28;
+  --text: #efeeeb;
+  --muted: #888982;
   --paper: #ecebe6;
   --ink: #141414;
-  --signal: #ff5b14;
-  --signal-ink: #1a0800;
+  --signal: #ff5b0b;
+  --signal-ink: #0b0c0b;
   --warn: #ffcf1f;
   --r: 6px;
   --r2: 10px;
   --pad: 20px;
-  --sans: 'Inter', -apple-system, system-ui, sans-serif;
-  --display: 'Inter Tight', 'Inter', -apple-system, system-ui, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro', system-ui, sans-serif;
+  --display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --ease: cubic-bezier(.16, 1, .3, 1);
   --sheet: cubic-bezier(.32, .72, 0, 1);
   --safe-b: env(safe-area-inset-bottom, 0px);
@@ -109,10 +110,8 @@ p { margin: 0 0 12px; }
 .stage { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 9px 8px 8px; border-radius: var(--r); background: var(--bg2); border: 1px solid var(--line); text-align: left; min-width: 0; transition: background .2s, border-color .2s; }
 .stage span:last-child { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .stage .mono { font-size: 11px; color: var(--muted); }
-.stage.past { border-color: var(--line2); }
-.stage.past .mono { color: var(--text); }
-.stage.on { background: var(--paper); border-color: var(--paper); color: var(--ink); }
-.stage.on .mono { color: var(--ink); }
+.stage.on { background: var(--signal); border-color: var(--signal); color: var(--signal-ink); }
+.stage.on .mono { color: var(--signal-ink); }
 @media (max-width: 420px) { .stage span:last-child { font-size: 11px; } .stage { padding: 8px 6px; } }
 
 .block { border-top: 1px solid var(--line); padding: 16px 0 22px; }
@@ -311,3 +310,83 @@ body.has-player .dock { bottom: calc(68px + var(--safe-b)); padding-bottom: 10px
 .vrow.ro .vmain { cursor: default; }
 .loading { padding-top: 40vh; text-align: center; }
 .msg-link { display: block; margin-top: 2px; color: var(--signal); word-break: normal; overflow-wrap: anywhere; }
+
+
+/* ================================================================ design figma (jjY3tGW2f8oXmrgpLdBekL · 5:78, 5:100, 5:216) */
+/* ---- logo «tempo•» centrato: sf pro bold 32, tracking -1.8 */
+/* nel frame figma il logo sta a 79.5 dall'alto, barra di stato compresa: tolgo la safe area che body già applica */
+.brandbar { display: grid; grid-template-columns: 44px 1fr 44px; align-items: start; height: 38px; margin-top: max(25.5px, calc(79.5px - env(safe-area-inset-top, 0px))); }
+.bb-l, .bb-r { display: flex; align-items: center; margin-top: -3px; }
+.bb-r { justify-content: flex-end; }
+.logo-btn { justify-self: center; margin: 0; padding: 0; background: none; border: 0; color: var(--text); font: inherit; }
+.logo { display: inline-flex; align-items: flex-start; font: 700 32px/normal var(--display); letter-spacing: -1.8px; color: var(--text); }
+.logo-dot { display: block; width: 11px; height: 11px; margin-left: 1.5px; align-self: flex-start; margin-top: 16px; }
+.icon-btn.ghost { width: 44px; height: 44px; background: transparent; border-color: transparent; color: var(--muted); }
+
+/* ---- libreria: griglia 2 colonne, celle 149×140.7, raggio 28, spazio 20, margini 37 */
+.view.lib { padding: 0 37px calc(140px + var(--safe-b)); }
+.lib .grid { margin-top: 77.5px; padding-right: 1px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+@media (min-width: 640px) { .lib .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 960px) { .lib .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.lib .tile { display: block; }
+.lib .tile .cover { aspect-ratio: 149 / 140.67; border-radius: 28px; margin: 0; }
+.lib-empty { display: flex; justify-content: center; padding-top: 134.4px; }
+.tile-empty { width: 136.8px; height: 136.8px; border-radius: 28px; background: var(--bg2); border: 1px solid var(--line); transition-property: transform, border-color; transition-duration: 150ms; transition-timing-function: ease-out; }
+.tile-empty:active { transform: scale(.96); }
+
+/* ---- pulsante + in basso: 110×55, 49px dal fondo, croce che ruota in 3d */
+.fab { position: fixed; left: 50%; bottom: max(49px, calc(var(--safe-b) + 15px)); z-index: 16; width: 109.964px; height: 54.9824px; margin-left: -54.982px; padding: 0; border: 1px solid transparent; border-radius: 27.5px; background: none; overflow: hidden; box-shadow: inset 0 0 0 1px oklch(1 0 0 / .12); backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); transition-property: transform; transition-duration: 150ms; transition-timing-function: ease-out; }
+.fab:active { transform: scale(.96); }
+.fab-bg { position: absolute; inset: 0; display: block; pointer-events: none; }
+.fab-space { position: absolute; left: 43.71px; top: 16.23px; width: 22.534px; height: 22.534px; perspective: 600px; transform-style: preserve-3d; }
+.fab-cross { display: block; transform-origin: 50% 50%; }
+body.has-player .fab { bottom: calc(80px + var(--safe-b)); }
+@property --rx { syntax: '<angle>'; initial-value: 0rad; inherits: false; }
+@property --ry { syntax: '<angle>'; initial-value: 0rad; inherits: false; }
+@property --rz { syntax: '<angle>'; initial-value: 0rad; inherits: false; }
+@keyframes fab-rx { 0% { animation-timing-function: cubic-bezier(.5, 0, .5, 1); --rx: 0rad; } 50% { animation-timing-function: cubic-bezier(.5, 0, .5, 1); --rx: -0.041rad; } 100% { --rx: -0.223rad; } }
+@keyframes fab-ry { 0% { animation-timing-function: cubic-bezier(.5, 0, .5, 1); --ry: 0rad; } 50% { animation-timing-function: cubic-bezier(.5, 0, .5, 1); --ry: -0.706rad; } 100% { --ry: 0.552rad; } }
+@keyframes fab-rz { 0% { --rz: 0rad; } 50% { animation-timing-function: cubic-bezier(.5, 0, .5, 1); --rz: 0rad; } 100% { --rz: 5.794rad; } }
+@media (prefers-reduced-motion: no-preference) {
+  .fab-cross { transform: rotateX(var(--rx)) rotateY(var(--ry)) rotateZ(var(--rz)); animation: fab-rx 2s linear infinite alternate, fab-ry 2s linear infinite alternate, fab-rz 2s linear infinite alternate; }
+}
+
+/* ---- brano: copertina 224 raggio 42, linguetta in vetro 55×110 che sporge di 28 */
+.hero-f { display: flex; flex-direction: column; align-items: center; margin-top: 46.5px; }
+.hero-cover-f { position: relative; width: 224.448px; }
+.cover-xl { width: 224.448px; height: 224.448px; aspect-ratio: auto; border-radius: 42px; }
+.tab-glass { position: absolute; left: 196.95px; top: 57.24px; width: 54.982px; height: 109.964px; padding: 0; border: 1px solid transparent; border-radius: 27.5px; overflow: hidden; background: none; box-shadow: inset 0 0 0 1px oklch(1 0 0 / .14); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4); transition-property: transform; transition-duration: 150ms; transition-timing-function: ease-out; }
+.tab-glass::after { content: ''; position: absolute; inset: -6px; }
+.tab-glass:active { transform: scale(.96); }
+.tab-rot { position: absolute; left: 50%; top: 50%; width: 109.964px; height: 54.9824px; transform: translate(-50%, -50%) rotate(90deg); pointer-events: none; }
+.tab-rot img { display: block; }
+.track-head { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 57.7px; max-width: 318.5px; margin: 0 auto; }
+.track-title { margin: 0; font: 600 16px/1.2 var(--display); letter-spacing: -.3px; text-align: center; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-meta { margin: 3px 0 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 11px; text-align: center; }
+
+/* ---- fasi: 6 × 49.9×46.3, spazio 3.8, raggio 4.9 */
+.stages-f { gap: 3.811px; margin: 43.78px auto 0; max-width: 318.482px; grid-template-columns: repeat(6, minmax(0, 49.905px)); }
+.stages-f .stage { height: 46.275px; overflow: hidden; padding: 7.89px 0 0 6.26px; gap: 0; border-width: .817px; border-radius: 4.9px; background: var(--bg2); border-color: var(--line); justify-content: flex-start; }
+.stages-f .stage .mono { font-size: 8.711px; line-height: normal; color: var(--muted); }
+.stages-f .stage span:last-child { max-width: none; overflow: visible; text-overflow: clip; margin-top: 3px; font: 400 11.433px/normal var(--sans); color: var(--text); }
+.stages-f .stage.on { background: var(--signal); border-color: var(--signal); padding: 8.71px 0 0 7.08px; }
+.stages-f .stage.on .mono, .stages-f .stage.on span:last-child { color: var(--signal-ink); }
+
+/* ---- eventi: colonne 0 / 73 / 132, ibm plex mono 9.2, riga 38.5, separatore #292a28 */
+.log-f { margin: 0 auto; max-width: 317.453px; font-size: 9.225px; line-height: 14.109px; }
+.log-f li { grid-template-columns: 73.26px 58.6px 1fr; gap: 0; min-height: 38.528px; padding: 4.88px 0 6px; border-bottom: .814px solid var(--sep); }
+.log-f li .what { grid-column: auto; color: var(--muted); }
+.log-f li .who { padding-right: 6px; }
+.log-f li.k-ok .what { color: var(--text); }
+.track .block:first-of-type { margin-top: 14px; }
+
+/* ---- foglio azioni della linguetta */
+.actions-list { display: flex; flex-direction: column; }
+.action-row { display: grid; grid-template-columns: 40px 1fr; gap: 12px; align-items: center; min-height: 60px; padding: 8px 0; border-bottom: 1px solid var(--line); text-align: left; }
+.action-row:last-child { border-bottom: 0; }
+.action-row:disabled { opacity: .4; }
+.action-ic { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); color: var(--text); }
+.action-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.action-text b { font-weight: 600; font-size: 15px; }
+.action-text .muted { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (hover: hover) and (pointer: fine) { .action-row:hover:not(:disabled) .action-ic { border-color: var(--signal); } .tile-empty:hover { border-color: var(--line2); } }
