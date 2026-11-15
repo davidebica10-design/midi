@@ -49,7 +49,7 @@ function render() {
   if (r.name === 't' && trackOf(S, r.arg)) $app.append(trackView(trackOf(S, r.arg)), dock(trackOf(S, r.arg)));
   else if (r.name === 'ok') $app.append(artistView(r.arg));
   else if (r.name === 's') $app.append(snapView(r.arg));
-  else $app.append(libraryView());
+  else $app.append(libraryView(), fab());
   renderPlayer();
 }
 
@@ -57,35 +57,38 @@ window.addEventListener('hashchange', () => { closeSheets(); render(); window.sc
 
 // ---------------------------------------------------------------- libreria
 function libraryView() {
-  const open = S.tasks.filter((t) => !t.done).length;
-  const waiting = S.tracks.filter((t) => statusOf(S, t.id).kind === 'attesa').length;
+  // design figma 5:78 (con brani) e 5:100 (vuota): solo logo, copertine, pulsante +
   return h('main', { class: 'view lib' },
-    topbar([h('div', { class: 'brand' }, h('b', {}, C.brand), h('span', {}, C.sub))], [iconBtn('more', C.settings, openSettings)]),
-    h('h1', { class: 'big' }, C.library, h('sup', { class: 'mono' }, count(S.tracks.length))),
+    brandbar({ right: iconBtn('more', C.settings, openSettings, 'ghost') }),
     S.tracks.length
-      ? h('p', { class: 'lede mono' }, `${count(waiting)} senza ok · ${count(open)} cose aperte`)
-      : h('div', { class: 'empty' },
-        h('p', { class: 'empty-title' }, C.emptyTitle),
-        h('p', { class: 'muted' }, C.emptyBody),
-        h('div', { class: 'row' },
-          h('button', { class: 'btn primary', onclick: openNewTrack }, C.newTrack),
-          h('button', { class: 'btn ghost', onclick: () => { commit('demo', () => Object.assign(S, demoState())); toast('dati finti caricati. niente audio, solo forma.'); } }, C.demo))),
-    S.tracks.length ? h('div', { class: 'grid' },
-      S.tracks.map(tile),
-      h('button', { class: 'tile tile-new', onclick: openNewTrack, 'aria-label': C.newTrack },
-        h('span', { class: 'cover new' }, h('span', { class: 'plus' }, '+')),
-        h('span', { class: 'tile-title' }, C.newTrack),
-        h('span', { class: 'tile-meta mono' }, 'vuoto, per ora'))) : null,
+      ? h('div', { class: 'grid' }, S.tracks.map(tile))
+      : h('div', { class: 'lib-empty' },
+        h('button', { class: 'tile-empty', onclick: openNewTrack, 'aria-label': C.newTrack, title: C.newTrack })),
   );
+}
+
+/** Logo «tempo•» centrato (design figma). Su un brano il logo riporta alla libreria. */
+function brandbar({ left = null, right = null, home = false } = {}) {
+  const logo = h('span', { class: 'logo' }, 'tempo', h('img', { class: 'logo-dot', src: 'icons/figma/punto.svg', width: 11, height: 11, alt: '' }));
+  return h('header', { class: 'brandbar' },
+    h('div', { class: 'bb-l' }, left),
+    home ? h('button', { class: 'logo-btn', onclick: () => go('#/'), 'aria-label': 'tempo, torna ai brani' }, logo) : h('h1', { class: 'logo-btn', 'aria-label': 'tempo' }, logo),
+    h('div', { class: 'bb-r' }, right));
+}
+
+/** Pulsante + in basso (design figma): arancione con brani, scuro a libreria vuota. */
+function fab() {
+  const variant = S.tracks.length ? 'arancio' : 'scuro';
+  return h('button', { class: `fab fab-${variant}`, onclick: openNewTrack, 'aria-label': C.newTrack },
+    h('img', { class: 'fab-bg', src: `icons/figma/fab-${variant}.svg`, width: 110, height: 55, alt: '' }),
+    h('span', { class: 'fab-space' }, h('img', { class: 'fab-cross', src: 'icons/figma/croce.svg', width: 22.5341, height: 22.5339, alt: '' })));
 }
 
 function tile(t) {
   const st = statusOf(S, t.id);
-  return h('button', { class: 'tile', onclick: () => go(`#/t/${t.id}`) },
-    h('span', { class: 'cover' }, cover(t.id),
-      st.kind === 'ok' ? h('span', { class: 'badge ok mono' }, '✓ ok') : st.kind === 'attesa' ? h('span', { class: 'badge wait mono' }, '○ attesa') : null),
-    h('span', { class: 'tile-title' }, t.title),
-    h('span', { class: 'tile-meta mono' }, `${t.artist || '—'} · ${stageNum(t.stage)} ${STAGES[t.stage]}`));
+  const label = `${t.title}${t.artist ? `, con ${t.artist}` : ''}. fase ${stageNum(t.stage)} ${STAGES[t.stage]}. ${st.text}`;
+  return h('button', { class: 'tile', onclick: () => go(`#/t/${t.id}`), 'aria-label': label, title: t.title },
+    h('span', { class: 'cover' }, cover(t.id)));
 }
 
 // ---------------------------------------------------------------- brano
@@ -96,23 +99,25 @@ function trackView(t) {
   const tasks = openTasks(S, t.id);
 
   const view = h('main', { class: 'view track' },
-    topbar([h('button', { class: 'crumb mono', onclick: () => go('#/') }, icon('back', 16), C.back)], [iconBtn('more', 'opzioni brano', () => openTrackMenu(t))]),
-    h('section', { class: 'hero' },
-      h('div', { class: 'cover hero-cover' }, cover(t.id)),
-      h('div', { class: 'hero-text' },
-        h('p', { class: 'mono muted' }, `brano · ${stageNum(t.stage)} ${STAGES[t.stage]}`),
-        h('h1', { class: 'title' }, t.title),
-        h('p', { class: 'muted' }, t.artist ? `con ${t.artist}` : 'da solo, per ora', ` · dal ${fmtDay(t.createdAt)}`),
-        h('div', { class: 'row actions' },
-          h('button', { class: 'btn light play-btn', disabled: !last, onclick: () => last && play(last) }, icon('play', 16), C.listen),
-          h('button', { class: 'btn', disabled: !last, onclick: () => last && openAsk(t, last) }, C.askOk),
-          h('button', { class: 'btn', onclick: () => pickAudio(t.id) }, C.addBounce)))),
+    brandbar({ home: true, left: iconBtn('back', C.back, () => go('#/'), 'ghost') }),
+    h('section', { class: 'hero-f' },
+      h('div', { class: 'hero-cover-f' },
+        h('div', { class: 'cover cover-xl' }, cover(t.id)),
+        h('button', { class: 'tab-glass', onclick: () => openTrackActions(t), 'aria-label': 'azioni del brano', 'aria-haspopup': 'dialog' },
+          h('span', { class: 'tab-rot' }, h('img', { src: 'icons/figma/linguetta.svg', width: 109.964, height: 54.9824, alt: '' }))))),
 
-    h('nav', { class: 'stages', 'aria-label': 'fase del brano' },
+    h('nav', { class: 'stages stages-f', 'aria-label': 'fase del brano' },
       STAGES.map((name, i) => h('button', {
-        class: `stage${i === t.stage ? ' on' : ''}${i < t.stage ? ' past' : ''}`, 'aria-pressed': String(i === t.stage),
+        class: `stage${i === t.stage ? ' on' : ''}`, 'aria-pressed': String(i === t.stage),
         onclick: () => commit('fase', () => setStage(S, t.id, i)),
       }, h('span', { class: 'mono' }, stageNum(i)), h('span', {}, name)))),
+
+    // titolo nello spazio di 58px tra fasi ed eventi, così fasi (432) ed eventi (536) restano dove li vuole il design
+    h('div', { class: 'track-head' },
+      h('h2', { class: 'track-title' }, t.title),
+      h('p', { class: 'track-meta mono' }, [t.artist && `con ${t.artist}`, st.text].filter(Boolean).join(' · '))),
+
+    h('ol', { class: 'log log-f mono', 'aria-label': 'ultimi eventi' }, logOf(S, t.id).slice(0, 4).map((l) => logRow(l, !!t.sharedAt && l.at > t.sharedAt))),
 
     block('01', C.now, [
       st.ok ? h('p', { class: 'okline' }, h('span', { class: 'dot ok' }), `v${st.ok.version.n} approvata da ${st.ok.approval.by || '?'} · ${fmtDay(st.ok.approval.at)} ${fmtTime(st.ok.approval.at)}`, h('span', { class: 'mono muted' }, `  #${fmtPrint(st.ok.version.hash)}`))
@@ -126,13 +131,7 @@ function trackView(t) {
       versions.length ? h('ol', { class: 'versions' }, versions.map((v) => versionRow(t, v))) : h('p', { class: 'muted dropnote' }, C.noVersions),
     ]),
 
-    block('03', C.tools, [
-      h('div', { class: 'tools' },
-        h('button', { class: 'tool', onclick: () => openImport(t) }, h('b', {}, C.importChat), h('span', { class: 'muted' }, 'ok, richieste e scadenze dalla chat')),
-        h('button', { class: 'tool', onclick: () => pickVerify() }, h('b', {}, C.verify), h('span', { class: 'muted' }, 'è il file approvato? sì o no'))),
-    ]),
-
-    block('04', C.log, [
+    block('03', C.log, [
       h('ol', { class: 'log mono' }, logOf(S, t.id).slice(0, 40).map((l) => logRow(l, !!t.sharedAt && l.at > t.sharedAt))),
       t.sharedAt ? h('p', { class: 'mono muted small' }, `ultimo link condiviso: ${fmtDay(t.sharedAt)} ${fmtTime(t.sharedAt)}. evidenziato quello che è cambiato dopo.`) : null,
     ]),
@@ -148,6 +147,22 @@ function trackView(t) {
     if (files.length) addBounces(t.id, files);
   });
   return view;
+}
+
+/** Linguetta sulla copertina (design figma 5:216): tutte le azioni del brano in un foglio. */
+function openTrackActions(t) {
+  const last = latestVersion(S, t.id);
+  const row = (ic, label, hint, fn, disabled = false) => h('button', { class: 'action-row', disabled, onclick: () => { closeSheets(true); fn(); } },
+    h('span', { class: 'action-ic' }, icon(ic, 18)), h('span', { class: 'action-text' }, h('b', {}, label), h('span', { class: 'muted' }, hint)));
+  sheet(t.title, [
+    h('div', { class: 'actions-list' },
+      row('play', C.listen, last ? `v${last.n} · ${last.fileName}` : 'nessun bounce', () => last && play(last), !last),
+      row('check', C.askOk, last ? `link per approvare la v${last.n}` : 'serve un bounce', () => last && openAsk(t, last), !last),
+      row('plus', 'carica bounce', 'wav, aiff, mp3. resta su questo dispositivo', () => pickAudio(t.id)),
+      row('chat', C.importChat, 'ok, richieste e scadenze dalla chat', () => openImport(t)),
+      row('eye', C.verify, 'è il file approvato? sì o no', () => pickVerify()),
+      row('more', 'rinomina o elimina', t.artist ? `${t.title} · con ${t.artist}` : t.title, () => openTrackMenu(t))),
+  ]);
 }
 
 function block(n, label, kids) {
