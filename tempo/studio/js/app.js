@@ -1,13 +1,13 @@
-// tempo studio: interfaccia. Libreria di brani → brano (versioni, ok, adesso, registro) → pagina ok per l'artista.
+// tempo studio: interfaccia. Carosello di brani e calendario delle uscite → brano (varianti, definitiva, ok, adesso, registro) → pagina ok per l'artista.
 import {
   load, save, saveFailed, snapshot, undo, canUndo, sanitizeState, emptyState, demoState, STAGES,
   trackOf, versionsOf, latestVersion, approvalsOf, openTasks, logOf, statusOf, findByHash, approvedVersion,
   addTrack, deleteTrack, addVersion, deleteVersion, setStage, toggleTask, renameTrack, applyOps,
-  snapshotOf, changesSince, markShared,
+  snapshotOf, changesSince, markShared, fromBackup, dataTooNew, setFinal, finalVersion, setRelease, renameVersion, variantName, releasesIn, duesIn, collaborators,
 } from './store.js';
-import { h, fmtDur, fmtDay, fmtTime, fmtDue, fmtSize, fmtPrint, extOf, count, dateKey } from './util.js';
+import { h, fmtDur, fmtDay, fmtTime, fmtDue, fmtSize, fmtPrint, extOf, count, dateKey, pad2, seedOf } from './util.js';
 import { sha256 } from './hash.js';
-import { putAudio, deleteAudio, audioUrl, analyze } from './audio.js';
+import { putAudio, deleteAudio, clearAudio, audioUrl, analyze, persistStorage } from './audio.js';
 import { parseChat, participants, extract, readChatFile, sampleChat } from './chat.js';
 import { aiExtract, aiReady, PRESETS } from './ai.js';
 import { encodeAsk, decodeAsk, askLink, askText, replyText, waLink, safeUrl, encodeSnap, decodeSnap, snapLink, snapText } from './share.js';
@@ -35,60 +35,214 @@ function commit(label, fn) {
 }
 
 function route() {
+  if (/^#\/cal\/?$/.test(location.hash)) return { name: 'cal' };
   const m = location.hash.match(/^#\/(t|ok|s)\/(.+)$/);
   return m ? { name: m[1], arg: decodeURIComponent(m[2]) } : { name: 'lib' };
 }
+const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const go = (hash) => { if (location.hash !== hash) location.hash = hash; else render(); };
 
 function render() {
   const r = route();
   document.body.dataset.route = r.name;
   $app.replaceChildren();
-  if (saveFailed()) $app.append(h('div', { class: 'alert', role: 'alert' }, C.saveFail));
+  if (dataTooNew()) $app.append(h('div', { class: 'alert', role: 'alert' }, C.tooNew));
+  else if (saveFailed()) $app.append(h('div', { class: 'alert', role: 'alert' }, C.saveFail));
   // il dock sta fuori dalla vista: l'animazione d'entrata usa transform, che romperebbe position: fixed
-  if (r.name === 't' && trackOf(S, r.arg)) $app.append(trackView(trackOf(S, r.arg)), dock(trackOf(S, r.arg)));
+  if (r.name === 't' && trackOf(S, r.arg)) $app.append(h('div', { class: 'ambient', 'aria-hidden': 'true' }, cover(r.arg)), trackView(trackOf(S, r.arg)), dock(trackOf(S, r.arg)));
   else if (r.name === 'ok') $app.append(artistView(r.arg));
   else if (r.name === 's') $app.append(snapView(r.arg));
-  else $app.append(libraryView(), fab());
+  else if (r.name === 'cal') $app.append(calendarView(), tabbar('cal'));
+  else $app.append(...homeView(), tabbar('lib'));
   renderPlayer();
 }
 
 window.addEventListener('hashchange', () => { closeSheets(); render(); window.scrollTo(0, 0); });
 
-// ---------------------------------------------------------------- libreria
-function libraryView() {
-  // design figma 5:78 (con brani) e 5:100 (vuota): solo logo, copertine, pulsante +
-  return h('main', { class: 'view lib' },
-    brandbar({ right: iconBtn('more', C.settings, openSettings, 'ghost') }),
-    S.tracks.length
-      ? h('div', { class: 'grid' }, S.tracks.map(tile))
-      : h('div', { class: 'lib-empty' },
-        h('button', { class: 'tile-empty', onclick: openNewTrack, 'aria-label': C.newTrack, title: C.newTrack })),
-  );
+// ---------------------------------------------------------------- home: carosello di brani
+// stato della vista in memoria: brano in primo piano e mese del calendario
+const ui = { focus: null, cal: null };
+
+function homeView() {
+  const tracks = S.tracks;
+  if (!tracks.some((t) => t.id === ui.focus)) ui.focus = tracks[0]?.id || null;
+  const focus = () => trackOf(S, ui.focus);
+  const ambient = h('div', { class: 'ambient', 'aria-hidden': 'true' });
+  const avatars = h('div', { class: 'bb-avatars' });
+  const info = h('section', { class: 'focus-info', 'aria-live': 'polite' });
+  const paint = () => {
+    const t = focus();
+    ambient.replaceChildren(...(t ? [cover(t.id)] : []));
+    avatars.replaceChildren(avatarStack(t?.artist, { onclick: openSettings, label: t?.artist ? `profilo. in primo piano: ${t.title}, con ${t.artist}` : 'profilo e impostazioni' }));
+    info.replaceChildren(...(t ? focusInfo(t, tracks.indexOf(t)) : [
+      h('p', { class: 'mono muted' }, C.emptyTitle), h('p', { class: 'muted focus-empty' }, C.emptyBody),
+      h('button', { class: 'btn ghost', onclick: loadDemo }, C.demo)]));
+  };
+
+  const carousel = h('div', { class: 'carousel', role: 'list', 'aria-label': C.library },
+    tracks.length ? tracks.map((t) => h('div', { class: 'card', role: 'listitem', dataset: { id: t.id } },
+      h('button', {
+        class: 'card-btn', 'aria-label': `${t.title}${t.artist ? `, con ${t.artist}` : ''}. ${statusOf(S, t.id).text}. apri`,
+        onclick: (e) => {
+          const card = e.currentTarget.parentElement;
+          if (ui.focus === t.id) go(`#/t/${t.id}`);
+          else card.scrollIntoView({ behavior: reduced() ? 'auto' : 'smooth', inline: 'center', block: 'nearest' });
+        },
+      }, h('span', { class: 'cover card-cover' }, cover(t.id)))))
+      : h('div', { class: 'card', role: 'listitem' }, h('button', { class: 'card-btn card-new', onclick: openNewTrack, 'aria-label': C.newTrack }, icon('plus', 34))));
+
+  // il brano più vicino al centro diventa quello in primo piano; i vicini rimpiccioliscono
+  let raf = 0;
+  const update = () => {
+    raf = 0;
+    const box = carousel.getBoundingClientRect();
+    const mid = box.left + box.width / 2;
+    let best = null;
+    let bd = Infinity;
+    for (const c of carousel.children) {
+      const r = c.getBoundingClientRect();
+      const d = (r.left + r.width / 2 - mid) / (r.width || 1);
+      c.style.setProperty('--d', Math.min(1, Math.abs(d)).toFixed(3));
+      if (Math.abs(d) < bd) { bd = Math.abs(d); best = c; }
+    }
+    const id = best?.dataset.id;
+    if (id && id !== ui.focus) { ui.focus = id; paint(); }
+  };
+  carousel.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(update); }, { passive: true });
+  paint();
+  requestAnimationFrame(() => {
+    const card = [...carousel.children].find((c) => c.dataset.id === ui.focus);
+    if (card) carousel.scrollLeft = card.offsetLeft - (carousel.clientWidth - card.offsetWidth) / 2;
+    update();
+  });
+
+  // la luce sta fuori dalla vista: l'animazione d'entrata usa transform, che romperebbe position: fixed
+  return [ambient, h('main', { class: 'view home' },
+    brandbar({ left: avatars }),
+    carousel,
+    info)];
 }
 
-/** Logo «tempo•» centrato (design figma). Su un brano il logo riporta alla libreria. */
-function brandbar({ left = null, right = null, home = false } = {}) {
-  const logo = h('span', { class: 'logo' }, 'tempo', h('img', { class: 'logo-dot', src: 'icons/figma/punto.svg', width: 11, height: 11, alt: '' }));
-  return h('header', { class: 'brandbar' },
-    h('div', { class: 'bb-l' }, left),
-    home ? h('button', { class: 'logo-btn', onclick: () => go('#/'), 'aria-label': 'tempo, torna ai brani' }, logo) : h('h1', { class: 'logo-btn', 'aria-label': 'tempo' }, logo),
-    h('div', { class: 'bb-r' }, right));
-}
-
-/** Pulsante + in basso (design figma): arancione con brani, scuro a libreria vuota. */
-function fab() {
-  const variant = S.tracks.length ? 'arancio' : 'scuro';
-  return h('button', { class: `fab fab-${variant}`, onclick: openNewTrack, 'aria-label': C.newTrack },
-    h('img', { class: 'fab-bg', src: `icons/figma/fab-${variant}.svg`, width: 110, height: 55, alt: '' }),
-    h('span', { class: 'fab-space' }, h('img', { class: 'fab-cross', src: 'icons/figma/croce.svg', width: 22.5341, height: 22.5339, alt: '' })));
-}
-
-function tile(t) {
+function focusInfo(t, i) {
   const st = statusOf(S, t.id);
-  const label = `${t.title}${t.artist ? `, con ${t.artist}` : ''}. fase ${stageNum(t.stage)} ${STAGES[t.stage]}. ${st.text}`;
-  return h('button', { class: 'tile', onclick: () => go(`#/t/${t.id}`), 'aria-label': label, title: t.title },
-    h('span', { class: 'cover' }, cover(t.id)));
+  const next = openTasks(S, t.id)[0];
+  const fin = finalVersion(S, t.id);
+  return [
+    h('p', { class: 'focus-kicker mono' }, `${count(i + 1)} / ${count(S.tracks.length)} · ${stageNum(t.stage)} ${STAGES[t.stage]}`),
+    h('h2', { class: 'focus-title' }, t.title),
+    h('p', { class: 'focus-meta' }, [t.artist && `con ${t.artist}`, st.text].filter(Boolean).join(' · ')),
+    h('ul', { class: 'focus-facts mono' },
+      next ? h('li', {}, `→ ${next.who === S.me.name && next.who ? 'tu' : next.who || '?'} · ${next.what}${next.due ? ` · ${fmtDue(next.due)}` : ''}`) : h('li', { class: 'muted' }, C.nothingOpen),
+      fin ? h('li', {}, `⚑ definitiva: ${variantName(fin)}`) : null,
+      t.release ? h('li', {}, `◆ esce ${fmtDue(t.release)}`) : null),
+  ];
+}
+
+/** Monogramma tondo, come nei Messaggi. Il colore viene dal nome: stesso nome, stesso colore. */
+const TONES = ['#ff5b0b', '#2747ff', '#ffcf1f', '#8b8a85', '#ecebe6'];
+function initials(name) {
+  const w = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!w.length) return '';
+  return (w.length > 1 ? w[0][0] + w[w.length - 1][0] : w[0][0]).toUpperCase();
+}
+function avatar(name, { me = false, size = 40 } = {}) {
+  const ini = initials(name);
+  const tone = me ? null : TONES[seedOf(String(name).toLowerCase()) % TONES.length];
+  return h('span', { class: `avatar${me ? ' me' : ''}`, style: `--s:${size}px${tone ? `;--tone:${tone}` : ''}`, 'aria-hidden': 'true' }, ini || icon('user', Math.round(size * 0.55)));
+}
+/** Tu, grande; il collaboratore del brano, piccolo in basso a destra. Solo nomi scritti da te: niente account, niente dati da fuori. */
+function avatarStack(collab, { onclick, label } = {}) {
+  return h('button', { class: 'avatars', onclick, 'aria-label': label || 'profilo' },
+    avatar(S.me.name, { me: true, size: 42 }),
+    collab ? h('span', { class: 'avatar-mini' }, avatar(collab, { size: 20 })) : null);
+}
+
+// ---------------------------------------------------------------- barra in basso: brani, calendario, +
+function tabbar(active) {
+  const tab = (key, hash, ic, label) => h('a', { class: `tab${active === key ? ' on' : ''}`, href: hash, 'aria-current': active === key ? 'page' : null }, icon(ic, 20), h('span', {}, label));
+  return h('nav', { class: 'tabbar', 'aria-label': 'sezioni' },
+    h('div', { class: 'tabs glass' }, tab('lib', '#/', 'stack', C.library), tab('cal', '#/cal', 'calendar', C.calendar)),
+    h('button', { class: 'tab-add glass', onclick: openNewTrack, 'aria-label': C.newTrack, title: C.newTrack }, icon('plus', 22)));
+}
+
+// ---------------------------------------------------------------- calendario delle uscite
+const MONTHS = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
+
+function calendarView() {
+  const now = new Date();
+  ui.cal ||= { y: now.getFullYear(), m: now.getMonth() };
+  const { y, m } = ui.cal;
+  const shift = (d) => { const x = new Date(y, m + d, 1); ui.cal = { y: x.getFullYear(), m: x.getMonth() }; render(); };
+  const today = dateKey(Date.now());
+  const rel = releasesIn(S, y, m);
+  const dues = duesIn(S, y, m);
+  const lead = (new Date(y, m, 1).getDay() + 6) % 7; // lunedì per primo
+  const days = new Date(y, m + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(h('span', { class: 'day blank', 'aria-hidden': 'true' }));
+  for (let d = 1; d <= days; d++) {
+    const key = `${y}-${pad2(m + 1)}-${pad2(d)}`;
+    const out = rel.filter((t) => t.release === key);
+    const due = dues.filter((k) => k.due === key);
+    const label = [`${d} ${MONTHS[m]}`, out.length && `${count(out.length)} uscite: ${out.map((t) => t.title).join(', ')}`, due.length && `${count(due.length)} scadenze`].filter(Boolean).join('. ');
+    cells.push(h(out.length || due.length ? 'button' : 'span', {
+      class: `day${out.length ? ' has-out' : ''}${key === today ? ' today' : ''}${key < today ? ' past' : ''}`,
+      'aria-label': label, onclick: out.length || due.length ? () => openDay(key) : null,
+    },
+    out.length ? h('span', { class: 'day-cover' }, cover(out[0].id)) : null,
+    h('span', { class: 'day-n mono' }, String(d)),
+    out.length > 1 ? h('span', { class: 'day-more mono' }, `+${out.length - 1}`) : null,
+    due.length ? h('span', { class: 'day-dot', 'aria-hidden': 'true' }) : null));
+  }
+  const undated = S.tracks.filter((t) => !t.release);
+  const isNow = y === now.getFullYear() && m === now.getMonth();
+  return h('main', { class: 'view cal' },
+    brandbar({ left: h('div', { class: 'bb-avatars' }, avatarStack(null, { onclick: openSettings, label: 'profilo e impostazioni' })) }),
+    h('header', { class: 'cal-head' },
+      h('div', {}, h('p', { class: 'mono muted' }, String(y)), h('h2', { class: 'cal-month' }, MONTHS[m])),
+      h('div', { class: 'cal-nav' },
+        isNow ? null : h('button', { class: 'btn ghost', onclick: () => { ui.cal = null; render(); } }, 'oggi'),
+        iconBtn('back', 'mese prima', () => shift(-1)),
+        iconBtn('next', 'mese dopo', () => shift(1)))),
+    h('div', { class: 'weekdays mono', 'aria-hidden': 'true' }, ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'].map((d) => h('span', {}, d))),
+    h('div', { class: 'month', role: 'group', 'aria-label': `${MONTHS[m]} ${y}` }, cells),
+    block('01', `uscite di ${MONTHS[m]}`, [
+      rel.length ? h('ul', { class: 'rel-list' }, rel.map((t) => relRow(t, () => go(`#/t/${t.id}`), fmtDue(t.release)))) : h('p', { class: 'muted' }, 'nessuna uscita questo mese.'),
+    ]),
+    undated.length ? block('02', 'senza data', [
+      h('ul', { class: 'rel-list' }, undated.map((t) => relRow(t, () => openRelease(t), '+ data'))),
+    ]) : null);
+}
+
+function relRow(t, onclick, side) {
+  const st = statusOf(S, t.id);
+  return h('li', {}, h('button', { class: 'rel-row', onclick },
+    h('span', { class: 'cover rel-cover' }, cover(t.id)),
+    h('span', { class: 'rel-text' }, h('b', {}, t.title), h('span', { class: 'mono muted' }, [t.artist && `con ${t.artist}`, `${stageNum(t.stage)} ${STAGES[t.stage]}`, st.text].filter(Boolean).join(' · '))),
+    h('span', { class: 'rel-side mono' }, side)));
+}
+
+function openDay(key) {
+  const out = S.tracks.filter((t) => t.release === key);
+  const due = S.tasks.filter((k) => !k.done && k.due === key);
+  sheet(fmtDue(key), [
+    out.length ? h('p', { class: 'lab mono' }, 'escono') : null,
+    out.length ? h('ul', { class: 'rel-list' }, out.map((t) => relRow(t, () => { closeSheets(true); go(`#/t/${t.id}`); }, 'apri'))) : null,
+    due.length ? h('p', { class: 'lab mono' }, 'scadenze') : null,
+    due.length ? h('ul', { class: 'tasks' }, due.map((k) => h('li', { class: 'task' },
+      h('span', { class: 'task-main' }, h('span', { class: 'task-who mono' }, '→ ', k.who === S.me.name && k.who ? 'tu' : k.who || '?', ' · ', trackOf(S, k.trackId)?.title || ''), h('span', { class: 'task-what' }, k.what))))) : null,
+  ]);
+}
+
+function openRelease(t) {
+  const day = h('input', { class: 'field', type: 'date', value: t.release || '', 'aria-label': 'data di uscita' });
+  sheet(`uscita · ${t.title}`, [
+    h('p', { class: 'muted' }, 'quando esce. la vedi nel calendario, con la copertina.'),
+    day,
+    h('button', { class: 'btn primary wide', onclick: () => { commit('data di uscita', () => setRelease(S, t.id, day.value || null)); closeSheets(); toast(day.value ? `esce ${fmtDue(day.value)}.` : 'data tolta.', { undo: true }); } }, 'salva'),
+    t.release ? h('button', { class: 'btn ghost wide', onclick: () => { commit('data di uscita', () => setRelease(S, t.id, null)); closeSheets(); toast('data tolta.', { undo: true }); } }, 'togli la data') : null,
+  ]);
+  setTimeout(() => day.focus(), 60);
 }
 
 // ---------------------------------------------------------------- brano
@@ -97,14 +251,29 @@ function trackView(t) {
   const last = versions[0];
   const st = statusOf(S, t.id);
   const tasks = openTasks(S, t.id);
+  const fin = finalVersion(S, t.id);
+  const finOk = fin ? approvalsOf(S, fin.id)[0] : null;
 
   const view = h('main', { class: 'view track' },
-    brandbar({ home: true, left: iconBtn('back', C.back, () => go('#/'), 'ghost') }),
+    h('header', { class: 'trackbar' },
+      h('button', { class: 'glass round', onclick: () => go('#/'), 'aria-label': `${C.back}: torna al carosello` }, icon('back', 20)),
+      avatarStack(t.artist, { onclick: () => openShare(t), label: t.artist ? `condividi con ${t.artist}` : 'condividi' })),
     h('section', { class: 'hero-f' },
       h('div', { class: 'hero-cover-f' },
         h('div', { class: 'cover cover-xl' }, cover(t.id)),
         h('button', { class: 'tab-glass', onclick: () => openTrackActions(t), 'aria-label': 'azioni del brano', 'aria-haspopup': 'dialog' },
           h('span', { class: 'tab-rot' }, h('img', { src: 'icons/figma/linguetta.svg', width: 109.964, height: 54.9824, alt: '' }))))),
+
+    h('div', { class: 'track-head' },
+      h('h2', { class: 'track-title' }, t.title),
+      h('p', { class: 'track-meta mono' }, [t.artist && `con ${t.artist}`, st.text].filter(Boolean).join(' · ')),
+      h('button', { class: `chip mono release-chip${t.release ? ' set' : ''}`, onclick: () => openRelease(t) }, icon('calendar', 13), t.release ? `esce ${fmtDue(t.release)}` : 'data di uscita')),
+
+    block('01', C.variants, [
+      versions.length ? h('ol', { class: 'variants' }, versions.map((v) => variantRow(t, v))) : h('p', { class: 'muted dropnote' }, C.noVersions),
+      h('button', { class: 'add-variant', onclick: () => pickAudio(t.id) }, icon('plus', 16), C.addVariant),
+      versions.length ? h('p', { class: 'mono muted small' }, C.flagHint) : null,
+    ]),
 
     h('nav', { class: 'stages stages-f', 'aria-label': 'fase del brano' },
       STAGES.map((name, i) => h('button', {
@@ -112,23 +281,15 @@ function trackView(t) {
         onclick: () => commit('fase', () => setStage(S, t.id, i)),
       }, h('span', { class: 'mono' }, stageNum(i)), h('span', {}, name)))),
 
-    // titolo nello spazio di 58px tra fasi ed eventi, così fasi (432) ed eventi (536) restano dove li vuole il design
-    h('div', { class: 'track-head' },
-      h('h2', { class: 'track-title' }, t.title),
-      h('p', { class: 'track-meta mono' }, [t.artist && `con ${t.artist}`, st.text].filter(Boolean).join(' · '))),
-
-    h('ol', { class: 'log log-f mono', 'aria-label': 'ultimi eventi' }, logOf(S, t.id).slice(0, 4).map((l) => logRow(l, !!t.sharedAt && l.at > t.sharedAt))),
-
-    block('01', C.now, [
+    block('02', C.now, [
+      fin ? h('p', { class: `okline${finOk ? '' : ' warn'}` }, h('span', { class: 'flag-ic' }, icon('flagFill', 14)),
+        `definitiva: ${variantName(fin)} (v${fin.n})`, finOk ? ` · ok di ${finOk.by || '?'}` : ' · senza ok. ',
+        finOk ? null : h('button', { class: 'link', onclick: () => openAsk(t, fin) }, 'chiedi ok')) : null,
       st.ok ? h('p', { class: 'okline' }, h('span', { class: 'dot ok' }), `v${st.ok.version.n} approvata da ${st.ok.approval.by || '?'} · ${fmtDay(st.ok.approval.at)} ${fmtTime(st.ok.approval.at)}`, h('span', { class: 'mono muted' }, `  #${fmtPrint(st.ok.version.hash)}`))
         : h('p', { class: 'okline muted' }, h('span', { class: 'dot' }), last ? 'nessun ok ancora.' : 'niente da approvare.'),
       st.ok && last && st.ok.version.id !== last.id ? h('p', { class: 'okline warn' }, h('span', { class: 'dot warn' }), `v${last.n} è più nuova dell’ok. chiedi di nuovo?`, ' ', h('button', { class: 'link', onclick: () => openAsk(t, last) }, `chiedi ok su v${last.n}`)) : null,
       tasks.length ? h('ul', { class: 'tasks' }, tasks.map((k) => taskRow(k))) : h('p', { class: 'muted' }, C.nothingOpen),
       h('button', { class: 'link', onclick: () => openTask(t) }, C.addTask),
-    ]),
-
-    block('02', C.versions, [
-      versions.length ? h('ol', { class: 'versions' }, versions.map((v) => versionRow(t, v))) : h('p', { class: 'muted dropnote' }, C.noVersions),
     ]),
 
     block('03', C.log, [
@@ -137,7 +298,7 @@ function trackView(t) {
     ]),
   );
 
-  // trascina un file sulla pagina del brano → nuova versione
+  // trascina un file sulla pagina del brano → nuova variante
   view.addEventListener('dragover', (e) => { e.preventDefault(); view.classList.add('dragging'); });
   view.addEventListener('dragleave', (e) => { if (e.target === view) view.classList.remove('dragging'); });
   view.addEventListener('drop', (e) => {
@@ -156,9 +317,10 @@ function openTrackActions(t) {
     h('span', { class: 'action-ic' }, icon(ic, 18)), h('span', { class: 'action-text' }, h('b', {}, label), h('span', { class: 'muted' }, hint)));
   sheet(t.title, [
     h('div', { class: 'actions-list' },
-      row('play', C.listen, last ? `v${last.n} · ${last.fileName}` : 'nessun bounce', () => last && play(last), !last),
-      row('check', C.askOk, last ? `link per approvare la v${last.n}` : 'serve un bounce', () => last && openAsk(t, last), !last),
-      row('plus', 'carica bounce', 'wav, aiff, mp3. resta su questo dispositivo', () => pickAudio(t.id)),
+      row('play', C.listen, last ? `${variantName(last)} · v${last.n}` : 'nessuna variante', () => last && play(last), !last),
+      row('check', C.askOk, last ? `link per approvare la v${last.n}` : 'serve una variante', () => last && openAsk(t, last), !last),
+      row('plus', C.addVariant, 'wav, aiff, mp3. resta su questo dispositivo', () => pickAudio(t.id)),
+      row('calendar', 'data di uscita', t.release ? `esce ${fmtDue(t.release)}` : 'per il calendario', () => openRelease(t)),
       row('chat', C.importChat, 'ok, richieste e scadenze dalla chat', () => openImport(t)),
       row('eye', C.verify, 'è il file approvato? sì o no', () => pickVerify()),
       row('more', 'rinomina o elimina', t.artist ? `${t.title} · con ${t.artist}` : t.title, () => openTrackMenu(t))),
@@ -179,25 +341,51 @@ function taskRow(k) {
     k.due ? h('span', { class: `task-due mono${late ? ' late' : ''}` }, fmtDue(k.due)) : null);
 }
 
-function versionRow(t, v) {
+/** Una variante: bandiera per fissarla come definitiva, poi la pillola che suona. */
+function variantRow(t, v) {
   const oks = approvalsOf(S, v.id);
   const playing = player.vid === v.id;
-  return h('li', { class: `vrow${playing ? ' playing' : ''}${oks.length ? ' ok' : ''}` },
-    h('button', { class: 'vmain', onclick: () => play(v), 'aria-label': `riproduci v${v.n}` },
-      h('span', { class: 'vn mono' }, `v${v.n}`),
-      h('span', { class: 'vbody' },
-        h('span', { class: 'vname' }, v.fileName || `versione ${v.n}`),
-        h('span', { class: 'vmeta mono' }, [fmtDur(v.duration), extOf(v.fileName) || 'audio', fmtSize(v.size), `#${fmtPrint(v.hash)}`].join(' · ')),
-        wave(v.peaks, playing))),
-    h('span', { class: 'vside' },
-      oks.length ? h('span', { class: 'chip ok mono', title: oks.map((a) => `${a.by} · ${fmtDay(a.at)}`).join('\n') }, `✓ ${oks[0].by || 'ok'}`)
-        : h('button', { class: 'chip mono', onclick: () => openAsk(t, v) }, 'chiedi ok'),
-      iconBtn('more', `opzioni v${v.n}`, () => openVersionMenu(t, v), 'small')));
+  const isFinal = t.finalId === v.id;
+  const name = variantName(v);
+  return h('li', { class: `variant${playing ? ' playing' : ''}${isFinal ? ' final' : ''}${oks.length ? ' ok' : ''}` },
+    h('button', {
+      class: 'flag', 'aria-pressed': String(isFinal), title: isFinal ? 'definitiva' : 'fissa come definitiva',
+      'aria-label': isFinal ? `${name} è la definitiva. tocca per toglierla` : `fissa ${name} come definitiva`,
+      onclick: () => flagVariant(t, v),
+    }, icon(isFinal ? 'flagFill' : 'flag', 20)),
+    h('div', { class: 'vpill' },
+      h('button', { class: 'vmain', onclick: () => play(v), 'aria-label': `${playing && !player.audio.paused ? 'pausa' : 'riproduci'} ${name}` },
+        h('span', { class: 'vplay' }, icon(playing && !player.audio.paused ? 'pause' : 'play', 14)),
+        h('span', { class: 'vbody' },
+          h('span', { class: 'vname' }, name, isFinal ? h('span', { class: 'badge-final mono' }, 'definitiva') : null),
+          h('span', { class: 'vmeta mono' }, [`v${v.n}`, fmtDur(v.duration), extOf(v.fileName) || 'audio', `#${fmtPrint(v.hash)}`].join(' · ')),
+          wave(v.peaks, playing))),
+      h('span', { class: 'vside' },
+        oks.length ? h('span', { class: 'chip ok mono', title: oks.map((a) => `${a.by} · ${fmtDay(a.at)}`).join('\n') }, `✓ ${oks[0].by || 'ok'}`)
+          : h('button', { class: 'chip mono', onclick: () => openAsk(t, v) }, 'chiedi ok'),
+        iconBtn('more', `opzioni ${name}`, () => openVersionMenu(t, v), 'small'))));
+}
+
+function flagVariant(t, v) {
+  const was = t.finalId === v.id;
+  commit('definitiva', () => setFinal(S, t.id, v.id));
+  const name = variantName(v);
+  if (was) toast(`${name} non è più la definitiva.`, { undo: true });
+  else toast(approvalsOf(S, v.id).length ? `${name} è la definitiva.` : `${name} è la definitiva. ancora senza ok.`, { undo: true });
 }
 
 function wave(peaks, on) {
   const list = peaks?.length ? peaks : Array.from({ length: 48 }, () => 0.12);
   return h('span', { class: `wave${on ? ' on' : ''}`, 'aria-hidden': 'true' }, list.map((p) => h('i', { style: `height:${Math.max(8, Math.round(p * 100))}%` })));
+}
+
+/** Logo «tempo•» centrato (design figma). Su un brano il logo riporta alla libreria. */
+function brandbar({ left = null, right = null, home = false } = {}) {
+  const logo = h('span', { class: 'logo' }, 'tempo', h('img', { class: 'logo-dot', src: 'icons/figma/punto.svg', width: 11, height: 11, alt: '' }));
+  return h('header', { class: 'brandbar' },
+    h('div', { class: 'bb-l' }, left),
+    home ? h('button', { class: 'logo-btn', onclick: () => go('#/'), 'aria-label': 'tempo, torna ai brani' }, logo) : h('h1', { class: 'logo-btn', 'aria-label': 'tempo' }, logo),
+    h('div', { class: 'bb-r' }, right));
 }
 
 // ---------------------------------------------------------------- audio: aggiungere, verificare, suonare
@@ -245,11 +433,11 @@ function openVerifyResult(f, hash) {
   let head, body;
   if (hit?.approval) {
     head = h('p', { class: 'verdict ok' }, '✓ è lui.');
-    body = `${f.name} è la v${hit.version.n} di «${hit.track.title}», approvata da ${hit.approval.by || '?'} il ${fmtDay(hit.approval.at)} alle ${fmtTime(hit.approval.at)}.`;
+    body = `${f.name} è la v${hit.version.n} di «${hit.track.title}», approvata da ${hit.approval.by || '?'} il ${fmtDay(hit.approval.at)} alle ${fmtTime(hit.approval.at)}.${hit.track.finalId === hit.version.id ? ' ed è la definitiva.' : ''}`;
   } else if (hit) {
     const ok = approvedVersion(S, hit.track.id);
     head = h('p', { class: 'verdict warn' }, '○ conosciuto, non approvato.');
-    body = `è la v${hit.version.n} di «${hit.track.title}». ${ok ? `l’ok ce l’ha la v${ok.version.n}.` : 'nessuna versione ha ancora un ok.'}`;
+    body = `è la v${hit.version.n} di «${hit.track.title}»${hit.track.finalId === hit.version.id ? ', la definitiva' : ''}. ${ok ? `l’ok ce l’ha la v${ok.version.n}.` : 'nessuna versione ha ancora un ok.'}`;
   } else {
     head = h('p', { class: 'verdict no' }, '× mai visto.');
     body = 'nessuna versione caricata ha questa impronta. basta un export diverso, un fade, un bit, e cambia.';
@@ -316,7 +504,7 @@ function openAsk(t, v) {
     h('label', { class: 'lab mono' }, 'link di ascolto · facoltativo'),
     audio,
     h('p', { class: 'muted small' }, 'il file non parte da qui. oppure mandalo su whatsapp come sempre.'),
-    !S.me.phone ? h('p', { class: 'warnbox small' }, 'senza il tuo numero (impostazioni) la risposta chiede a chi mandarla.') : null,
+    !S.me.phone ? h('p', { class: 'warnbox small' }, 'senza il tuo numero (impostazioni) la risposta chiede a chi mandarla.') : h('p', { class: 'muted small' }, C.linkHasPhone),
     h('label', { class: 'lab mono' }, 'messaggio'),
     preview,
     h('div', { class: 'row' },
@@ -386,7 +574,7 @@ async function openShare(t) {
       h('button', { class: `btn${canShare ? '' : ' primary'}`, onclick: () => { window.open(waLink('', message), '_blank', 'noopener'); shared('aperto whatsapp. link segnato come inviato.'); } }, icon('chat', 16), 'whatsapp'),
       h('button', { class: 'btn', onclick: async () => { await copy(link, 'link copiato.'); markShared(S, t.id); save(S); } }, icon('link', 16), 'copia'),
       h('button', { class: 'btn ghost', onclick: () => { closeSheets(); location.hash = `#/s/${payload}`; } }, icon('eye', 16), 'anteprima')),
-    h('p', { class: 'muted small foot' }, 'è una foto di adesso: non si aggiorna da sola. quando cambia qualcosa, condividi di nuovo. niente server: tutto sta nel link.'),
+    h('p', { class: 'muted small foot' }, `è una foto di adesso: non si aggiorna da sola. quando cambia qualcosa, condividi di nuovo. niente server: tutto sta nel link. ${S.me.phone ? C.linkHasPhone : ''}`),
   ]);
   await build();
 }
@@ -419,7 +607,8 @@ function snapContent(sn) {
         h('p', { class: 'mono muted' }, `brano · ${stageNum(sn.stage)} ${STAGES[sn.stage]}`),
         h('h1', { class: 'title' }, sn.title),
         h('p', { class: 'muted' }, [sn.by && `da ${sn.by}`, sn.artist && `con ${sn.artist}`].filter(Boolean).join(' · ') || ' '),
-        h('p', { class: 'mono muted small' }, `foto del ${fmtDay(sn.at)} alle ${fmtTime(sn.at)}`))),
+        h('p', { class: 'mono muted small' }, `foto del ${fmtDay(sn.at)} alle ${fmtTime(sn.at)}`),
+        sn.release ? h('p', { class: 'mono small' }, `◆ esce ${fmtDue(sn.release)}`) : null)),
     h('div', { class: 'stages ro', role: 'img', 'aria-label': `fase ${stageNum(sn.stage)} di 06: ${STAGES[sn.stage]}` },
       STAGES.map((name, i) => h('span', { class: `stage${i === sn.stage ? ' on' : ''}${i < sn.stage ? ' past' : ''}` }, h('span', { class: 'mono' }, stageNum(i)), h('span', {}, name)))),
     news.length ? h('section', { class: 'block news' },
@@ -429,6 +618,7 @@ function snapContent(sn) {
       ok ? h('p', { class: 'okline' }, h('span', { class: 'dot ok' }), `v${ok.n} approvata${ok.okBy ? ` da ${ok.okBy}` : ''}${ok.okAt ? ` · ${fmtDay(ok.okAt)}` : ''}`)
         : h('p', { class: 'okline muted' }, h('span', { class: 'dot' }), last ? 'nessun ok ancora.' : 'niente da approvare.'),
       ok && last && ok.n !== last.n ? h('p', { class: 'okline warn' }, h('span', { class: 'dot warn' }), `v${last.n} è più nuova dell’ok.`) : null,
+      sn.final ? h('p', { class: 'okline' }, h('span', { class: 'flag-ic' }, icon('flagFill', 14)), `definitiva per ${sn.by || 'chi produce'}: v${sn.final}`) : null,
       sn.tasks.length ? h('ul', { class: 'tasks' }, sn.tasks.map((k) => h('li', { class: 'task ro' },
         h('span', { class: 'check ro', 'aria-hidden': 'true' }),
         h('span', { class: 'task-main' }, h('span', { class: 'task-who mono' }, '→ ', k.who || '?'), h('span', { class: 'task-what' }, k.what)),
@@ -539,6 +729,17 @@ function openImport(t) {
   };
 
   const runAi = async () => {
+    const host = aiHost(S.ai.base);
+    // prima volta per questo servizio: la chat contiene messaggi di altre persone, chiedi conferma qui
+    if (S.ai.consent !== host) {
+      out.querySelector('.consent')?.remove();
+      out.append(h('div', { class: 'warnbox consent' },
+        h('p', {}, `la chat va a ${host}. ${C.aiConsent}`),
+        h('div', { class: 'row' },
+          h('button', { class: 'btn primary', onclick: () => { S.ai.consent = host; save(S); runAi(); } }, `sì, manda a ${host}`),
+          h('button', { class: 'btn ghost', onclick: () => out.querySelector('.consent')?.remove() }, 'no'))));
+      return;
+    }
     out.querySelector('.btn:not(.primary)')?.setAttribute('disabled', '');
     toast('l’ai sta leggendo…', { sticky: true });
     try {
@@ -565,6 +766,8 @@ function openImport(t) {
     out,
   ]);
 }
+
+const aiHost = (base) => { try { return new URL(base).host || base; } catch { return String(base || '?').slice(0, 60); } };
 
 // ---------------------------------------------------------------- fogli: nuovo brano, cose da fare, menu, impostazioni
 function openNewTrack() {
@@ -624,10 +827,14 @@ function openTrackMenu(t) {
 
 function openVersionMenu(t, v) {
   const by = h('input', { class: 'field', value: t.artist || '', placeholder: 'chi approva', 'aria-label': 'chi approva', maxlength: 40 });
-  sheet(`v${v.n} · ${v.fileName}`, [
+  const label = h('input', { class: 'field', value: v.label, placeholder: variantName({ ...v, label: '' }), 'aria-label': 'nome della variante', maxlength: 40 });
+  sheet(`v${v.n} · ${variantName(v)}`, [
+    h('label', { class: 'lab mono' }, 'nome della variante'),
+    h('div', { class: 'row' }, label, h('button', { class: 'btn', onclick: () => { commit('rinomina variante', () => renameVersion(S, v.id, label.value)); closeSheets(); } }, 'salva')),
     h('dl', { class: 'spec mono' },
       h('dt', {}, 'durata'), h('dd', {}, fmtDur(v.duration)),
       h('dt', {}, 'peso'), h('dd', {}, fmtSize(v.size)),
+      h('dt', {}, 'file'), h('dd', {}, v.fileName || '—'),
       h('dt', {}, 'caricata'), h('dd', {}, `${fmtDay(v.addedAt)} ${fmtTime(v.addedAt)}`),
       h('dt', {}, 'sha-256'), h('dd', { class: 'small' }, v.hash)),
     h('div', { class: 'row' },
@@ -662,19 +869,24 @@ function openSettings() {
   const backup = h('input', { type: 'file', accept: 'application/json,.json', hidden: true });
   backup.addEventListener('change', async () => {
     try {
-      const data = sanitizeState(JSON.parse(await backup.files[0].text()));
+      const data = fromBackup(S, JSON.parse(await backup.files[0].text()));
       commit('importa backup', () => { for (const k of Object.keys(S)) delete S[k]; Object.assign(S, data); });
       closeSheets();
       toast(`backup caricato: ${count(S.tracks.length)} brani. l’audio non viaggia nei backup.`, { undo: true });
     } catch { toast('backup non valido.'); }
   });
+  const people = collaborators(S);
   sheet(C.settings, [
+    h('div', { class: 'profile' }, avatar(S.me.name, { me: true, size: 64 }),
+      h('div', {}, h('b', {}, S.me.name || 'tu'), h('span', { class: 'mono muted' }, `${count(S.tracks.length)} brani · ${count(people.length)} collaboratori`))),
+    people.length ? h('ul', { class: 'people' }, people.map((p) => h('li', {}, avatar(p.name, { size: 28 }), h('span', {}, p.name), h('span', { class: 'mono muted' }, `${count(p.tracks)} brani`)))) : null,
+    people.length ? h('p', { class: 'muted small' }, C.peopleHint) : null,
     h('label', { class: 'lab mono' }, '01 tu'), name,
     h('label', { class: 'lab mono' }, '02 il tuo whatsapp · dove arrivano gli ok'), phone,
     h('label', { class: 'lab mono' }, '03 ai · facoltativa, legge solo testo'), preset, base, model, key,
     h('p', { class: 'muted small' }, 'gemini: chiave gratis su aistudio.google.com. ollama: gira sul tuo mac, niente esce. l’audio non viene mai mandato a nessuno.'),
     h('button', { class: 'btn primary wide', onclick: () => {
-      commit('impostazioni', () => { S.me.name = name.value.trim(); S.me.phone = phone.value.trim(); S.ai = { base: base.value.trim(), model: model.value.trim(), key: key.value.trim() }; });
+      commit('impostazioni', () => { S.me.name = name.value.trim(); S.me.phone = phone.value.trim(); S.ai = { base: base.value.trim(), model: model.value.trim(), key: key.value.trim(), consent: S.ai.consent || '' }; });
       closeSheets();
       toast('salvato.');
     } }, 'salva'),
@@ -682,14 +894,27 @@ function openSettings() {
     h('div', { class: 'row' },
       h('button', { class: 'btn', onclick: exportBackup }, 'esporta backup'),
       h('button', { class: 'btn', onclick: () => backup.click() }, 'importa backup'), backup,
-      h('button', { class: 'btn ghost', onclick: () => { commit('demo', () => Object.assign(S, demoState())); closeSheets(); go('#/'); toast('dati finti caricati.', { undo: true }); } }, C.demo)),
-    h('button', { class: 'btn danger wide', onclick: () => confirmSheet('cancello tutto?', 'brani, versioni, ok e registro. l’audio resta finché non svuoti i dati del sito.', () => {
+      h('button', { class: 'btn ghost', onclick: () => (S.tracks.length ? confirmSheet('carico i dati finti?', 'prendono il posto dei tuoi brani. si può annullare subito dopo. l’audio dei tuoi brani resta qui finché non cancelli tutto. esporta un backup prima, se vuoi tenerli.', loadDemo) : loadDemo()) }, C.demo)),
+    h('button', { class: 'btn danger wide', onclick: () => confirmSheet('cancello tutto?', 'brani, varianti, ok, registro e tutto l’audio su questo dispositivo. i brani tornano con annulla, l’audio no.', () => {
       commit('cancella tutto', () => { const keep = { me: S.me, ai: S.ai }; for (const k of Object.keys(S)) delete S[k]; Object.assign(S, emptyState(), keep); });
+      player.audio.pause(); player.audio.removeAttribute('src'); player.vid = null;
       go('#/');
-      toast('tabula rasa.', { undo: true });
+      clearAudio()
+        .then(() => toast('tabula rasa. i brani tornano con annulla, l’audio no.', { undo: true }))
+        .catch(() => toast('brani cancellati. l’audio non sono riuscito a cancellarlo: svuota i dati del sito dalle impostazioni del browser.', { undo: true }));
     }) }, 'cancella tutto'),
-    h('p', { class: 'mono muted small foot' }, 'tempo studio · v0.1 · dati solo su questo dispositivo'),
+    h('label', { class: 'lab mono' }, '05 privacy'),
+    h('ul', { class: 'privacy small' }, C.privacy.map((p) => h('li', {}, p))),
+    h('p', { class: 'mono muted small foot' }, 'tempo studio · v0.2 · dati solo su questo dispositivo'),
   ]);
+}
+
+/** Dati finti al posto dei brani, tenendo nome, numero e impostazioni dell'ai. */
+function loadDemo() {
+  commit('demo', () => { const keep = { me: S.me.name ? S.me : demoState().me, ai: S.ai }; Object.assign(S, demoState(), keep); });
+  closeSheets();
+  go('#/');
+  toast('dati finti caricati.', { undo: true });
 }
 
 function exportBackup() {
@@ -757,6 +982,7 @@ async function copy(text, done) {
 
 // ---------------------------------------------------------------- avvio
 render();
+persistStorage(); // l'audio sta solo qui: chiedi di non sfrattarlo
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then((r) => r.update()).catch(() => {});

@@ -32,6 +32,15 @@ export const deleteAudio = (id) => tx('readwrite', (s) => s.delete(id)).then(() 
   urls.delete(id);
 });
 
+/** Svuota tutto l'audio di questo dispositivo (cancella tutto: anche i file rimasti da versioni vecchie). */
+export const clearAudio = () => tx('readwrite', (s) => s.clear()).then(() => {
+  for (const u of urls.values()) URL.revokeObjectURL(u);
+  urls.clear();
+});
+
+/** Chiede al browser di non sfrattare i dati (iOS e Chrome possono svuotare lo spazio dei siti poco usati). */
+export const persistStorage = () => (navigator.storage?.persist ? navigator.storage.persist().catch(() => false) : Promise.resolve(false));
+
 /** URL riproducibile del file, o null se non è su questo dispositivo. */
 export async function audioUrl(id) {
   if (!id) return null;

@@ -74,7 +74,7 @@ export async function encodeSnap(snap) {
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = ['brano', 'versione', 'ok', 'modifica', 'compito', 'decisione', 'fase', 'fatto'];
+const KINDS = ['brano', 'versione', 'ok', 'modifica', 'compito', 'decisione', 'fase', 'fatto', 'definitiva', 'uscita'];
 const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : null);
 const when = (v) => (Number.isFinite(v) && v > 0 && v < 8.64e15 ? v : null);
 
@@ -91,6 +91,7 @@ export async function decodeSnap(s) {
       key: typeof j.k === 'string' && /^[A-Za-z0-9_-]{1,24}$/.test(j.k) ? j.k : null,
       title: str(j.t, 80), artist: str(j.w, 40), by: str(j.by, 40), phone: phone(j.p),
       stage: int(j.st, 0, 5) ?? 0, at: when(j.at) || Date.now(), since: when(j.sn), audio: safeUrl(j.a),
+      final: int(j.fi, 1, 999), release: typeof j.re === 'string' && DATE.test(j.re) ? j.re : null,
       versions: list(j.vs, 12).map((v) => ({
         n: int(v?.[0], 1, 999), fileName: str(v?.[1], 120), duration: int(Math.round(+v?.[2] || 0), 0, 86400) || 0,
         hash: typeof v?.[3] === 'string' && HEX.test(v[3]) ? v[3] : null, okBy: str(v?.[4], 40) || null, okAt: when(v?.[5]), addedAt: when(v?.[6]),

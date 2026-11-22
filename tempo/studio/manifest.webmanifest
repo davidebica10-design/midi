@@ -1,12 +1,12 @@
 {
   "name": "tempo studio",
   "short_name": "tempo studio",
-  "description": "versioni, ok e prossimo passo di ogni brano. la chat resta su whatsapp.",
+  "description": "i tuoi brani in un carosello, le uscite in calendario, varianti, definitiva e ok. la chat resta su whatsapp.",
   "lang": "it",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#0b0b0b",
   "theme_color": "#0b0b0b",
   "icons": [
