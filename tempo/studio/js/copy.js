@@ -40,8 +40,8 @@ export const C = {
   variants: 'varianti',
   addVariant: 'aggiungi variante',
   flagHint: 'la bandiera fissa la definitiva: la scegli tu. l’ok è dell’artista ed è legato all’impronta.',
-  linkHasPhone: 'nel link ci sono il tuo nome e il tuo numero whatsapp: chi lo riceve può inoltrarlo.',
-  aiConsent: 'dentro ci sono i messaggi di altre persone: mandala solo se sono d’accordo. l’audio non parte mai.',
+  linkHasPhone: 'il link contiene il tuo nome e numero.',
+  aiConsent: 'contiene messaggi di altre persone: mandala solo se sono d’accordo.',
   peopleHint: 'sono i nomi che scrivi in «con chi». restano su questo dispositivo: nessuno riceve un invito o un account.',
   privacy: [
     'brani, varianti, ok e audio restano su questo dispositivo. niente server, niente account, niente statistiche.',

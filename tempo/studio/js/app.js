@@ -74,8 +74,8 @@ function homeView() {
     const t = focus();
     ambient.replaceChildren(...(t ? [cover(t.id)] : []));
     avatars.replaceChildren(avatarStack(t?.artist, { onclick: openSettings, label: t?.artist ? `profilo. in primo piano: ${t.title}, con ${t.artist}` : 'profilo e impostazioni' }));
-    info.replaceChildren(...(t ? focusInfo(t, tracks.indexOf(t)) : [
-      h('p', { class: 'mono muted' }, C.emptyTitle), h('p', { class: 'muted focus-empty' }, C.emptyBody),
+    info.replaceChildren(...(t ? focusInfo(t) : [
+      h('h2', { class: 'focus-title' }, C.emptyTitle),
       h('button', { class: 'btn ghost', onclick: loadDemo }, C.demo)]));
   };
 
@@ -123,18 +123,20 @@ function homeView() {
     info)];
 }
 
-function focusInfo(t, i) {
+function focusInfo(t) {
   const st = statusOf(S, t.id);
   const next = openTasks(S, t.id)[0];
   const fin = finalVersion(S, t.id);
+  const who = next && (next.who === S.me.name && next.who ? 'tu' : next.who || '?');
   return [
-    h('p', { class: 'focus-kicker mono' }, `${count(i + 1)} / ${count(S.tracks.length)} · ${stageNum(t.stage)} ${STAGES[t.stage]}`),
     h('h2', { class: 'focus-title' }, t.title),
-    h('p', { class: 'focus-meta' }, [t.artist && `con ${t.artist}`, st.text].filter(Boolean).join(' · ')),
-    h('ul', { class: 'focus-facts mono' },
-      next ? h('li', {}, `→ ${next.who === S.me.name && next.who ? 'tu' : next.who || '?'} · ${next.what}${next.due ? ` · ${fmtDue(next.due)}` : ''}`) : h('li', { class: 'muted' }, C.nothingOpen),
-      fin ? h('li', {}, `⚑ definitiva: ${variantName(fin)}`) : null,
-      t.release ? h('li', {}, `◆ esce ${fmtDue(t.release)}`) : null),
+    t.artist ? h('p', { class: 'focus-meta' }, t.artist) : null,
+    h('ul', { class: 'focus-chips mono', 'aria-label': 'stato' },
+      h('li', {}, STAGES[t.stage]),
+      h('li', { class: st.kind === 'ok' ? 'ok' : '', title: st.text }, st.ok ? `v${st.ok.version.n} ✓${st.kind === 'ok' ? '' : ` · v${latestVersion(S, t.id).n}`}` : st.kind === 'vuoto' ? '—' : `v${latestVersion(S, t.id).n}`),
+      who ? h('li', { title: next.what }, `→ ${who}`) : null,
+      fin ? h('li', { class: 'fin', title: `definitiva: ${variantName(fin)}` }, h('span', { class: 'flag-ic' }, icon('flagFill', 12)), variantName(fin)) : null,
+      t.release ? h('li', { title: 'uscita' }, fmtDay(new Date(t.release + 'T12:00').getTime())) : null),
   ];
 }
 
@@ -161,8 +163,9 @@ function avatarStack(collab, { onclick, label } = {}) {
 function tabbar(active) {
   const tab = (key, hash, ic, label) => h('a', { class: `tab${active === key ? ' on' : ''}`, href: hash, 'aria-current': active === key ? 'page' : null }, icon(ic, 20), h('span', {}, label));
   return h('nav', { class: 'tabbar', 'aria-label': 'sezioni' },
-    h('div', { class: 'tabs glass' }, tab('lib', '#/', 'stack', C.library), tab('cal', '#/cal', 'calendar', C.calendar)),
-    h('button', { class: 'tab-add glass', onclick: openNewTrack, 'aria-label': C.newTrack, title: C.newTrack }, icon('plus', 22)));
+    h('div', { class: 'tabs glass' },
+      tab('lib', '#/', 'stack', C.library), tab('cal', '#/cal', 'calendar', C.calendar),
+      h('button', { class: 'tab-add', onclick: openNewTrack, 'aria-label': C.newTrack, title: C.newTrack }, icon('plus', 20))));
 }
 
 // ---------------------------------------------------------------- calendario delle uscite
@@ -206,10 +209,8 @@ function calendarView() {
         iconBtn('next', 'mese dopo', () => shift(1)))),
     h('div', { class: 'weekdays mono', 'aria-hidden': 'true' }, ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'].map((d) => h('span', {}, d))),
     h('div', { class: 'month', role: 'group', 'aria-label': `${MONTHS[m]} ${y}` }, cells),
-    block('01', `uscite di ${MONTHS[m]}`, [
-      rel.length ? h('ul', { class: 'rel-list' }, rel.map((t) => relRow(t, () => go(`#/t/${t.id}`), fmtDue(t.release)))) : h('p', { class: 'muted' }, 'nessuna uscita questo mese.'),
-    ]),
-    undated.length ? block('02', 'senza data', [
+    rel.length ? h('ul', { class: 'rel-list' }, rel.map((t) => relRow(t, () => go(`#/t/${t.id}`), fmtDay(new Date(t.release + 'T12:00').getTime())))) : null,
+    undated.length ? block('', 'senza data', [
       h('ul', { class: 'rel-list' }, undated.map((t) => relRow(t, () => openRelease(t), '+ data'))),
     ]) : null);
 }
@@ -218,7 +219,7 @@ function relRow(t, onclick, side) {
   const st = statusOf(S, t.id);
   return h('li', {}, h('button', { class: 'rel-row', onclick },
     h('span', { class: 'cover rel-cover' }, cover(t.id)),
-    h('span', { class: 'rel-text' }, h('b', {}, t.title), h('span', { class: 'mono muted' }, [t.artist && `con ${t.artist}`, `${stageNum(t.stage)} ${STAGES[t.stage]}`, st.text].filter(Boolean).join(' · '))),
+    h('span', { class: 'rel-text' }, h('b', {}, t.title), h('span', { class: 'mono muted' }, [t.artist, st.text].filter(Boolean).join(' · '))),
     h('span', { class: 'rel-side mono' }, side)));
 }
 
@@ -237,7 +238,6 @@ function openDay(key) {
 function openRelease(t) {
   const day = h('input', { class: 'field', type: 'date', value: t.release || '', 'aria-label': 'data di uscita' });
   sheet(`uscita · ${t.title}`, [
-    h('p', { class: 'muted' }, 'quando esce. la vedi nel calendario, con la copertina.'),
     day,
     h('button', { class: 'btn primary wide', onclick: () => { commit('data di uscita', () => setRelease(S, t.id, day.value || null)); closeSheets(); toast(day.value ? `esce ${fmtDue(day.value)}.` : 'data tolta.', { undo: true }); } }, 'salva'),
     t.release ? h('button', { class: 'btn ghost wide', onclick: () => { commit('data di uscita', () => setRelease(S, t.id, null)); closeSheets(); toast('data tolta.', { undo: true }); } }, 'togli la data') : null,
@@ -266,13 +266,12 @@ function trackView(t) {
 
     h('div', { class: 'track-head' },
       h('h2', { class: 'track-title' }, t.title),
-      h('p', { class: 'track-meta mono' }, [t.artist && `con ${t.artist}`, st.text].filter(Boolean).join(' · ')),
-      h('button', { class: `chip mono release-chip${t.release ? ' set' : ''}`, onclick: () => openRelease(t) }, icon('calendar', 13), t.release ? `esce ${fmtDue(t.release)}` : 'data di uscita')),
+      h('p', { class: 'track-meta mono' }, [t.artist, st.text].filter(Boolean).join(' · ')),
+      h('button', { class: `chip mono release-chip${t.release ? ' set' : ''}`, onclick: () => openRelease(t), 'aria-label': t.release ? `uscita ${fmtDue(t.release)}. cambia` : 'aggiungi data di uscita' }, icon('calendar', 13), t.release ? fmtDue(t.release) : 'uscita')),
 
     block('01', C.variants, [
       versions.length ? h('ol', { class: 'variants' }, versions.map((v) => variantRow(t, v))) : h('p', { class: 'muted dropnote' }, C.noVersions),
-      h('button', { class: 'add-variant', onclick: () => pickAudio(t.id) }, icon('plus', 16), C.addVariant),
-      versions.length ? h('p', { class: 'mono muted small' }, C.flagHint) : null,
+      h('button', { class: 'add-variant', onclick: () => pickAudio(t.id), 'aria-label': C.addVariant }, icon('plus', 18)),
     ]),
 
     h('nav', { class: 'stages stages-f', 'aria-label': 'fase del brano' },
@@ -283,19 +282,18 @@ function trackView(t) {
 
     block('02', C.now, [
       fin ? h('p', { class: `okline${finOk ? '' : ' warn'}` }, h('span', { class: 'flag-ic' }, icon('flagFill', 14)),
-        `definitiva: ${variantName(fin)} (v${fin.n})`, finOk ? ` · ok di ${finOk.by || '?'}` : ' · senza ok. ',
+        variantName(fin), finOk ? ` · ✓ ${finOk.by || '?'}` : ' · ',
         finOk ? null : h('button', { class: 'link', onclick: () => openAsk(t, fin) }, 'chiedi ok')) : null,
-      st.ok ? h('p', { class: 'okline' }, h('span', { class: 'dot ok' }), `v${st.ok.version.n} approvata da ${st.ok.approval.by || '?'} · ${fmtDay(st.ok.approval.at)} ${fmtTime(st.ok.approval.at)}`, h('span', { class: 'mono muted' }, `  #${fmtPrint(st.ok.version.hash)}`))
-        : h('p', { class: 'okline muted' }, h('span', { class: 'dot' }), last ? 'nessun ok ancora.' : 'niente da approvare.'),
-      st.ok && last && st.ok.version.id !== last.id ? h('p', { class: 'okline warn' }, h('span', { class: 'dot warn' }), `v${last.n} è più nuova dell’ok. chiedi di nuovo?`, ' ', h('button', { class: 'link', onclick: () => openAsk(t, last) }, `chiedi ok su v${last.n}`)) : null,
+      st.ok ? h('p', { class: 'okline' }, h('span', { class: 'dot ok' }), `v${st.ok.version.n} ✓ ${st.ok.approval.by || '?'} · ${fmtDay(st.ok.approval.at)}`)
+        : h('p', { class: 'okline muted' }, h('span', { class: 'dot' }), last ? 'nessun ok' : 'vuoto'),
+      st.ok && last && st.ok.version.id !== last.id ? h('p', { class: 'okline warn' }, h('span', { class: 'dot warn' }), `v${last.n} senza ok · `, h('button', { class: 'link', onclick: () => openAsk(t, last) }, 'chiedi ok')) : null,
       tasks.length ? h('ul', { class: 'tasks' }, tasks.map((k) => taskRow(k))) : h('p', { class: 'muted' }, C.nothingOpen),
       h('button', { class: 'link', onclick: () => openTask(t) }, C.addTask),
     ]),
 
-    block('03', C.log, [
-      h('ol', { class: 'log mono' }, logOf(S, t.id).slice(0, 40).map((l) => logRow(l, !!t.sharedAt && l.at > t.sharedAt))),
-      t.sharedAt ? h('p', { class: 'mono muted small' }, `ultimo link condiviso: ${fmtDay(t.sharedAt)} ${fmtTime(t.sharedAt)}. evidenziato quello che è cambiato dopo.`) : null,
-    ]),
+    h('details', { class: 'block fold' },
+      h('summary', { class: 'label mono' }, h('span', {}, '03'), ' ', C.log),
+      h('ol', { class: 'log mono' }, logOf(S, t.id).slice(0, 40).map((l) => logRow(l, !!t.sharedAt && l.at > t.sharedAt)))),
   );
 
   // trascina un file sulla pagina del brano → nuova variante
@@ -472,9 +470,10 @@ function renderPlayer() {
   $player.replaceChildren(
     h('input', { class: 'seek', type: 'range', min: 0, max: 1000, value: 0, 'aria-label': 'posizione', oninput: (e) => { const d = player.audio.duration; if (d) player.audio.currentTime = (e.target.value / 1000) * d; } }),
     h('div', { class: 'pl-row' },
+      h('button', { class: 'pl-btn', 'aria-label': 'riproduci', onclick: () => (player.audio.paused ? player.audio.play() : player.audio.pause()) }, h('span', { class: 'swap' }, icon('play', 22), icon('pause', 22))),
       h('button', { class: 'pl-cover', onclick: () => go(`#/t/${t.id}`), 'aria-label': `apri ${t.title}` }, cover(t.id)),
-      h('div', { class: 'pl-text' }, h('b', {}, t.title), h('span', { class: 'mono muted' }, `v${v.n} · `, h('span', { class: 'pl-time' }, '0:00'), ` / ${fmtDur(v.duration)}`)),
-      h('button', { class: 'pl-btn', 'aria-label': 'riproduci', onclick: () => (player.audio.paused ? player.audio.play() : player.audio.pause()) }, h('span', { class: 'swap' }, icon('play', 18), icon('pause', 18)))));
+      h('div', { class: 'pl-text' }, h('b', {}, t.title), h('span', { class: 'muted' }, variantName(v))),
+      h('span', { class: 'pl-time mono muted' }, '0:00')));
   updatePlayer();
 }
 
@@ -500,10 +499,8 @@ function openAsk(t, v) {
   audio.addEventListener('input', refresh);
   refresh();
   sheet(`chiedi ok · v${v.n}`, [
-    h('p', { class: 'muted' }, 'mandi un link. chi lo apre ascolta, tocca approvo, e la risposta torna su whatsapp con un codice. tu importi la chat: ok registrato, legato a questa impronta.'),
     h('label', { class: 'lab mono' }, 'link di ascolto · facoltativo'),
     audio,
-    h('p', { class: 'muted small' }, 'il file non parte da qui. oppure mandalo su whatsapp come sempre.'),
     !S.me.phone ? h('p', { class: 'warnbox small' }, 'senza il tuo numero (impostazioni) la risposta chiede a chi mandarla.') : h('p', { class: 'muted small' }, C.linkHasPhone),
     h('label', { class: 'lab mono' }, 'messaggio'),
     preview,
@@ -524,8 +521,8 @@ function dock(t) {
   return h('div', { class: 'dock' },
     h('button', { class: 'btn primary dock-btn', onclick: () => openShare(t) },
       icon('share', 18),
-      h('span', {}, t.artist ? `condividi con ${t.artist}` : 'condividi'),
-      news ? h('span', { class: 'dock-badge mono' }, `${count(news)} novità`) : null));
+      h('span', {}, 'condividi'),
+      news ? h('span', { class: 'dock-badge mono', 'aria-label': `${count(news)} novità` }, count(news)) : null));
 }
 
 async function openShare(t) {
@@ -557,7 +554,6 @@ async function openShare(t) {
   };
   const canShare = typeof navigator.share === 'function';
   sheet(t.artist ? `condividi con ${t.artist}` : 'condividi', [
-    h('p', { class: 'muted' }, `un link con lo stato di «${t.title}». si apre dal telefono, senza account. ${t.artist || 'chi lo riceve'} vede versioni, ok, cose da fare e cosa è cambiato dall’ultima volta.`),
     h('ul', { class: 'inside mono' },
       h('li', {}, h('span', {}, count(versions.length)), ' versioni'),
       h('li', {}, h('span', {}, st.ok ? `v${st.ok.version.n}` : '—'), ' approvata'),
@@ -574,7 +570,7 @@ async function openShare(t) {
       h('button', { class: `btn${canShare ? '' : ' primary'}`, onclick: () => { window.open(waLink('', message), '_blank', 'noopener'); shared('aperto whatsapp. link segnato come inviato.'); } }, icon('chat', 16), 'whatsapp'),
       h('button', { class: 'btn', onclick: async () => { await copy(link, 'link copiato.'); markShared(S, t.id); save(S); } }, icon('link', 16), 'copia'),
       h('button', { class: 'btn ghost', onclick: () => { closeSheets(); location.hash = `#/s/${payload}`; } }, icon('eye', 16), 'anteprima')),
-    h('p', { class: 'muted small foot' }, `è una foto di adesso: non si aggiorna da sola. quando cambia qualcosa, condividi di nuovo. niente server: tutto sta nel link. ${S.me.phone ? C.linkHasPhone : ''}`),
+    S.me.phone ? h('p', { class: 'muted small foot' }, C.linkHasPhone) : null,
   ]);
   await build();
 }
@@ -880,7 +876,6 @@ function openSettings() {
     h('div', { class: 'profile' }, avatar(S.me.name, { me: true, size: 64 }),
       h('div', {}, h('b', {}, S.me.name || 'tu'), h('span', { class: 'mono muted' }, `${count(S.tracks.length)} brani · ${count(people.length)} collaboratori`))),
     people.length ? h('ul', { class: 'people' }, people.map((p) => h('li', {}, avatar(p.name, { size: 28 }), h('span', {}, p.name), h('span', { class: 'mono muted' }, `${count(p.tracks)} brani`)))) : null,
-    people.length ? h('p', { class: 'muted small' }, C.peopleHint) : null,
     h('label', { class: 'lab mono' }, '01 tu'), name,
     h('label', { class: 'lab mono' }, '02 il tuo whatsapp · dove arrivano gli ok'), phone,
     h('label', { class: 'lab mono' }, '03 ai · facoltativa, legge solo testo'), preset, base, model, key,
@@ -903,8 +898,8 @@ function openSettings() {
         .then(() => toast('tabula rasa. i brani tornano con annulla, l’audio no.', { undo: true }))
         .catch(() => toast('brani cancellati. l’audio non sono riuscito a cancellarlo: svuota i dati del sito dalle impostazioni del browser.', { undo: true }));
     }) }, 'cancella tutto'),
-    h('label', { class: 'lab mono' }, '05 privacy'),
-    h('ul', { class: 'privacy small' }, C.privacy.map((p) => h('li', {}, p))),
+    h('details', { class: 'fold' }, h('summary', { class: 'lab mono' }, '05 privacy'),
+      h('ul', { class: 'privacy small' }, C.privacy.map((p) => h('li', {}, p)))),
     h('p', { class: 'mono muted small foot' }, 'tempo studio · v0.2 · dati solo su questo dispositivo'),
   ]);
 }

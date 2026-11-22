@@ -523,3 +523,67 @@ body[data-route=t].has-player .toast { bottom: calc(150px + var(--safe-b)); }
   .ambient svg { animation: none; }
 }
 @media (min-width: 720px) { :root { --card: 300px; } }
+
+/* ================================================================ v0.3: vetro come Musica, meno testo */
+:root {
+  --glass: rgba(38, 38, 40, .46);
+  --glass-line: rgba(255, 255, 255, .13);
+  --glass-hi: rgba(255, 255, 255, .22);
+  --tabbar: 58px;
+}
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  box-shadow: inset 0 1px 0 var(--glass-hi), inset 0 -1px 0 rgba(255, 255, 255, .04), 0 18px 40px -16px rgba(0, 0, 0, .75);
+  backdrop-filter: blur(26px) saturate(1.8); -webkit-backdrop-filter: blur(26px) saturate(1.8);
+}
+
+/* una sola pillola: in basso su telefono */
+.tabbar { gap: 0; }
+.tabs { align-items: center; gap: 2px; padding: 5px; height: var(--tabbar); }
+.tab { flex-direction: row; gap: 7px; min-width: 0; height: 100%; padding: 0 16px; font-size: 15px; font-weight: 500; color: var(--text); }
+.tab .ic { color: var(--text); }
+.tab.on { background: rgba(0, 0, 0, .38); color: var(--signal); }
+.tab.on .ic { color: var(--signal); }
+.tab-add { width: 46px; height: 46px; margin-left: 4px; border-radius: 50%; display: grid; place-items: center; background: var(--signal); color: var(--signal-ink); box-shadow: none; border: 0; backdrop-filter: none; -webkit-backdrop-filter: none; }
+@media (max-width: 420px) { .tab span { display: none; } .tab { padding: 0 20px; } }
+
+/* iPad e schermi larghi: la pillola sale in alto al centro, al posto del logo */
+@media (min-width: 700px) {
+  .tabbar { top: calc(env(safe-area-inset-top, 0px) + 14px); bottom: auto; }
+  body[data-route=lib] .brandbar .logo-btn, body[data-route=cal] .brandbar .logo-btn { visibility: hidden; }
+  .view.home, .view.cal { padding-bottom: calc(120px + var(--safe-b)); }
+  body[data-route=lib] .toast, body[data-route=cal] .toast { bottom: calc(22px + var(--safe-b)); }
+}
+
+/* player: capsula di vetro sospesa */
+.player { left: 50%; right: auto; bottom: calc(14px + var(--safe-b)); width: min(560px, calc(100vw - 24px)); transform: translateX(-50%); border-radius: 30px; border: 1px solid var(--glass-line); background: var(--glass); box-shadow: inset 0 1px 0 var(--glass-hi), 0 18px 40px -16px rgba(0, 0, 0, .8); backdrop-filter: blur(26px) saturate(1.8); -webkit-backdrop-filter: blur(26px) saturate(1.8); padding-bottom: 0; overflow: hidden; animation: pl-in .4s var(--sheet) both; }
+@keyframes pl-in { from { opacity: 0; transform: translate(-50%, 16px); } }
+body[data-route=lib].has-player .player, body[data-route=cal].has-player .player { left: 50%; right: auto; bottom: calc(var(--tabbar) + 26px + var(--safe-b)); border-radius: 30px; }
+@media (min-width: 700px) { body[data-route=lib].has-player .player, body[data-route=cal].has-player .player { bottom: calc(14px + var(--safe-b)); } }
+.player .pl-row { gap: 10px; padding: 7px 18px 7px 8px; max-width: none; }
+.player .pl-btn { width: 46px; height: 46px; background: transparent; color: var(--text); }
+.player .pl-cover { width: 44px; height: 44px; border-radius: 10px; }
+.player .pl-text b { font-size: 15px; }
+.player .pl-text .muted { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player .pl-time { flex: none; font-size: 12px; }
+.player .seek { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; height: 3px; }
+body.has-player[data-route=t] .dock { bottom: calc(86px + var(--safe-b)); }
+
+/* home: titolo, artista, chip */
+.focus-title { font-size: 28px; margin-bottom: 2px; }
+.focus-meta { margin-bottom: 14px; }
+.focus-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.focus-chips li { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 99px; background: rgba(255, 255, 255, .07); border: 1px solid var(--glass-line); color: var(--text); white-space: nowrap; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; }
+.focus-chips li.ok { background: var(--paper); color: var(--ink); border-color: var(--paper); }
+.focus-chips .flag-ic { margin: 0; }
+.focus-info { min-height: 120px; }
+
+/* brano: + variante come pulsante tondo, registro richiudibile */
+.add-variant { width: 48px; height: 48px; margin: 4px 0 0 44px; border-radius: 50%; border-style: solid; background: var(--bg2); }
+details.fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::after { content: '›'; margin-left: auto; font-size: 18px; color: var(--muted); transition: transform .2s; }
+details.fold[open] > summary::after { transform: rotate(90deg); }
+details.fold:not([open]) > summary { margin-bottom: 0; }
+.block .label span:empty { display: none; }
