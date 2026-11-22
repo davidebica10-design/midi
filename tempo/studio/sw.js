@@ -1,5 +1,5 @@
 // Cache di tempo studio per l'uso offline. Aggiorna VERSION a ogni rilascio e aggiungi qui i file nuovi.
-const VERSION = 'tempo-studio-v5';
+const VERSION = 'tempo-studio-v6';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/figma/punto.svg', 'icons/figma/croce.svg', 'icons/figma/fab-arancio.svg', 'icons/figma/fab-scuro.svg', 'icons/figma/linguetta.svg', 'fonts/ibm-plex-mono-latin-400-normal.woff2', 'fonts/ibm-plex-mono-latin-500-normal.woff2',
   'js/app.js', 'js/store.js', 'js/chat.js', 'js/share.js', 'js/hash.js', 'js/audio.js', 'js/ai.js', 'js/covers.js', 'js/copy.js', 'js/util.js', 'js/icons.js',
