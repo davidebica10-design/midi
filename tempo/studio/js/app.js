@@ -3,7 +3,7 @@ import {
   load, save, saveFailed, snapshot, undo, canUndo, sanitizeState, emptyState, demoState, STAGES,
   trackOf, versionsOf, latestVersion, approvalsOf, openTasks, logOf, statusOf, findByHash, approvedVersion,
   addTrack, deleteTrack, addVersion, deleteVersion, setStage, toggleTask, renameTrack, applyOps,
-  snapshotOf, changesSince, markShared, setFinal, finalVersion, setRelease, renameVersion, variantName, releasesIn, duesIn, collaborators,
+  snapshotOf, changesSince, markShared, fromBackup, dataTooNew, setFinal, finalVersion, setRelease, renameVersion, variantName, releasesIn, duesIn, collaborators,
 } from './store.js';
 import { h, fmtDur, fmtDay, fmtTime, fmtDue, fmtSize, fmtPrint, extOf, count, dateKey, pad2, seedOf } from './util.js';
 import { sha256 } from './hash.js';
@@ -46,7 +46,8 @@ function render() {
   const r = route();
   document.body.dataset.route = r.name;
   $app.replaceChildren();
-  if (saveFailed()) $app.append(h('div', { class: 'alert', role: 'alert' }, C.saveFail));
+  if (dataTooNew()) $app.append(h('div', { class: 'alert', role: 'alert' }, C.tooNew));
+  else if (saveFailed()) $app.append(h('div', { class: 'alert', role: 'alert' }, C.saveFail));
   // il dock sta fuori dalla vista: l'animazione d'entrata usa transform, che romperebbe position: fixed
   if (r.name === 't' && trackOf(S, r.arg)) $app.append(h('div', { class: 'ambient', 'aria-hidden': 'true' }, cover(r.arg)), trackView(trackOf(S, r.arg)), dock(trackOf(S, r.arg)));
   else if (r.name === 'ok') $app.append(artistView(r.arg));
@@ -868,7 +869,7 @@ function openSettings() {
   const backup = h('input', { type: 'file', accept: 'application/json,.json', hidden: true });
   backup.addEventListener('change', async () => {
     try {
-      const data = sanitizeState(JSON.parse(await backup.files[0].text()));
+      const data = fromBackup(S, JSON.parse(await backup.files[0].text()));
       commit('importa backup', () => { for (const k of Object.keys(S)) delete S[k]; Object.assign(S, data); });
       closeSheets();
       toast(`backup caricato: ${count(S.tracks.length)} brani. l’audio non viaggia nei backup.`, { undo: true });
@@ -893,13 +894,14 @@ function openSettings() {
     h('div', { class: 'row' },
       h('button', { class: 'btn', onclick: exportBackup }, 'esporta backup'),
       h('button', { class: 'btn', onclick: () => backup.click() }, 'importa backup'), backup,
-      h('button', { class: 'btn ghost', onclick: () => (S.tracks.length ? confirmSheet('carico i dati finti?', 'prendono il posto dei tuoi brani. si può annullare subito dopo. esporta un backup prima, se vuoi tenerli.', loadDemo) : loadDemo()) }, C.demo)),
+      h('button', { class: 'btn ghost', onclick: () => (S.tracks.length ? confirmSheet('carico i dati finti?', 'prendono il posto dei tuoi brani. si può annullare subito dopo. l’audio dei tuoi brani resta qui finché non cancelli tutto. esporta un backup prima, se vuoi tenerli.', loadDemo) : loadDemo()) }, C.demo)),
     h('button', { class: 'btn danger wide', onclick: () => confirmSheet('cancello tutto?', 'brani, varianti, ok, registro e tutto l’audio su questo dispositivo. i brani tornano con annulla, l’audio no.', () => {
       commit('cancella tutto', () => { const keep = { me: S.me, ai: S.ai }; for (const k of Object.keys(S)) delete S[k]; Object.assign(S, emptyState(), keep); });
       player.audio.pause(); player.audio.removeAttribute('src'); player.vid = null;
-      clearAudio().catch(() => {});
       go('#/');
-      toast('tabula rasa. audio cancellato.', { undo: true });
+      clearAudio()
+        .then(() => toast('tabula rasa. i brani tornano con annulla, l’audio no.', { undo: true }))
+        .catch(() => toast('brani cancellati. l’audio non sono riuscito a cancellarlo: svuota i dati del sito dalle impostazioni del browser.', { undo: true }));
     }) }, 'cancella tutto'),
     h('label', { class: 'lab mono' }, '05 privacy'),
     h('ul', { class: 'privacy small' }, C.privacy.map((p) => h('li', {}, p))),

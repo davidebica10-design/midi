@@ -27,6 +27,7 @@ export const C = {
   log: 'registro',
   settings: 'profilo e impostazioni',
   undo: 'annulla',
+  tooNew: 'questi dati vengono da una versione più nuova dell’app. li leggi, ma non salvo niente: ricarica la pagina per aggiornare.',
   saveFail: 'memoria piena: le ultime modifiche non sono salvate. esporta un backup.',
   dropHere: 'molla qui',
   artistTitle: 'richiesta di ok',

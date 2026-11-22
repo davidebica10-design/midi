@@ -66,18 +66,33 @@ export function sanitizeState(raw) {
 }
 
 let saveError = false;
+let tooNew = false;
 export const saveFailed = () => saveError;
+/** Dati scritti da una versione più nuova dell'app (es. cache vecchia): si leggono, non si sovrascrivono. */
+export const dataTooNew = () => tooNew;
 
 export function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? sanitizeState(JSON.parse(raw)) : emptyState();
+    if (!raw) return emptyState();
+    const j = JSON.parse(raw);
+    tooNew = Number.isInteger(j?.schema) && j.schema > SCHEMA;
+    return sanitizeState(j);
   } catch {
     return emptyState();
   }
 }
 
+/** Backup da file → stato. Tiene il tuo nome, numero e ai: il consenso ai non si importa mai, la chiave nel backup non c'è. */
+export function fromBackup(current, raw) {
+  const data = sanitizeState(raw);
+  data.me = current.me?.name ? { ...current.me } : { ...data.me };
+  data.ai = { ...current.ai };
+  return data;
+}
+
 export function save(state) {
+  if (tooNew) { saveError = true; return false; }
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
     saveError = false;

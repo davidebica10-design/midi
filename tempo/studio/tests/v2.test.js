@@ -398,3 +398,37 @@ test('demoState: la definitiva sta nel proprio brano e le date sono nel formato 
     if (t.release) assert.match(t.release, /^\d{4}-\d{2}-\d{2}$/);
   }
 });
+
+// ---- correzioni dopo la rilettura
+import { fromBackup } from '../js/store.js';
+
+test('backup importato: il consenso ai non arriva dal file, nome e chiave restano i tuoi', () => {
+  const cur = emptyState();
+  cur.me = { name: 'davide', phone: '393331234567' };
+  cur.ai = { base: 'https://mio.example/v1', key: 'segreta', model: 'm', consent: '' };
+  const raw = { schema: 2, me: { name: 'altro', phone: '1' }, ai: { base: 'https://estraneo.example/v1', key: '', model: 'x', consent: 'estraneo.example' }, tracks: [{ id: 't1', title: 'brano' }] };
+  const out = fromBackup(cur, raw);
+  assert.equal(out.ai.consent, '');
+  assert.equal(out.ai.base, 'https://mio.example/v1');
+  assert.equal(out.ai.key, 'segreta');
+  assert.equal(out.me.name, 'davide');
+  assert.equal(out.tracks.length, 1);
+  assert.notEqual(out.ai, cur.ai); // copia, non lo stesso oggetto
+});
+
+test('backup importato su un dispositivo senza nome: prende nome e numero dal file', () => {
+  const out = fromBackup(emptyState(), { me: { name: 'sara', phone: '39333' } });
+  assert.equal(out.me.name, 'sara');
+});
+
+test('dati di una versione più nuova: si leggono ma non si sovrascrivono', async () => {
+  const mem = new Map([['tempo.studio.v1', JSON.stringify({ schema: 99, tracks: [{ id: 't1', title: 'futuro' }] })]]);
+  globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
+  const m = await import('../js/store.js?nuovo');
+  const st = m.load();
+  assert.equal(st.tracks[0].title, 'futuro');
+  assert.equal(m.dataTooNew(), true);
+  assert.equal(m.save(st), false);
+  assert.match(mem.get('tempo.studio.v1'), /"schema":99/);
+  delete globalThis.localStorage;
+});
