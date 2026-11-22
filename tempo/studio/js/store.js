@@ -4,7 +4,7 @@ import { uid, dateKey } from './util.js';
 import { HEX, matches } from './hash.js';
 
 const KEY = 'tempo.studio.v1';
-export const SCHEMA = 1;
+export const SCHEMA = 2;
 
 export const STAGES = ['idea', 'beat', 'take', 'mix', 'master', 'uscita'];
 
@@ -12,9 +12,9 @@ export function emptyState() {
   return {
     schema: SCHEMA,
     me: { name: '', phone: '' },
-    ai: { base: '', key: '', model: '' },
-    tracks: [],    // { id, title, artist, stage, createdAt }
-    versions: [],  // { id, trackId, n, fileName, size, duration, hash, peaks, blobId, addedAt }
+    ai: { base: '', key: '', model: '', consent: '' }, // consent: servizio ai a cui hai detto sì
+    tracks: [],    // { id, title, artist, stage, createdAt, sharedAt, release (YYYY-MM-DD|null), finalId (versione definitiva|null) }
+    versions: [],  // { id, trackId, n, label, fileName, size, duration, hash, peaks, blobId, addedAt }
     approvals: [], // { id, trackId, versionId, hash, by, at, source, text }
     tasks: [],     // { id, trackId, who, what, due, done, at, source }
     log: [],       // { id, trackId, at, kind, who, text }
@@ -31,19 +31,33 @@ const arr = (v) => (Array.isArray(v) ? v : []);
 const date = (v) => (typeof v === 'string' && DATE.test(v) ? v : null);
 const time = (v, d) => num(v, 0, 8.64e15, d);
 
+/** Porta uno stato vecchio alla forma attuale. v1 → v2: data di uscita, variante definitiva, nome della variante. */
+export function migrate(raw) {
+  const r = raw && typeof raw === 'object' ? { ...raw } : {};
+  const from = Number.isInteger(r.schema) ? r.schema : 1;
+  if (from < 2) {
+    r.tracks = arr(r.tracks).map((t) => (t && typeof t === 'object' ? { release: null, finalId: null, ...t } : t));
+    r.versions = arr(r.versions).map((v) => (v && typeof v === 'object' ? { label: '', ...v } : v));
+  }
+  r.schema = SCHEMA;
+  return r;
+}
+
 export function sanitizeState(raw) {
-  const s = { ...emptyState(), ...(raw && typeof raw === 'object' ? raw : {}) };
+  const s = { ...emptyState(), ...migrate(raw) };
   const withId = (list) => arr(list).filter((x) => x && typeof x === 'object' && sid(x.id));
   s.me = { name: str(s.me?.name, 40), phone: str(s.me?.phone, 20) };
-  s.ai = { base: str(s.ai?.base, 200), key: str(s.ai?.key, 200), model: str(s.ai?.model, 80) };
-  s.tracks = withId(s.tracks).map((t) => ({ id: t.id, title: str(t.title, 80) || 'senza titolo', artist: str(t.artist, 40), stage: num(t.stage, 0, STAGES.length - 1, 0) | 0, createdAt: time(t.createdAt, Date.now()), sharedAt: t.sharedAt ? time(t.sharedAt, null) : null }));
+  s.ai = { base: str(s.ai?.base, 200), key: str(s.ai?.key, 200), model: str(s.ai?.model, 80), consent: str(s.ai?.consent, 200) };
+  s.tracks = withId(s.tracks).map((t) => ({ id: t.id, title: str(t.title, 80) || 'senza titolo', artist: str(t.artist, 40), stage: num(t.stage, 0, STAGES.length - 1, 0) | 0, createdAt: time(t.createdAt, Date.now()), sharedAt: t.sharedAt ? time(t.sharedAt, null) : null, release: date(t.release), finalId: sid(t.finalId) }));
   const tids = new Set(s.tracks.map((t) => t.id));
   s.versions = withId(s.versions).filter((v) => tids.has(v.trackId)).map((v) => ({
-    id: v.id, trackId: v.trackId, n: num(v.n, 1, 999, 1) | 0, fileName: str(v.fileName, 120), size: num(v.size, 0, 1e11),
+    id: v.id, trackId: v.trackId, n: num(v.n, 1, 999, 1) | 0, label: str(v.label, 40).trim(), fileName: str(v.fileName, 120), size: num(v.size, 0, 1e11),
     duration: num(v.duration, 0, 86400), hash: typeof v.hash === 'string' && /^[0-9a-f]{64}$/.test(v.hash) ? v.hash : null,
     peaks: arr(v.peaks).slice(0, 96).map((p) => num(p, 0, 1)), blobId: sid(v.blobId), addedAt: time(v.addedAt, Date.now()),
   })).filter((v) => v.hash);
   const vids = new Set(s.versions.map((v) => v.id));
+  // la definitiva deve essere una variante dello stesso brano
+  for (const t of s.tracks) if (t.finalId && !s.versions.some((v) => v.id === t.finalId && v.trackId === t.id)) t.finalId = null;
   s.approvals = withId(s.approvals).filter((a) => vids.has(a.versionId)).map((a) => ({ id: a.id, trackId: a.trackId, versionId: a.versionId, hash: str(a.hash, 64), by: str(a.by, 40), at: time(a.at, Date.now()), source: ['link', 'chat', 'mano', 'ai'].includes(a.source) ? a.source : 'mano', text: str(a.text, 300) }));
   s.tasks = withId(s.tasks).filter((t) => tids.has(t.trackId)).map((t) => ({ id: t.id, trackId: t.trackId, who: str(t.who, 40), what: str(t.what, 140), due: date(t.due), done: !!t.done, at: time(t.at, Date.now()), source: str(t.source, 10) }));
   s.log = withId(s.log).filter((l) => tids.has(l.trackId)).slice(-500).map((l) => ({ id: l.id, trackId: l.trackId, at: time(l.at, Date.now()), kind: str(l.kind, 12), who: str(l.who, 40), text: str(l.text, 300) }));
@@ -134,7 +148,7 @@ function addLog(s, trackId, kind, who, text, at = Date.now()) {
 }
 
 export function addTrack(s, { title, artist }, now = Date.now()) {
-  const t = { id: uid(), title: str(title, 80).trim() || 'senza titolo', artist: str(artist, 40).trim(), stage: 0, createdAt: now, sharedAt: null };
+  const t = { id: uid(), title: str(title, 80).trim() || 'senza titolo', artist: str(artist, 40).trim(), stage: 0, createdAt: now, sharedAt: null, release: null, finalId: null };
   s.tracks.unshift(t);
   addLog(s, t.id, 'brano', s.me.name, 'brano creato', now);
   return t;
@@ -157,7 +171,7 @@ export function addVersion(s, trackId, f, now = Date.now()) {
   const same = s.versions.find((v) => v.trackId === trackId && v.hash === f.hash);
   if (same) return { version: same, dup: true };
   const n = Math.max(0, ...s.versions.filter((v) => v.trackId === trackId).map((v) => v.n)) + 1;
-  const v = { id: uid(), trackId, n, fileName: str(f.fileName, 120), size: num(f.size, 0, 1e11), duration: num(f.duration, 0, 86400), hash: f.hash, peaks: arr(f.peaks).slice(0, 96), blobId: sid(f.blobId), addedAt: now };
+  const v = { id: uid(), trackId, n, label: str(f.label, 40).trim(), fileName: str(f.fileName, 120), size: num(f.size, 0, 1e11), duration: num(f.duration, 0, 86400), hash: f.hash, peaks: arr(f.peaks).slice(0, 96), blobId: sid(f.blobId), addedAt: now };
   s.versions.push(v);
   addLog(s, trackId, 'versione', s.me.name, `v${n} caricata · ${v.fileName}`, now);
   return { version: v, dup: false };
@@ -168,6 +182,8 @@ export function deleteVersion(s, vid) {
   if (!v) return null;
   s.versions = s.versions.filter((x) => x.id !== vid);
   s.approvals = s.approvals.filter((a) => a.versionId !== vid);
+  const t = trackOf(s, v.trackId);
+  if (t?.finalId === vid) t.finalId = null;
   addLog(s, v.trackId, 'versione', s.me.name, `v${v.n} eliminata`);
   return v.blobId;
 }
@@ -185,6 +201,70 @@ export function toggleTask(s, id) {
   if (!t) return;
   t.done = !t.done;
   addLog(s, t.trackId, 'fatto', s.me.name, `${t.done ? 'fatto' : 'riaperto'}: ${t.who ? t.who + ' · ' : ''}${t.what}`);
+}
+
+/** Fissa (o toglie, con `vid` null o già fissata) la variante definitiva: la scelta di chi produce, distinta dall'ok dell'artista. */
+export function setFinal(s, tid, vid) {
+  const t = trackOf(s, tid);
+  if (!t) return null;
+  const v = vid ? s.versions.find((x) => x.id === vid && x.trackId === tid) : null;
+  if (vid && !v) return null;
+  if (!v || t.finalId === v.id) {
+    if (!t.finalId) return null;
+    const old = s.versions.find((x) => x.id === t.finalId);
+    t.finalId = null;
+    addLog(s, tid, 'definitiva', s.me.name, `⚑ tolta la definitiva${old ? ` (v${old.n})` : ''}`);
+    return null;
+  }
+  t.finalId = v.id;
+  addLog(s, tid, 'definitiva', s.me.name, `⚑ v${v.n} fissata come definitiva`);
+  return v;
+}
+
+export const finalVersion = (s, tid) => { const t = trackOf(s, tid); return (t?.finalId && s.versions.find((v) => v.id === t.finalId)) || null; };
+
+/** Data di uscita (YYYY-MM-DD) o null per toglierla. */
+export function setRelease(s, tid, day) {
+  const t = trackOf(s, tid);
+  if (!t) return;
+  const d = date(day);
+  if (t.release === d) return;
+  t.release = d;
+  addLog(s, tid, 'uscita', s.me.name, d ? `uscita fissata: ${d.split('-').reverse().join('.')}` : 'data di uscita tolta');
+}
+
+export function renameVersion(s, vid, label) {
+  const v = s.versions.find((x) => x.id === vid);
+  if (v) v.label = str(label, 40).trim();
+}
+
+/** Nome da mostrare per una variante: quello scelto, o il file senza estensione. */
+export const variantName = (v) => v.label || String(v.fileName || '').replace(/\.[a-z0-9]{1,5}$/i, '') || `versione ${v.n}`;
+
+/** Uscite in un mese (month 0–11), ordinate per giorno. */
+export function releasesIn(s, year, month) {
+  const pre = `${year}-${String(month + 1).padStart(2, '0')}-`;
+  return s.tracks.filter((t) => t.release && t.release.startsWith(pre)).sort((a, b) => a.release.localeCompare(b.release));
+}
+
+/** Scadenze aperte in un mese, per i puntini del calendario. */
+export function duesIn(s, year, month) {
+  const pre = `${year}-${String(month + 1).padStart(2, '0')}-`;
+  return s.tasks.filter((k) => !k.done && k.due && k.due.startsWith(pre));
+}
+
+/** Collaboratori: i nomi scritti in «con chi», con quanti brani. Restano su questo dispositivo. */
+export function collaborators(s) {
+  const m = new Map();
+  for (const t of s.tracks) {
+    const name = t.artist.trim();
+    if (!name) continue;
+    const k = name.toLowerCase();
+    const c = m.get(k) || { name, tracks: 0 };
+    c.tracks++;
+    m.set(k, c);
+  }
+  return [...m.values()].sort((a, b) => b.tracks - a.tracks || a.name.localeCompare(b.name));
 }
 
 export function renameTrack(s, id, { title, artist }) {
@@ -283,6 +363,8 @@ export function snapshotOf(s, tid, { audio = null, now = Date.now() } = {}) {
     by: s.me.name,
     p: s.me.phone,
     st: t.stage,
+    fi: finalVersion(s, tid)?.n || undefined,
+    re: t.release || undefined,
     at: now,
     sn: t.sharedAt || null,
     a: audio || undefined,
@@ -311,14 +393,15 @@ export function demoState(now = Date.now()) {
   const D = 24 * H;
   const hex = (seed) => { let x = seed, o = ''; while (o.length < 64) { x = (Math.imul(x, 1103515245) + 12345) >>> 0; o += x.toString(16).padStart(8, '0'); } return o.slice(0, 64); };
   const wave = (seed, len = 48) => Array.from({ length: len }, (_, i) => Math.round((0.35 + 0.65 * Math.abs(Math.sin(i * 0.37 + seed) * Math.cos(i * 0.11 + seed * 2))) * 100) / 100);
-  const t1 = { id: 'demo1', title: 'notte a ortigia', artist: 'midi', stage: 3, createdAt: now - 12 * D, sharedAt: now - 3 * D };
-  const t2 = { id: 'demo2', title: 'vetro', artist: 'sara', stage: 1, createdAt: now - 4 * D };
-  const t3 = { id: 'demo3', title: 'scirocco', artist: 'midi', stage: 5, createdAt: now - 40 * D };
+  const k0 = (d) => dateKey(now + d * D);
+  const t1 = { id: 'demo1', title: 'notte a ortigia', artist: 'midi', stage: 3, createdAt: now - 12 * D, sharedAt: now - 3 * D, release: k0(18), finalId: 'd1v2' };
+  const t2 = { id: 'demo2', title: 'vetro', artist: 'sara', stage: 1, createdAt: now - 4 * D, sharedAt: null, release: null, finalId: null };
+  const t3 = { id: 'demo3', title: 'scirocco', artist: 'midi', stage: 5, createdAt: now - 40 * D, sharedAt: null, release: k0(-9), finalId: 'd3v1' };
   s.tracks = [t1, t2, t3];
   s.versions = [
-    { id: 'd1v1', trackId: 'demo1', n: 1, fileName: 'ortigia_demo.wav', size: 41.2e6, duration: 214, hash: hex(11), peaks: wave(1), blobId: null, addedAt: now - 10 * D },
-    { id: 'd1v2', trackId: 'demo1', n: 2, fileName: 'ortigia_mix2.wav', size: 44.9e6, duration: 222, hash: hex(12), peaks: wave(2), blobId: null, addedAt: now - 5 * D },
-    { id: 'd1v3', trackId: 'demo1', n: 3, fileName: 'ortigia_mix3_voxup.wav', size: 45.1e6, duration: 222, hash: hex(13), peaks: wave(3), blobId: null, addedAt: now - 1 * D },
+    { id: 'd1v1', trackId: 'demo1', n: 1, label: 'rec 1', fileName: 'ortigia_demo.wav', size: 41.2e6, duration: 214, hash: hex(11), peaks: wave(1), blobId: null, addedAt: now - 10 * D },
+    { id: 'd1v2', trackId: 'demo1', n: 2, label: 'rec 2', fileName: 'ortigia_mix2.wav', size: 44.9e6, duration: 222, hash: hex(12), peaks: wave(2), blobId: null, addedAt: now - 5 * D },
+    { id: 'd1v3', trackId: 'demo1', n: 3, label: 'rec 3 voce su', fileName: 'ortigia_mix3_voxup.wav', size: 45.1e6, duration: 222, hash: hex(13), peaks: wave(3), blobId: null, addedAt: now - 1 * D },
     { id: 'd2v1', trackId: 'demo2', n: 1, fileName: 'vetro_beat_140.wav', size: 30.4e6, duration: 168, hash: hex(21), peaks: wave(4), blobId: null, addedAt: now - 3 * D },
     { id: 'd3v1', trackId: 'demo3', n: 1, fileName: 'scirocco_master.wav', size: 52.3e6, duration: 189, hash: hex(31), peaks: wave(5), blobId: null, addedAt: now - 30 * D },
   ];
