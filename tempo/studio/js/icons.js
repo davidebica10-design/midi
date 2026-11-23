@@ -18,6 +18,10 @@ const P = {
   user: '<circle cx="12" cy="9" r="3.6"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
   next: '<path d="M9 5l7 7-7 7"/>',
+  card: '<rect x="4.5" y="4.5" width="15" height="15" rx="5"/>',
+  cardFill: '<rect x="4" y="4" width="16" height="16" rx="5.5" fill="currentColor" stroke="none"/>',
+  grid: '<rect x="4.5" y="4.5" width="6.2" height="6.2" rx="1.8"/><rect x="13.3" y="4.5" width="6.2" height="6.2" rx="1.8"/><rect x="4.5" y="13.3" width="6.2" height="6.2" rx="1.8"/><rect x="13.3" y="13.3" width="6.2" height="6.2" rx="1.8"/>',
+  gridFill: '<g fill="currentColor" stroke="none"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/></g>',
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
 };
 
