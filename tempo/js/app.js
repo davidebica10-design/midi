@@ -71,6 +71,7 @@ let plan = {};
 let mode = 'day'; // 'day' | 'overview'
 const DAYS = 14;
 let selDay = dateKey(new Date());
+let lastToday = selDay; // l'ultimo «oggi» visto: serve a accorgersi di mezzanotte
 let busy = false;
 let pending = null; // proposta in attesa di conferma: { draft, msgId }
 
@@ -664,7 +665,7 @@ function toggleMic() {
     input.value = base + t;
     input.dispatchEvent(new Event('input'));
   };
-  rec.onerror = (e) => toast(e.error === 'not-allowed' ? 'Consenti il microfono a Safari nelle Impostazioni' : 'Dettatura non disponibile: usa il microfono della tastiera');
+  rec.onerror = (e) => { if (e.error !== 'aborted') toast(e.error === 'not-allowed' ? 'Consenti il microfono a Safari nelle Impostazioni' : e.error === 'no-speech' ? 'Non ho sentito niente. Riprova vicino al microfono.' : 'Dettatura non disponibile: usa il microfono della tastiera'); };
   rec.onend = () => { rec = null; $('#mic').classList.remove('rec'); renderComposer(); };
   try { rec.start(); $('#mic').classList.add('rec'); } catch { rec = null; }
 }
@@ -1409,10 +1410,12 @@ function bindPinch() {
   const app = $('#app'), dayEl = $('#day');
   let startD = 0, scale = 1, active = false, target = null;
   const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-  document.addEventListener('gesturestart', (e) => e.preventDefault());
-  document.addEventListener('gesturechange', (e) => e.preventDefault());
+  // il pizzico è dell'app solo nel giorno e nel calendario; altrove (Impostazioni, schede, racconto) lo zoom del sistema resta libero
+  const overlay = () => settingsOpen || summaryOpen || recapOpen || !$('#sheet').hidden || !$('#onb').hidden;
+  document.addEventListener('gesturestart', (e) => { if (active) e.preventDefault(); });
+  document.addEventListener('gesturechange', (e) => { if (active) e.preventDefault(); });
   app.addEventListener('touchstart', (e) => {
-    if (e.touches.length !== 2) return;
+    if (e.touches.length !== 2 || overlay()) return;
     startD = dist(e.touches);
     scale = 1;
     active = true;
@@ -1696,7 +1699,7 @@ async function timeAsk(text) {
   const local = vm.answerLocally(text, sum, state);
   const mode2 = aiMode();
   try {
-    if (mode2 === 'base') ans.text = local || r.chapters.map((c) => c.text).slice(0, 3).join('\n');
+    if (mode2 === 'base') ans.text = /(mese|mensile|andat)/i.test(text) ? r.chapters.map((c) => c.text).slice(0, 3).join('\n') : (local || 'Senza AI non so rispondere a questo: posso solo raccontarti il mese. Puoi attivarla nelle Impostazioni.');
     else {
       const system = timeChatSystem(r, state, askSystem(state, plan, Date.now(), sum));
       const msgs = [...history, { role: 'user', content: text }];
@@ -1964,6 +1967,7 @@ function showSheet() {
   sh.classList.remove('closing');
   sh.classList.toggle('zoom', !!from && !matchMedia('(prefers-reduced-motion: reduce)').matches);
   sh.hidden = false; $('#sheet-backdrop').hidden = false;
+  sh.scrollTop = 0;
   const app = $('#app');
   if (!app.inert) {
     const ae = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
@@ -2257,20 +2261,33 @@ async function aiPlans(ops) {
 
 // ---------------------------------------------------------------- impostazioni
 let settingsOpen = false;
+let settingsOpener = null;
 function openSettings() {
+  if (!settingsOpen) {
+    const ae = document.activeElement;
+    settingsOpener = ae instanceof HTMLElement && ae !== document.body ? ae : $('#open-settings');
+  }
   settingsOpen = true;
   setComposing(false);
   closePlus();
   const p = $('#panel');
   p.hidden = false;
   p.classList.remove('closing');
+  // modale: lo sfondo non si raggiunge né col tocco né con lo screen reader
+  $('#day').inert = $('#overview').inert = $('#composer').inert = $('#sum-fab').inert = true;
   renderSettings();
   animateIn($('#settings'));
   ensureFreeModels();
+  p.focus({ preventScroll: true });
 }
 function closeSettings() {
+  if (!settingsOpen) return;
   settingsOpen = false;
   const p = $('#panel');
+  $('#day').inert = $('#overview').inert = $('#composer').inert = false;
+  $('#sum-fab').inert = mode !== 'overview';
+  const back = settingsOpener; settingsOpener = null;
+  if (back && document.contains(back) && !back.closest('[inert]')) back.focus({ preventScroll: true });
   p.classList.add('closing');
   setTimeout(() => { if (!settingsOpen) { p.hidden = true; p.classList.remove('closing'); } }, 300);
 }
@@ -2440,6 +2457,7 @@ async function runSync(manual = false) {
 function settingsCloudHtml() {
   const S = state.settings;
   const url = S.cloudUrl || DEFAULT_CLOUD_URL;
+  if (!url && !S.cloudToken) return ''; // Tempo Cloud non c'è ancora: niente modulo di accesso a un servizio che non esiste
   const canAi = (S.provider === 'online' && S.openKey) ? true : false;
   if (!S.cloudToken) {
     return `<div class="group"><h2>Account e dispositivi</h2>
@@ -3242,9 +3260,14 @@ function bind() {
     if (editing && vv.height < window.innerHeight - 80) {
       root.setProperty('--vvh', Math.round(vv.height) + 'px');
       root.setProperty('--vvt', Math.round(vv.offsetTop) + 'px');
+      // le schede stanno fuori da #app: salgono sopra la tastiera e restano dentro l'area visibile
+      root.setProperty('--kb-b', Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)) + 'px');
+      const f = document.activeElement;
+      if (f?.closest?.('#sheet')) requestAnimationFrame(() => f.scrollIntoView({ block: 'center', behavior: 'instant' }));
     } else {
       root.removeProperty('--vvh');
       root.removeProperty('--vvt');
+      root.removeProperty('--kb-b');
     }
     if (vv.offsetTop === 0) window.scrollTo(0, 0);
   };
@@ -3259,6 +3282,13 @@ function bind() {
 
   // il tempo passa: aggiorna piano e carte
   const tick = () => {
+    // mezzanotte con l'app aperta: se guardavi «oggi» passi al nuovo oggi; se guardavi un altro giorno resti lì
+    const nowDay = today();
+    if (nowDay !== lastToday) {
+      if (selDay === lastToday) selDay = nowDay;
+      lastToday = nowDay; expandedDay = null; planCache = {};
+      replan(); renderDayView(true);
+    }
     // solo ciò che il tick può cambiare: ancore, conteggio delle ripianificazioni di oggi, giorno d'archivio
     const sigOf = () => `${JSON.stringify(state.anchors)}|${state.stats.replans[today()] || 0}|${state.stats.archivedOn}`;
     const snap = sigOf();
@@ -3610,7 +3640,7 @@ function proposalSent(how) {
     undoId = pipeline('Impegno proposto', p.ops).undoId;
     itemId = state.items.find((x) => !before.has(x.id))?.id || null;
   }
-  upsertInvite({ id: p.id, role: 'inviata', itemId, title: cleanTxt(p.title, 80), to: p.to, from: '', at: Date.now(), status: 'attesa', d: p.date, s: p.start });
+  upsertInvite({ id: p.id, role: 'inviata', itemId, title: cleanTxt(p.title, 80), to: p.to, from: myName(), at: Date.now(), status: 'attesa', d: p.date, s: p.start });
   closeSheet();
   renderAll();
   const undo = undoId ? undoAction(undoId) : null;
@@ -3835,7 +3865,7 @@ function moveToAlt(sh, rec, item, a) {
     const row = shareRow(textNow, {
       guard: needName(() => c.querySelector('.inv-name')),
       onSent: (how) => {
-        upsertInvite({ id, role: 'inviata', itemId: item.id, title: cleanTxt(item.title, 80), to: rec.to, from: '', at: Date.now(), status: 'attesa', d: a.d, s: a.s });
+        upsertInvite({ id, role: 'inviata', itemId: item.id, title: cleanTxt(item.title, 80), to: rec.to, from: myName(), at: Date.now(), status: 'attesa', d: a.d, s: a.s });
         renderAll();
         if (how === 'copied') toast('Copiato. Incollalo nella chat.');
         dismissNotice('invito');

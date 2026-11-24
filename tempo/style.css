@@ -60,7 +60,7 @@ body {
   background: var(--bg); color: var(--ink);
   font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%;
-  overscroll-behavior: none; overflow: hidden; touch-action: pan-y;
+  overscroll-behavior: none; overflow: hidden; touch-action: manipulation;
 }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 input, textarea, select { font: inherit; color: inherit; font-size: 16px; }
@@ -84,7 +84,7 @@ input, textarea, select { font: inherit; color: inherit; font-size: 16px; }
 .topbar { position: absolute; top: calc(var(--safe-t) + 8px); left: 16px; right: 16px; z-index: var(--z-top); display: flex; justify-content: space-between; pointer-events: none; }
 .topbar > *, .topbar-right > * { pointer-events: auto; }
 .topbar-right { display: flex; gap: 8px; }
-.round { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--ink);
+.round { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; color: var(--ink);
   background: var(--glass); -webkit-backdrop-filter: blur(18px) saturate(160%); backdrop-filter: blur(18px) saturate(160%);
   box-shadow: inset 0 0 0 1px var(--glass-bd), 0 4px 14px -6px rgba(90, 30, 70, 0.25); transition: transform 0.3s var(--spring); }
 .round:active { transform: scale(0.88); }
@@ -185,7 +185,7 @@ input, textarea, select { font: inherit; color: inherit; font-size: 16px; }
 .ov-range { display: flex; align-items: center; justify-content: space-between; margin: 18px 2px 14px; }
 .ov-range h2 { font-family: var(--font-title); font-size: 27px; font-weight: 500; letter-spacing: -0.02em; text-transform: capitalize; }
 .ov-nav { display: flex; gap: 6px; }
-.ov-nav button { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line), 0 0 0 0 transparent; background: var(--glass); transition: transform 0.25s var(--spring); }
+.ov-nav button { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line), 0 0 0 0 transparent; background: var(--glass); transition: transform 0.25s var(--spring); }
 .ov-nav button:active { transform: scale(0.88); }
 .ov-nav button:disabled { opacity: 0.3; }
 .ov-seg { display: flex; gap: 8px; }
@@ -237,7 +237,7 @@ input, textarea, select { font: inherit; color: inherit; font-size: 16px; }
 
 .months { display: flex; gap: 4px; overflow-x: auto; margin: 10px -18px 0; padding: 0 16px 2px; scrollbar-width: none; }
 .months::-webkit-scrollbar { display: none; }
-.months button { flex: none; padding: 6px 12px; border-radius: 999px; font-size: 14.5px; font-weight: 700; color: var(--ink-3); transition: color 0.3s, background 0.3s; }
+.months button { flex: none; min-height: 44px; padding: 6px 12px; border-radius: 999px; font-size: 14.5px; font-weight: 700; color: var(--ink-3); transition: color 0.3s, background 0.3s; }
 .months button.on { color: var(--accent); background: var(--glass); }
 .cal-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 10px 14px calc(var(--safe-b) + 40px); }
 .month { margin-bottom: 26px; }
@@ -467,9 +467,9 @@ body.kb .bar { bottom: 8px; }
 .chip { display: inline-flex; align-items: center; padding: 7px 6px 7px 12px; border-radius: 999px; background: var(--paper); box-shadow: var(--shadow); font-size: 14.5px; }
 .chip .x { font-size: 18px; padding: 0 4px 0 6px; }
 .chip.add { padding: 0; box-shadow: none; background: var(--glass); border: 1px dashed var(--ink-3); }
-.chip.add input { border: 0; background: none; outline: 0; padding: 7px 12px; width: 120px; font-size: 14.5px; }
-.row.days { justify-content: flex-start; gap: 6px; flex-wrap: wrap; min-height: 0; padding-top: 0; }
-.dchip { width: 40px; height: 34px; border-radius: 12px; font-size: 13px; font-weight: 600; background: var(--line); transition: transform 0.25s var(--spring), background 0.2s; }
+.chip.add input { border: 0; background: none; outline: 0; padding: 7px 12px; width: 130px; font-size: 16px; }
+.row.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; min-height: 0; padding-top: 0; }
+.dchip { width: 100%; height: 44px; border-radius: 12px; font-size: 13px; font-weight: 600; background: var(--line); transition: transform 0.25s var(--spring), background 0.2s; }
 .dchip.on { background: var(--lilac); color: var(--bg); }
 .dchip:active { transform: scale(0.9); }
 .btn.ghost { display: block; margin: 12px auto 0; background: none; color: var(--accent); }
@@ -573,8 +573,8 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
   -webkit-backdrop-filter: blur(22px) saturate(140%); backdrop-filter: blur(22px) saturate(140%); transition: width 0.5s var(--spring), border-radius 0.4s var(--ease); }
 .bar-row textarea { font-size: 16px; color: var(--ink); padding: 10px 0; }
 .bar-row textarea::placeholder { color: var(--ink-3); }
-.bar-btn { width: 40px; height: 40px; color: var(--ink); }
-.send { width: 34px; height: 34px; background: var(--ink); color: var(--bg); }
+.bar-btn { width: 44px; height: 44px; color: var(--ink); }
+.send { width: 44px; height: 44px; background: var(--ink); color: var(--bg); }
 /* agganciata: sempre una sola pillola a tutta larghezza; aperta, guadagna la nota e il riepilogo sopra */
 .bar-row { min-height: 52px; border-radius: 26px; padding: 4px 6px 4px 6px; box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent), 0 10px 26px -14px rgba(60, 30, 50, 0.35); }
 .bar-row textarea { cursor: text; }
@@ -587,7 +587,7 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 /* ---------- calendario: si torna al giorno toccando un giorno ---------- */
 .ov-top { align-items: center; }
 .ov-top h2 { font-family: var(--font-title); font-size: 22px; font-weight: 500; letter-spacing: 0; }
-.ov-spacer { width: 40px; flex: none; }
+.ov-spacer { width: 44px; flex: none; }
 .months { margin-top: 12px; }
 .months button.on { color: var(--accent); background: var(--paper); box-shadow: var(--shadow); }
 .cd { background: var(--glass); }
@@ -681,7 +681,7 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .sheet { background: var(--bg); }
 .sheet:has(.ed-card) { padding-bottom: 0; }
 .ed-card { position: relative; margin: 6px 4px 16px; border-radius: 22px; background: var(--card, var(--paper)); color: var(--paper-ink); overflow: hidden; transform: rotate(-1deg);
-  transition: background 0.3s, transform 0.4s var(--spring); touch-action: pan-y; }
+  transition: background 0.3s, transform 0.4s var(--spring); }
 .ed-photo:empty { display: none; }
 .ed-photo { position: relative; height: 150px; }
 .ed-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -721,6 +721,10 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .ed-save { position: sticky; bottom: 0; margin-bottom: calc(var(--safe-b) + 8px); box-shadow: 0 -14px 24px 10px var(--bg); }
 .ed-actions .ed-save { position: static; box-shadow: none; margin-bottom: 0; }
 .ed-actions { padding-bottom: calc(var(--safe-b) + 8px); }
+/* tastiera: la scheda sale sopra (--kb-b) e sta nell'area visibile (--vvh); «Salva» resta in vista */
+.sheet { bottom: var(--kb-b, 0px); max-height: min(92%, calc(var(--vvh, 100vh) - 12px)); }
+.ed-actions { position: sticky; bottom: 0; z-index: var(--z-raised); background: linear-gradient(to bottom, transparent, var(--bg) 14px); margin-top: -8px; padding-top: 22px; }
+body.kb .ed-actions { padding-bottom: 8px; }
 .ed-quick { display: flex; gap: 8px; }
 .ed-quick button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 4px; border-radius: 16px; background: var(--paper); font-size: 12.5px; font-weight: 600; color: var(--ink);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent); }
@@ -951,7 +955,7 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .onb-k2 { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin: 22px 0 8px; }
 .onb-miss p { font-size: 14.5px; line-height: 1.4; color: var(--ink-2); margin: 0 0 8px; }
 .onb-redo { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 12px; }
-.onb-redo textarea { flex: 1; min-width: 0; resize: none; border: 1px solid var(--glass-bd); border-radius: 14px; padding: 10px 12px; background: var(--paper); color: var(--paper-ink); font: inherit; font-size: 15px; }
+.onb-redo textarea { flex: 1; min-width: 0; resize: none; border: 1px solid var(--glass-bd); border-radius: 14px; padding: 10px 12px; background: var(--paper); color: var(--paper-ink); font: inherit; font-size: 16px; }
 .onb-redo .btn { flex: none; }
 .onb-week { display: flex; flex-direction: column; gap: 6px; }
 .ow-day { display: flex; gap: 10px; font-size: 13.5px; line-height: 1.35; padding: 8px 12px; border-radius: 14px; background: var(--glass); border: 1px solid var(--glass-bd); }
@@ -1075,7 +1079,7 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 /* ---------- account e collegamenti ---------- */
 .cl-box { margin: 4px 0 8px; padding: 14px; border-radius: 16px; background: color-mix(in srgb, var(--ink) 5%, transparent); display: flex; flex-direction: column; gap: 10px; font-size: 14px; }
 .cl-box label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
-.cl-box input[readonly] { width: 100%; padding: 9px 10px; border-radius: 10px; border: 0; background: var(--paper); font: 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); }
+.cl-box input[readonly] { width: 100%; padding: 9px 10px; border-radius: 10px; border: 0; background: var(--paper); font: 16px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); }
 .cl-box .btn { align-self: flex-start; }
 
 /* accessibilità (revisione WCAG 2.1 AA): testo secondario delle carte tinte ≥ 4,5:1, bordi delle celle ≥ 3:1,
@@ -1104,8 +1108,8 @@ body, html { background: var(--bg); font-family: -apple-system, BlinkMacSystemFo
 .ed-ck .lbl.done { text-decoration: line-through; color: var(--ink-2); }
 
 /* ---------- bersagli tocco: area sensibile ≥ 44 × 44 px, senza ingrandire il disegno ---------- */
-:where(.round, .bar-btn, .send, .pc-check, .ov-nav button, .stepper button, .sw, .x, .dchip, .seg button, .months button, .onb-skip) { position: relative; }
-:is(.round, .bar-btn, .send, .pc-check, .ov-nav button, .stepper button, .sw, .x, .dchip, .seg button, .months button, .onb-skip, .ch.day, .ed-rm, .photo-field .rm, .obs-x, .r-x)::after {
+:where(.round, .bar-btn, .send, .pc-check, .ov-nav button, .stepper button, .sw, .x, .dchip, .seg button, .months button, .onb-skip, .cd, .sw-toggle) { position: relative; }
+:is(.round, .bar-btn, .send, .pc-check, .ov-nav button, .stepper button, .sw, .x, .dchip, .seg button, .months button, .onb-skip, .cd, .sw-toggle, .ch.day, .ed-rm, .photo-field .rm, .obs-x, .r-x)::after {
   content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
 .btn, .mini-btn, .adv-go, .ch { min-height: 44px; }
 .chip { min-height: 44px; }
