@@ -359,7 +359,7 @@ function notice({ key, what, why, next, detail = '', action = null, sticky = fal
   return el;
 }
 /** Gli avvisi in alto non coprono mai l'intestazione di una scheda o di una schermata: dentro, sotto la testata. */
-const SURFACES = [['#sheet', '.grabber'], ['#onb', '.onb-top'], ['#recap', '.sum-head'], ['#summary', '.sum-head'], ['#panel', '.panel-head']];
+const SURFACES = [['#sheet', '.sheet-top'], ['#onb', '.onb-top'], ['#recap', '.sum-head'], ['#summary', '.sum-head'], ['#panel', '.panel-head']];
 let dockedOn = '';
 function dockNotices() {
   const host = $('#notices-top');
@@ -1783,9 +1783,9 @@ function openSheet(id, preset = {}, keepPhoto = false) {
     </div></section>
     ${(state.projects || []).length ? `<section class="ed-row"><span class="ed-k">Progetto</span><div class="chips-x">${chip('project', '', 'Nessuno')}${state.projects.map((p) => chip('project', p.id, `<i class="dot" style="--pc:${safeColor(p.color) || 'var(--accent)'}"></i>${esc(p.name)}`)).join('')}</div></section>` : ''}
     <details class="ed-more"><summary>Altro</summary>
-      <section class="ed-row"><span class="ed-k">Tipo</span><div class="chips-x">${chip('kind', 'task', 'Flessibile')}${chip('kind', 'event', 'Orario fisso')}</div></section>
-      <section class="ed-row"><span class="ed-k">Importante</span><div class="chips-x">${chip('priority', 3, '★ Sì')}${chip('priority', 2, 'Normale')}${chip('priority', 1, 'Può aspettare')}</div></section>
-      <section class="ed-row"><span class="ed-k">Energia</span><div class="chips-x">${chip('energy', 1, 'Leggera')}${chip('energy', 2, 'Media')}${chip('energy', 3, 'Concentrazione')}</div></section>
+      <section class="ed-row"><span class="ed-k">Tipo</span><div class="chips-x seg-c">${chip('kind', 'task', 'Flessibile')}${chip('kind', 'event', 'Orario fisso')}</div></section>
+      <section class="ed-row"><span class="ed-k">Importante</span><div class="chips-x seg-c">${chip('priority', 3, '★ Sì')}${chip('priority', 2, 'Normale')}${chip('priority', 1, 'Può aspettare')}</div></section>
+      <section class="ed-row"><span class="ed-k">Energia</span><div class="chips-x seg-c">${chip('energy', 1, 'Leggera')}${chip('energy', 2, 'Media')}${chip('energy', 3, 'Concentrazione')}</div></section>
       <section class="ed-row"><span class="ed-k">Fascia</span><div class="chips-x">${chip('window', '', 'Qualsiasi')}${Object.keys(WINDOWS).map((w) => chip('window', w, cap(w))).join('')}</div></section>
       <section class="ed-row"><span class="ed-k">Scadenza</span><div class="chips-x">${chip('deadline', '', 'Nessuna')}<label class="ch ch-in" data-ed-in="deadline"><span id="ed-dl-l">Scegli</span><input type="date" id="ed-dl" aria-label="Scadenza"></label></div></section>
     </details>
@@ -1967,6 +1967,7 @@ function showSheet() {
   sh.classList.remove('closing');
   sh.classList.toggle('zoom', !!from && !matchMedia('(prefers-reduced-motion: reduce)').matches);
   sh.hidden = false; $('#sheet-backdrop').hidden = false;
+  $('#sheet-bar-t').textContent = sh.querySelector('#sheet-title')?.textContent || '';
   sh.scrollTop = 0;
   const app = $('#app');
   if (!app.inert) {
@@ -2301,7 +2302,7 @@ function renderSettings() {
   const listed = S.freeModelsPreset === preset || (!S.freeModelsPreset && preset === 'openrouter') ? (S.freeModels || []) : [];
   const wd = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
   $('#settings').innerHTML = `
-    <p class="ctx-intro">Quello che so di te. Da qui costruisco ogni giornata: cambialo quando vuoi, oppure dimmelo nella barra.</p>
+    <p class="ctx-intro">Quello che so di te. Cambialo qui o dimmelo nella barra.</p>
 
     <div class="group"><h2>Obiettivi</h2>
       ${ctxv.goals.map((g) => `<div class="goal" style="--pc:${safeColor(g.project?.color) || 'var(--accent)'}">
@@ -2343,7 +2344,7 @@ function renderSettings() {
         ${state.memory.filter((m) => m.category !== 'vincolo').map((m) => `<div class="row"><div class="mem-item"><span>${esc(m.text)}</span></div><button class="x" data-forget="${esc(m.id)}" aria-label="Dimentica">×</button></div>`).join('')}
         <div class="row"><input type="text" class="wide" id="mem-new" placeholder="Es. la sera produco meglio" enterkeyhint="done"><button class="btn" id="mem-add">Aggiungi</button></div>
       </div>
-      <p class="note">Niente scatole nere: tutto quello che uso per decidere è qui.</p>
+      <p class="note">Tutto quello che uso per decidere è qui.</p>
       <button class="btn ghost" id="redo-onb">Raccontami di nuovo di te</button>
     </div>
 
@@ -2374,16 +2375,16 @@ function renderSettings() {
         <div class="row"><span class="lbl" id="open-status">${S.lastWorkingModel && S.lastWorkingPreset === preset ? '✓ Ultima prova riuscita' : 'Controlla che chiave e modello funzionino'}</span><button class="btn" id="open-test">Prova</button></div>` : ''}
       </div>
       <p class="note">${{
-        base: 'Senza AI la chat capisce solo frasi semplici. Pianificazione, carte e annullamento funzionano comunque.',
-        local: 'Il modello gira interamente sul tuo iPhone: gratis, privato e anche offline. Il primo avvio scarica il modello (circa 1 GB, meglio con il Wi-Fi). È meno intelligente di un modello grande: per le frasi più complesse può sbagliare, ma ogni modifica si può annullare.',
+        base: 'Senza AI capisco solo frasi semplici. Il resto funziona uguale.',
+        local: 'Gira sul tuo iPhone: gratis, privato, anche offline. Il primo avvio scarica circa 1 GB (meglio con il Wi-Fi). Sbaglia più di un modello grande, ma ogni modifica si annulla.',
         online: ({
-          gemini: 'Gratis, senza carta di credito. Per la chiave: apri <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>, accedi con il tuo account Google, tocca <b>Create API key</b> (o «Crea chiave API»), copiala e incollala qui sopra, poi tocca <b>Prova</b>. Con «Automatico» l\'app sceglie il modello Gemini migliore e, se uno non risponde, passa al successivo. Nel piano gratuito Google può usare i messaggi per migliorare i suoi modelli.',
-          openrouter: 'Crea una chiave su <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai</a> senza limite di credito. I modelli gratuiti di OpenRouter cambiano spesso e hanno limiti giornalieri bassi: con «Automatico» l\'app passa da sola al successivo se uno non risponde.',
+          gemini: 'Gratis, senza carta. Crea la chiave su <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> (<b>Create API key</b>), incollala qui e tocca <b>Prova</b>. Con «Automatico» scelgo io il modello. Nel piano gratuito Google può usare i messaggi per migliorare i suoi modelli.',
+          openrouter: 'Crea una chiave su <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai</a> senza limite di credito. I modelli gratuiti cambiano e hanno limiti bassi: con «Automatico» passo al successivo se uno non risponde.',
           groq: 'Crea una chiave gratuita su <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com</a>, incollala qui sopra e tocca <b>Prova</b>.',
-          nvidia: 'Modelli open di NVIDIA (Nemotron e altri) su <a href="https://build.nvidia.com" target="_blank" rel="noopener">build.nvidia.com</a>: crea una chiave (nvapi-…) con l\'account sviluppatore gratuito, incollala qui sopra e tocca <b>Prova</b>. L\'accesso gratuito è pensato per provare; per un uso continuativo NVIDIA chiede un piano a pagamento.',
+          nvidia: 'Modelli open di NVIDIA su <a href="https://build.nvidia.com" target="_blank" rel="noopener">build.nvidia.com</a>: crea una chiave (nvapi-…) con l\'account sviluppatore gratuito, incollala qui e tocca <b>Prova</b>. Il piano gratuito è per provare; per un uso continuo NVIDIA chiede un piano a pagamento.',
           custom: 'Qualsiasi servizio compatibile con l\'API OpenAI: indica indirizzo, modello e chiave.',
         })[preset],
-        claude: 'La chiave resta solo su questo iPhone e viene inviata soltanto ad api.anthropic.com. La crei su <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a>. L\'uso dell\'API si paga a parte, non è incluso negli abbonamenti Claude.',
+        claude: 'La chiave resta su questo iPhone e va solo ad api.anthropic.com. La crei su <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a>. L\'API si paga a parte, non è inclusa negli abbonamenti Claude.',
       }[prov]}</p>
     </div>
 
@@ -2392,7 +2393,7 @@ function renderSettings() {
     <div class="group"><h2>Cosa ho imparato</h2>
       <div class="card">
         ${(() => { const rows = learnedList(state, Date.now()); return rows.length ? rows.map((r) => `<div class="row"><span class="lbl">${esc(r.text)}</span>${r.toggle ? `<button class="btn" data-learn-toggle="${esc(r.key)}" aria-pressed="${r.active}">${r.disabled ? 'Usa' : 'Non usare'}</button>` : ''}${r.info ? '' : `<button class="x" data-learn-forget="${esc(r.key)}" aria-label="Dimentica">×</button>`}</div>`).join('')
-          : '<div class="row"><span class="lbl" style="color:var(--ink-3)">Ancora niente. Quando segni le attività come fatte imparo quanto durano davvero e quando le fai.</span></div>'; })()}
+          : '<div class="row"><span class="lbl" style="color:var(--ink-3)">Ancora niente. Imparo quando segni le attività come fatte.</span></div>'; })()}
       </div>
       <p class="note">Le stime cambiano solo con almeno 3 sessioni misurate. Gli orari non li sposto mai senza chiedertelo.</p>
     </div>
@@ -2417,9 +2418,9 @@ function renderSettings() {
         <div class="row"><span class="lbl">Esporta un backup</span><button class="btn" id="export">Esporta</button></div>
         <div class="row"><span class="lbl">Ripristina da backup</span><label class="btn" for="import-file">Importa</label><input type="file" id="import-file" accept="application/json,.json" hidden></div>
         <div class="row"><span class="lbl">Dimentica le richieste passate<small>l'AI non ne terrà più conto</small></span><button class="btn" id="clear-chat">Dimentica</button></div>
-        <div class="row"><span class="lbl">Cancella tutto</span><button class="btn danger" id="reset">Cancella</button></div>
       </div>
-      <p class="note">I dati sono salvati sul dispositivo, nell'app installata. Esporta un backup ogni tanto.</p>
+      <p class="note">Salvati su questo dispositivo. Esporta un backup ogni tanto.</p>
+      <div class="card danger-card"><div class="row"><span class="lbl">Cancella tutto</span><button class="btn danger" id="reset">Cancella</button></div></div>
     </div>`;
 }
 
@@ -2487,7 +2488,7 @@ function settingsCloudHtml() {
       ${linkBox}
       <div class="row"><span class="lbl">Collegamenti attivi</span><button type="button" class="btn" id="cl-links">Vedi</button></div>
       ${links}
-      ${canAi ? `<div class="row"><span class="lbl">Usa la mia chiave AI anche da fuori<small>per le frasi lunghe dette a Siri o al Mac (salvata cifrata sul server)</small></span><button type="button" class="btn sw-toggle" id="cl-ai" role="switch" aria-checked="${!!S.cloudAi}">${S.cloudAi ? 'Sì' : 'No'}</button></div>` : ''}
+      ${canAi ? `<div class="row"><span class="lbl">Usa la mia chiave AI anche da fuori<small>per le frasi lunghe dette a Siri o al Mac (salvata cifrata sul server)</small></span><button type="button" class="btn sw-toggle" id="cl-ai" role="switch" aria-checked="${!!S.cloudAi}" aria-label="Usa la mia chiave AI anche da fuori">${S.cloudAi ? 'Sì' : 'No'}</button></div>` : ''}
       <div class="row"><button type="button" class="btn" id="cl-logout">Esci da questo dispositivo</button></div>
       ${clDeleting ? `<div class="row"><input type="password" class="wide" id="cl-del-pass" placeholder="Password per confermare" autocomplete="current-password" aria-label="Password per eliminare l'account"><button type="button" class="btn danger" id="cl-del-go">Elimina</button></div>` : `<div class="row"><span class="lbl">Elimina l'account<small>cancella subito tutti i dati dal server; su questo dispositivo restano</small></span><button type="button" class="btn danger" id="cl-delete">Elimina</button></div>`}
     </div>
@@ -2559,7 +2560,7 @@ function settingsLookHtml() {
       <div class="row"><span class="lbl">Colori<small>${U.lockPalette ? 'bloccati' : 'seguono l\'obiettivo'}</small></span>${pal ? `<span class="sw-pal" aria-hidden="true">${pal.map((c) => `<i style="background:${safeColor(c) || 'transparent'}"></i>`).join('')}</span>` : ''}<button type="button" class="btn" id="ui-lock-pal" ${!pal ? 'disabled' : ''}>${U.lockPalette ? 'Sblocca' : 'Tieni questi'}</button></div>
       ${ai && goal ? `<div class="row"><span class="lbl">Aspetto di «${esc(short(goal.title, 30))}»<small>${state.skins?.[goal.id]?.domain ? 'proposto dall\'AI' : 'dalle regole'}</small></span><button type="button" class="btn" id="ui-reskin">Rigenera</button></div>` : ''}` : ''}
     </div>
-    <p class="note">${sc ? `Adesso: ${esc(MOODS[sc.mood]?.label || sc.mood)}${goal ? ` · ${esc(sc.domainLabel.toLowerCase())}` : ''}. ` : ''}L'AI può solo scegliere tra stili già disegnati: niente schermate inventate. «Adesso» resta sempre al primo posto.</p>
+    <p class="note">${sc ? `Adesso: ${esc(MOODS[sc.mood]?.label || sc.mood)}${goal ? ` · ${esc(sc.domainLabel.toLowerCase())}` : ''}. ` : ''}L'AI sceglie solo tra stili già disegnati. «Adesso» resta sempre al primo posto.</p>
   </div>`;
 }
 
@@ -2994,6 +2995,7 @@ function bind() {
 
   // scheda
   $('#sheet-backdrop').addEventListener('click', closeSheet);
+  $('#sheet-x').addEventListener('click', closeSheet);
   $('#sheet-form').addEventListener('submit', (e) => { e.preventDefault(); if (sheetMode === 'rec') saveRec(); else if (sheetMode === 'item') sheetSave(); });
   $('#sheet-form').addEventListener('change', (e) => {
     if (e.target.id === 'gd-date' && e.target.value) { setGoalDate(e.target.dataset.gid, e.target.value); return; }

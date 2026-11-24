@@ -2,7 +2,7 @@
 const VERSION = 'tempo-v50';
 const OWN = /^tempo-v\d+$/; // le cache di Tempo; «tempo-studio-v…» è di un'altra app e non si tocca
 const SHELL = [
-  './', 'index.html', 'style.css', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'ios.css', 'manifest.webmanifest',
   'js/app.js', 'js/scheduler.js', 'js/store.js', 'js/ai.js', 'js/ai-open.js', 'js/images.js', 'js/companion.js', 'js/parse.js', 'js/templates.js', 'js/goals.js', 'js/learn.js', 'js/viewmodel.js', 'js/format.js', 'js/motion.js', 'js/themes.js', 'js/focus.js', 'js/archive.js', 'js/genui.js', 'js/decide.js', 'js/recap.js', 'js/cloud.js', 'js/native.js', 'js/invite.js',
   'vendor/anthropic-sdk.mjs',
   'icons/ui/plus.svg', 'icons/ui/mic.svg', 'icons/ui/arrow-up.svg', 'icons/ui/arrow-left.svg', 'icons/ui/notepad-text.svg', 'icons/ui/grid-2x2.svg',
