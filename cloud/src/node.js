@@ -12,7 +12,8 @@ export function fileStore(path) {
   let timer = null;
   const flush = () => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path + '.tmp', JSON.stringify(data)); renameSync(path + '.tmp', path); };
   const later = () => { clearTimeout(timer); timer = setTimeout(flush, 200); };
-  return { get: async (k) => data[k] ?? null, put: async (k, v) => { data[k] = v; later(); }, delete: async (k) => { delete data[k]; later(); }, flush };
+  return { get: async (k) => data[k] ?? null, put: async (k, v) => { data[k] = v; later(); }, delete: async (k) => { delete data[k]; later(); },
+    list: async (prefix, limit = 1000) => Object.keys(data).filter((k) => k.startsWith(prefix)).sort().slice(0, limit), flush };
 }
 
 /** Adatta un gestore fetch al server http di Node. */

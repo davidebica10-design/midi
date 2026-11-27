@@ -13,6 +13,12 @@ Senza account Tempo funziona come prima: tutto sul dispositivo.
 
 ## Pubblicarlo (gratis, Cloudflare Workers)
 
+**Dal pannello di Cloudflare, collegato a GitHub (com'è pubblicato adesso):** il worker `midi` si pubblica da solo a ogni modifica su `main`, usando `wrangler.toml` nella radice del repository. Una volta sola, nel pannello: Workers & Pages → midi → Settings → Variables and Secrets → Add → tipo *Secret*, nome `TEMPO_SECRET`, valore casuale di almeno 40 caratteri. Indirizzo: `https://midi.davidebica10.workers.dev`.
+
+I branch diversi da `main` (le pull request) caricano solo una versione di prova con `npx wrangler versions upload` (Settings → Builds → Previews Base): non toccano il server pubblicato.
+
+**Dal terminale:**
+
 ```sh
 cd cloud
 npx wrangler login
@@ -50,10 +56,29 @@ Tutte le richieste (tranne registrazione e accesso) vogliono `Authorization: Bea
 | GET | `/v1/recap?month=YYYY-MM` | tutti | il racconto del mese |
 | POST | `/v1/tell` | tutti | `{text}` (o testo semplice): «Dì a Tempo…» |
 | POST | `/mcp` o `/mcp/t/<codice>` | tutti | server MCP (Streamable HTTP) |
+| PUT | `/v1/keys` | dispositivo | `{pub}`: la chiave pubblica del dispositivo che riceve gli inviti diretti |
+| GET | `/v1/keys/<uid>` | dispositivo | la chiave pubblica di un contatto (o la tua) |
+| POST | `/v1/contact-codes` | dispositivo | `{lookup, exp}`: registra un link contatto monouso (massimo 7 giorni) |
+| POST | `/v1/contact-codes/<lookup>/use` | dispositivo | usa il link di un altro: diventate contatti → `{uid, pub}` |
+| GET / DELETE | `/v1/contacts[/uid]` | dispositivo | i tuoi contatti con la loro chiave / togli un contatto (da entrambe le parti) |
+| POST | `/v1/inbox/<uid>` | dispositivo | `{env}`: deposita una busta cifrata nella casella di un contatto |
+| GET / DELETE | `/v1/inbox[/id]` | dispositivo | ritira le buste / togli quella aperta |
 
 Aggiungi `?format=text` a `now`, `today`, `recap` e `tell` per avere solo la frase: è quello che serve ai Comandi rapidi.
 
 I codici dei **dispositivi** (`tmp_…`) leggono e scrivono lo stato completo. I **collegamenti esterni** (`tmx_…`, creati in ⋯ → Account e dispositivi → Collega) possono solo chiedere cosa fare, leggere la giornata e il mese, e dire cose a Tempo.
+
+## Inviti diretti cifrati
+
+Una proposta di Tempo può arrivare direttamente nell'app di un contatto, senza passare da una chat. Il contenuto è cifrato e firmato sul telefono (`tempo/js/e2e.js`, solo Web Crypto): il server conserva buste che non sa aprire.
+
+- **Chiavi.** Ogni dispositivo crea una coppia ECDH P-256 (per ricevere) e una ECDSA P-256 (per firmare). Le private sono non esportabili e restano nel dispositivo (IndexedDB). Al server va solo la parte pubblica; per account ne vale una alla volta (il dispositivo che riceve gli inviti).
+- **Contatti.** Il link monouso contiene l'impronta della chiave di chi lo crea e un segreto che il server non vede mai (sta nel frammento `#contatto=`). Chi lo usa controlla che la chiave data dal server abbia quell'impronta; poi manda la sua chiave dentro una busta che contiene il segreto. Così il server non può mettersi in mezzo. Il codice di sicurezza (30 cifre) si può confrontare di persona.
+- **Buste.** Firma ECDSA-SHA256 del contenuto (con mittente e destinatario dentro), poi AES-256-GCM con chiave da ECDH usa-e-getta + HKDF-SHA256; l'intestazione in chiaro è legata come dati autenticati. Chi riceve rifiuta buste manomesse, firmate da chiavi non fidate, per altri, più vecchie di 30 giorni o già viste.
+- **Cambio chiave.** Se un contatto cambia dispositivo, la sua chiave nuova non è accettata da sola: va confermata dalle impostazioni, dopo aver controllato il codice.
+- **Cosa vede il server:** chi scrive a chi, quando, e quanto è lunga la busta. Non vede titoli, orari né nomi.
+
+Le buste restano al massimo 30 giorni (scadenza del KV). La casella usa `list` dell'archivio: con il KV di Cloudflare una busta nuova può comparire con qualche secondo di ritardo.
 
 ## Siri, Comandi rapidi e CarPlay (senza app nativa)
 
