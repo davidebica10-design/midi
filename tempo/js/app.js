@@ -1794,7 +1794,7 @@ function openSheet(id, preset = {}, keepPhoto = false) {
         ${it.status === 'done' ? `<button type="button" data-sheet="reopen"><i class="ic ic-undo" aria-hidden="true"></i>Riapri</button>` : `<button type="button" data-sheet="done">${ICON_CHECK}Fatto</button>`}
         ${it.status !== 'done' && it.kind === 'task' && it.status !== 'doing' ? `<button type="button" data-sheet="start">${ICON_PLAY}Inizia</button>` : ''}
         ${it.status !== 'done' ? `<button type="button" data-sheet="tomorrow"><i class="ic ic-next" aria-hidden="true"></i>Domani</button>` : ''}
-        ${it.kind === 'event' && it.date && it.start != null && it.status !== 'done' ? `<button type="button" data-sheet="propose"><i class="ic ic-share" aria-hidden="true"></i>Proponi</button>` : ''}
+        ${canPropose(it) ? `<button type="button" data-sheet="propose"><i class="ic ic-share" aria-hidden="true"></i>Proponi</button>` : ''}
         <button type="button" data-sheet="delete" class="danger"><i class="ic ic-x" aria-hidden="true"></i>Elimina</button>
       </div>`}
       <button type="submit" class="btn primary ed-save">${isNew ? 'Aggiungi' : 'Salva'}</button>
@@ -3572,10 +3572,23 @@ const needName = (focusEl) => () => { if (myName()) return true; toast('Scrivi p
 
 // ---- 1. proporre
 /** Dal pulsante «Proponi» della scheda: un impegno fisso con giorno e ora. */
+/** Si può proporre un impegno fisso con giorno e ora, o un'attività flessibile che il piano ha già messo in un orario. */
+function canPropose(it) {
+  if (!it || it.status === 'done') return false;
+  if (it.kind === 'event') return !!it.date && it.start != null;
+  return !!whereIs(it.id);
+}
 function proposeItem(id) {
   const it = state.items.find((x) => x.id === id);
-  if (!it || it.kind !== 'event' || !it.date || it.start == null) { toast('Mi servono il giorno e l\'ora.'); return; }
-  openProposal({ id: newId(), itemId: it.id, ops: null, title: it.title, date: it.date, start: it.start, end: Math.min(1440, it.start + (it.duration || 60)), to: '' });
+  if (!canPropose(it)) { toast('Mi servono il giorno e l\'ora.'); return; }
+  if (it.kind === 'event') {
+    openProposal({ id: newId(), itemId: it.id, ops: null, title: it.title, date: it.date, start: it.start, end: Math.min(1440, it.start + (it.duration || 60)), to: '' });
+    return;
+  }
+  // attività flessibile: si propone l'orario in cui la mette il piano, e quando parte la proposta diventa un impegno fisso (si annulla)
+  const w = whereIs(it.id);
+  const ops = sanitizeOps([{ action: 'update', id: it.id, kind: 'event', date: w.day, start_time: hhmm(w.start) }]).ops;
+  openProposal({ id: newId(), itemId: it.id, ops, title: it.title, date: w.day, start: w.start, end: Math.min(1440, w.start + (it.duration || 60)), to: '' });
 }
 const STOP_NAMES = new Set(['i', 'il', 'lo', 'la', 'le', 'gli', 'un', 'uno', 'una', 'mio', 'mia', 'miei', 'tuoi', 'tutti', 'tutte', 'a', 'ad', 'per', 'di', 'da', 'con', 'che', 'se', 'e']);
 /** «proponi a Marco cena giovedì alle 20» / «invita Marco a cena giovedì alle 20»: la frase è letta dal parser senza AI. */
@@ -3619,7 +3632,7 @@ function openProposal(p) {
   sec.append(k, msg, mk('p', 'inv-hint', 'Le ultime righe sono il codice che Tempo legge.'));
   const askName = !myName();
   const nm = askName ? nameField(refresh) : null;
-  const line = mk('p', 'inv-line', p.itemId ? 'Intanto l\'impegno resta nel tuo piano.' : 'Intanto lo metto nel tuo piano, finché non risponde.');
+  const line = mk('p', 'inv-line', !p.itemId ? 'Intanto lo metto nel tuo piano, finché non risponde.' : p.ops ? `Quando la mandi, nel tuo piano resta fissa alle ${hhmm(p.start)}.` : 'Intanto l\'impegno resta nel tuo piano.');
   const actions = mk('div', 'ed-actions');
   actions.append(shareRow(() => { const inv = proposalOf(p); return inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''; }, {
     guard: needName(() => nm?.querySelector('input')),
@@ -3640,14 +3653,14 @@ function proposalSent(how) {
   if (p.ops) {
     const before = new Set(state.items.map((x) => x.id));
     undoId = pipeline('Impegno proposto', p.ops).undoId;
-    itemId = state.items.find((x) => !before.has(x.id))?.id || null;
+    itemId = state.items.find((x) => !before.has(x.id))?.id || p.itemId || null;
   }
   upsertInvite({ id: p.id, role: 'inviata', itemId, title: cleanTxt(p.title, 80), to: p.to, from: myName(), at: Date.now(), status: 'attesa', d: p.date, s: p.start });
   closeSheet();
   renderAll();
   const undo = undoId ? undoAction(undoId) : null;
   if (how === 'copied') toast('Copiato. Incollalo nella chat.', undo);
-  else if (undo) { const w = itemId && whereIs(itemId); toast(`${shortTitle(p.title)}: aggiunto${w ? ', ' + w.text : ''}.`, undo); }
+  else if (undo) { const w = itemId && whereIs(itemId); toast(`${shortTitle(p.title)}: ${p.itemId ? 'fissato' : 'aggiunto'}${w ? ', ' + w.text : ''}.`, undo); }
 }
 
 // ---- 2. ricevere
