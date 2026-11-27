@@ -210,8 +210,8 @@ Il timer è in `state.focus` e si basa sugli orari: continua anche ad app chiusa
 
 ## Concluse e movimento
 
-- Le carte concluse (attività fatte, impegni di oggi già finiti) non stanno tra le altre: vanno in una pila in fondo, come le notifiche dell'iPhone («3 concluse · Mostra»). Toccandola si apre in due colonne; «Nascondi» la richiude. Nei giorni passati è già aperta.
-- Ogni volta che il giorno cambia (spunti, sposti, aggiungi), le carte scivolano al nuovo posto con una molla invece di saltare; quella spuntata vola nella pila, che fa un piccolo rimbalzo. Le carte nuove entrano dal basso.
+- Le attività fatte e gli impegni già finiti restano nella loro carta del mazzo (§9), barrati e con il cerchio pieno.
+- Ogni volta che il giorno cambia (spunti, sposti, aggiungi), le carte scivolano al nuovo posto con una molla invece di saltare; Le carte nuove entrano dal basso.
 - Toccando una carta, la carta si solleva e diventa l'anteprima dell'editor.
 - Con «Riduci il movimento» attivo su iPhone le animazioni si spengono.
 
@@ -311,3 +311,20 @@ Le «cose da fare» possono stare **dentro** un impegno (il lavoro di ogni setti
 - **Parser senza AI:** `checklistOps` (`parse.js`) usa i nomi veri degli impegni; l'elenco è dopo i due punti, dopo «da fare», oppure dopo il nome se comincia con un verbo. Accetta virgole, «;», punti elenco e «e» davanti a un verbo («pane e latte» resta intero). Scarta le voci che dicono solo «dove» («dentro lavoro», «cose da fare dentro»). Se sa dove ma non cosa lo dice e non crea niente, ma solo se c'è un verbo di aggiunta o i due punti: «sto lavorando dentro lavoro» non è una richiesta e passa agli altri parser.
 - **AI:** le tre operazioni sono nello schema di Claude e dei modelli open, con la regola «dentro una carta → `add_checklist`, mai attività separate»; lo stato che vede il modello include le liste.
 - **Sincronizzazione:** a parità di data vince il dispositivo con modifiche non ancora mandate; ogni modifica aggiorna `updatedAt` dell'impegno. Se la carta c'è da entrambe le parti, le voci si uniscono una per una (`mergeLists` in `cloud.js`): vince la `at` più recente, a parità «fatto»; una voce presente da una sola parte resta se è nata dopo l'ultima sincronizzazione (o non ha data), altrimenti l'altra parte l'aveva già e l'ha tolta. Limite noto: non si tengono «lapidi» delle voci tolte, quindi una spunta fatta dopo su un altro dispositivo vince sulla rimozione. Gli impegni ricorrenti nuovi hanno `createdAt`, così uno cancellato non risorge.
+
+## 9. Il mazzo del giorno — `deck(state, view)`
+
+`view` è l'uscita di `today(ctx)`. Le carte `task` ed `event` di `view.cards` non stanno più nel collage: vanno in un mazzo.
+Nel collage restano «Adesso», le scene, le osservazioni e gli avvisi (da confermare, non entra, sovrapposti).
+
+- Una carta per progetto. Senza progetto: una per tipo di attività (`themes.js`: Lavoro, Studio…, «Altre attività» se non si capisce) e una «Impegni» per gli impegni.
+- `cards[]`: `{ key, title, color, icon, caption, next, done, left, total, high[], other[] }`. `caption`: «3 attività · 1 impegno · 4 h 15'». `high`: attività con priorità 3; `other`: il resto, in ordine di orario.
+- Riga: `{ id, itemId, kind, title, start, end, minutes, done, high, energy, when, todo }`. Un impegno è `done` quando è finito.
+- Ordine: prima le carte con qualcosa da fare, dalla prossima per orario; le carte finite in fondo.
+- L'attività in corso non è nel mazzo: sta in «Adesso».
+
+Composizione (dal Figma «carte»): in fondo alla pagina il mazzo è chiuso e si vede solo la cima di tre carte inclinate;
+toccandolo si apre al centro con una carta davanti e la precedente e la successiva dietro, inclinate. Si cambia carta
+toccando quelle dietro, con le frecce in alto, scorrendo con il dito o con ← →; un tocco fuori o Esc lo richiude.
+Con il mazzo aperto la barra per scrivere a Tempo è aperta. In basso a sinistra «Oggi / Calendario» in vetro, a destra il «+».
+

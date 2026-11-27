@@ -55,6 +55,8 @@
       </header>
       <div class="collage" id="collage"></div>
     </main>
+    <!-- il mazzo aperto: una carta davanti, le altre dietro -->
+    <div class="deck-view" id="deck-view" hidden></div>
   </section>
 
   <!-- CALENDARIO (si torna al giorno toccando un giorno) -->
@@ -120,6 +122,12 @@
       <button type="submit" class="send" id="send" aria-label="Invia"><i class="ic ic-up" aria-hidden="true"></i></button>
     </div>
   </form>
+
+  <!-- OGGI / CALENDARIO: in basso a sinistra, nel giorno -->
+  <nav class="tabs" id="tabs" aria-label="Viste">
+    <button type="button" class="tab on" id="tab-day" aria-current="page"><i class="tab-ic ic-today" aria-hidden="true"></i><span>Oggi</span></button>
+    <button type="button" class="tab" id="tab-cal"><i class="tab-ic ic-cal" aria-hidden="true"></i><span>Calendario</span></button>
+  </nav>
 
   <!-- RIEPILOGO: nel calendario, in basso al centro -->
   <button type="button" class="sum-fab" id="sum-fab" aria-label="Riepilogo: come sta andando"><i class="ic ic-sum" aria-hidden="true"></i><span>Riepilogo</span></button>

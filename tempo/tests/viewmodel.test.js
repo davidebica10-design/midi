@@ -110,3 +110,57 @@ test('calendario e riepilogo con un impegno singolo e un progetto senza obiettiv
   const m = migrate({ ...s, items: [{ ...s.items[0], color: 'url(javascript:alert(1))' }] }, NOW);
   assert.equal(m.items[0].color, null);
 });
+
+// ---- il mazzo del giorno (DESIGN-API §9)
+const deckView = (cards, time = '14:00') => ({ isToday: true, past: false, header: { time }, cards });
+const P1 = { id: 'p1', name: 'Lavoro', color: '#C70015' };
+
+test('deck(): una carta per progetto, priorità alta separata, prima la carta con la prossima cosa da fare', () => {
+  const state = { items: [{ id: 'a', title: 'Deck investitori', priority: 3 }, { id: 'b', title: 'Rispondi email', priority: 2 }, { id: 'c', title: 'Ripassare capitolo 4', priority: 2 }] };
+  const d = vm.deck(state, deckView([
+    { type: 'task', id: 'b', itemId: 'b', title: 'Rispondi email', start: '16:00', end: '16:30', minutes: 30, done: false, energy: 1, project: P1 },
+    { type: 'task', id: 'a', itemId: 'a', title: 'Deck investitori', start: '09:00', end: '09:50', minutes: 50, done: true, project: P1 },
+    { type: 'pause', at: '15:00', minutes: 10 },
+    { type: 'task', id: 'c', itemId: 'c', title: 'Ripassare capitolo 4', start: '15:00', end: '16:00', minutes: 60, done: false },
+  ]));
+  assert.deepEqual(d.cards.map((c) => c.title), ['Studio', 'Lavoro']);
+  const work = d.cards[1];
+  assert.equal(work.key, 'p:p1');
+  assert.equal(work.color, '#C70015');
+  assert.equal(work.caption, "2 attività · 1 h 20'");
+  assert.deepEqual(work.high.map((r) => [r.title, r.done]), [['Deck investitori', true]]);
+  assert.deepEqual(work.other.map((r) => r.title), ['Rispondi email']);
+  assert.equal(work.left, 1);
+  assert.equal(work.other[0].when, '16:00 · 30 min');
+});
+
+test('deck(): impegni senza progetto in «Impegni»; quelli finiti contano come fatti; carte finite in fondo', () => {
+  const state = { items: [] };
+  const d = vm.deck(state, deckView([
+    { type: 'event', id: 'e1', itemId: 'e1', title: 'Dentista', start: '10:00', end: '11:00' },
+    { type: 'event', id: 'e2', itemId: 'e2', title: 'Riunione', start: '11:00', end: '12:00' },
+    { type: 'task', id: 'x', itemId: 'x', title: 'Comprare il pane', start: '18:00', end: '18:20', minutes: 20, done: false },
+  ], '14:00'));
+  const ev = d.cards.find((c) => c.key === 'events');
+  assert.equal(ev.title, 'Impegni');
+  assert.equal(ev.done, true);
+  assert.equal(ev.caption, '2 impegni · 2 h');
+  assert.equal(d.cards.at(-1).key, 'events');
+  assert.ok(ev.other.every((r) => r.done && r.when.includes('–')));
+});
+
+test('deck(): niente attività né impegni, niente carte; il testo resta com\'è (si scrive con esc)', () => {
+  assert.deepEqual(vm.deck({ items: [] }, deckView([{ type: 'missed', id: 'm', title: 'x', start: '09:00', minutes: 30 }])).cards, []);
+  const evil = '<img src=x onerror=alert(1)>';
+  const d = vm.deck({ items: [] }, deckView([{ type: 'task', id: 't', itemId: 't', title: evil, start: '18:00', end: '18:30', minutes: 30, done: false, project: { id: 'p', name: evil, color: 'red;background:url(x)' } }]));
+  assert.equal(d.cards[0].title, evil);
+  assert.equal(d.cards[0].other[0].title, evil);
+});
+
+test('deck() dal piano vero: tutte le attività di oggi stanno in una carta', () => {
+  const { s, plan } = setup();
+  const v = vm.today({ state: s, plan, planFor: pf(s), now: NOW });
+  const d = vm.deck(s, v);
+  const inCards = d.cards.reduce((n, c) => n + c.total, 0);
+  assert.equal(inCards, v.cards.filter((c) => c.type === 'task' || c.type === 'event').length);
+});

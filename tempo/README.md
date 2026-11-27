@@ -39,7 +39,7 @@ Tempo non è un'agenda: costruisce la giornata in base a ciò che stai cercando 
 
 ## Come si usa
 
-- **La giornata** è un collage di carte: riepilogo, attività in corso, impegni e attività in ordine di orario. Tocca il cerchio per segnare una cosa come fatta, tocca la carta per modificarla.
+- **La giornata**: in alto il saluto, «Adesso» e gli avvisi; in fondo **le tue carte**, una per progetto o tipo di attività (Lavoro, Studio…), con la priorità alta in cima. Tocca il mazzo per aprirlo al centro, tocca le carte dietro (o scorri) per cambiarla, tocca il cerchio per segnare una cosa come fatta e la riga per modificarla. In basso a sinistra **Oggi / Calendario**.
 - **La barra in basso** modifica il giorno che stai guardando: toccandola le carte salgono e resta un piccolo riassunto; scrivi (o detta) cosa cambiare e l'esito compare in una breve nota con «Annulla». Con **+** aggiungi attività, anche con una foto.
 - **Pizzica verso l'interno** (o tocca l'icona in alto a sinistra) per vedere tutti i giorni uno sotto l'altro; pizzica ancora per la vista **Mese**, con una carta per ogni giorno che ha qualcosa. Tocca un giorno o allarga le dita per aprirlo.
 - **⋯** in alto a destra apre memoria e impostazioni.

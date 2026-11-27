@@ -6,6 +6,7 @@ import { projectOf } from './store.js';
 import { learnedObservations, learnedList } from './learn.js';
 import { recapObservation } from './recap.js';
 import { plural, durLabel, windowLabel, cap, dateLong, weekdayName } from './format.js';
+import { themeOf, THEMES } from './themes.js';
 
 const minOf = (now) => { const d = new Date(now); return d.getHours() * 60 + d.getMinutes(); };
 const isRecOrRest = (id) => /^(rec|rest):/.test(String(id));
@@ -135,6 +136,58 @@ export function today(ctx) {
   out.emptyText = nothing || out.status === 'off' ? texts[out.status] || texts.empty : null;
   return out;
 }
+
+/**
+ * Il mazzo del giorno: le attività e gli impegni di `view.cards` (uscita di `today`) raggruppati in carte,
+ * una per progetto; senza progetto, una per tipo di attività (Lavoro, Studio…) e una per gli impegni.
+ * Davanti la carta con la prossima cosa da fare; le carte già finite in fondo. Vedi DESIGN-API §9.
+ */
+export function deck(state, view) {
+  const groups = new Map();
+  const items = new Map((state.items || []).map((x) => [x.id, x]));
+  for (const c of view.cards || []) {
+    if (c.type !== 'task' && c.type !== 'event') continue;
+    const it = items.get(c.itemId) || { title: c.title };
+    let key, title, color, icon;
+    if (c.project) {
+      const th = themeOf({ title: c.project.name }, c.project.name);
+      key = `p:${c.project.id}`; title = c.project.name; color = c.project.color; icon = th.key === 'generic' ? null : th.icon;
+    } else if (c.type === 'event') {
+      key = 'events'; title = 'Impegni'; color = null; icon = null;
+    } else {
+      const th = themeOf(it);
+      key = `t:${th.key}`; title = th.key === 'generic' ? 'Altre attività' : th.label; color = th.accent; icon = th.icon;
+    }
+    if (!groups.has(key)) groups.set(key, { key, title, color, icon, rows: [] });
+    const g = groups.get(key);
+    if (!g.icon) g.icon = themeOf(it).icon;
+    const isTask = c.type === 'task';
+    const ended = !isTask && (view.past || (view.isToday && view.header?.time && /^\d\d:\d\d$/.test(view.header.time) && c.end <= view.header.time));
+    const minutes = isTask ? c.minutes : Math.max(0, toMin(c.end) - toMin(c.start));
+    g.rows.push({
+      id: c.id, itemId: c.itemId || null, kind: c.type, title: c.title, start: c.start, end: c.end, minutes,
+      done: isTask ? !!c.done : !!ended, high: isTask && (it.priority === 3), energy: isTask ? c.energy || 2 : 0,
+      when: isTask ? `${c.start} · ${durLabel(minutes)}` : `${c.start} – ${c.end}`,
+      todo: c.checklist ? c.checklist.filter((x) => !x.done).length : 0,
+    });
+  }
+  const cards = [...groups.values()].map((g) => {
+    g.rows.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+    const tasks = g.rows.filter((r) => r.kind === 'task').length, events = g.rows.length - tasks;
+    const minutes = g.rows.reduce((n, r) => n + r.minutes, 0);
+    const next = g.rows.find((r) => !r.done);
+    const parts = [tasks ? plural(tasks, 'attività', 'attività') : null, events ? plural(events, 'impegno', 'impegni') : null, minutes ? durLabel(minutes) : null];
+    return {
+      key: g.key, title: g.title, color: g.color, icon: g.icon || THEMES.generic.icon,
+      caption: parts.filter(Boolean).join(' · '), next: next ? next.start : null, done: !next,
+      left: g.rows.filter((r) => !r.done).length, total: g.rows.length,
+      high: g.rows.filter((r) => r.high), other: g.rows.filter((r) => !r.high),
+    };
+  });
+  cards.sort((a, b) => (a.done - b.done) || ((a.next || '99') < (b.next || '99') ? -1 : (a.next || '99') > (b.next || '99') ? 1 : 0));
+  return { cards };
+}
+const toMin = (hm) => { const [h, m] = String(hm).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
 
 /** Elenco dei giorni (vista "tutti i giorni"). */
 export function days({ state, plan, now, selected }) {
