@@ -86,6 +86,29 @@ async function quieta(page, clock = true) {
   if (clock) { await page.clock.runFor(1000); await page.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {})))); await page.clock.runFor(500); }
   else await page.waitForTimeout(400);
 }
+
+/** Scrive nella barra: chiusa è solo il «+», quindi prima la apre. */
+async function riempi(page, testo) {
+  if (!(await page.locator('#input').isVisible())) { await page.locator('#plus').click(); await quieta(page); }
+  await page.fill('#input', testo);
+}
+/** La voce di un'attività o di un impegno: la carta nel collage o, se sta nel mazzo, il testo della sua riga (apre il foglio). */
+async function voce(page, { id, testo }) {
+  const sel = id ? `[data-item="${id}"]` : '';
+  const inCollage = id ? page.locator(`#collage .pc${sel}`) : page.locator('#collage .pc:is(.task, .event):not(.now-anchor)', { hasText: testo });
+  if (await inCollage.count()) return inCollage.first();
+  if (await page.locator('#deck-view').isHidden()) {
+    if (!(await page.locator('.deck-pile').count())) return null;
+    await page.locator('.deck-pile').evaluate((el) => el.click()); await quieta(page);
+  }
+  const n = Math.max(1, await page.locator('.dv-dots i').count());
+  for (let k = 0; k < n; k++) {
+    const r = id ? page.locator(`#deck-view .dv-slot.front .dk-txt${sel}`) : page.locator('#deck-view .dv-slot.front .dk-txt', { hasText: testo });
+    if (await r.count()) return r.first();
+    await page.locator('#deck-view .dv-stage').focus(); await page.keyboard.press('ArrowRight'); await quieta(page);
+  }
+  return null;
+}
 const salvato = (page) => page.evaluate(() => localStorage.getItem('tempo.v1'));
 /** La parte che deve restare uguale quando un'operazione fallisce (le impostazioni cambiano: modelli scartati, ecc.). */
 const nucleo = (page) => page.evaluate(() => { const s = JSON.parse(localStorage.getItem('tempo.v1')); return JSON.stringify({ items: s.items, goals: s.goals, recurring: s.recurring, prefs: s.prefs, memory: s.memory, chat: s.chat }); });
@@ -98,7 +121,7 @@ const avviso = async (page, key) => (await avvisi(page)).find((a) => a.key === k
 const treParti = (a) => !!a && a.what.length > 3 && a.next.length > 3 && a.azioni.length >= 1;
 const toastTesto = (page) => page.evaluate(() => { const t = document.querySelector('#toast'); return t && !t.hidden ? { testo: t.querySelector('span')?.textContent.trim() ?? '', bottoni: [...t.querySelectorAll('button')].map((b) => b.textContent.trim()) } : null; });
 const apriBarra = async (page) => { if (!(await page.locator('#input').isVisible())) { await page.click('#plus'); await page.clock?.runFor?.(500).catch(() => {}); } };
-const scrivi = async (page, testo) => { await apriBarra(page); await page.fill('#input', testo); await page.click('#send'); };
+const scrivi = async (page, testo) => { await apriBarra(page); await riempi(page, testo); await page.click('#send'); };
 const vaiImpostazioni = async (page) => { await page.click('#open-settings'); await quieta(page); };
 
 // ============================================================ 1. dati rotti all'avvio
@@ -170,7 +193,7 @@ await scenario('3. spazio pieno', async () => {
     window.__pieno = true;
     Storage.prototype.setItem = function (k, v) { if (window.__pieno && k === 'tempo.v1') throw new DOMException('quota', 'QuotaExceededError'); return orig.call(this, k, v); };
   });
-  const fatta = async (id) => { await page.locator(`#collage .pc[data-item="${id}"]`).first().click(); await quieta(page); await page.click('[data-sheet=done]'); await quieta(page); };
+  const fatta = async (id) => { await (await voce(page, { id })).click(); await quieta(page); await page.click('[data-sheet=done]'); await quieta(page); };
   await fatta('t1');
   await fatta('t2');
   const n = await page.evaluate(() => document.querySelectorAll('[data-notice="spazio"]').length);
@@ -236,7 +259,7 @@ await scenario('5. proposta in attesa e poi non più valida', async () => {
   if (await applica.count() === 1) {
     // cambio un'altra cosa: spunto «Scrivere la relazione» dal foglio
     await page.evaluate(() => document.activeElement?.blur());
-    await page.locator('#collage .pc[data-item="t2"]').first().evaluate((el) => el.click()); await quieta(page); // il clic va alla carta anche se la barra la copre
+    await (await voce(page, { id: 't2' })).evaluate((el) => el.click()); await quieta(page); // il clic va alla carta anche se la barra la copre
     await page.click('[data-sheet=done]'); await quieta(page);
     const manuale = (await items(page)).find((i) => i.id === 't2');
     await page.locator('[data-act=apply]').evaluate((el) => el.click()); await quieta(page);
@@ -255,8 +278,8 @@ await scenario('6. azioni rapide: fatta, a domani, elimina', async () => {
   const { ctx, page } = await apri({ st: stato([task('t1', 'Chiamare il fornitore', 30), task('t2', 'Scrivere la relazione', 45), task('t3', 'Fare la spesa', 30)]) });
   for (const [azione, id, titolo] of [['done', 't1', 'Chiamare il fornitore'], ['tomorrow', 't2', 'Scrivere la relazione'], ['delete', 't3', 'Fare la spesa']]) {
     const prima = JSON.stringify(await items(page));
-    const carta = page.locator(`#collage .pc[data-item="${id}"]`).first();
-    if (!(await carta.count())) { check(false, `6 (${azione}): la carta di «${titolo}» non è tra le carte del giorno`); continue; }
+    const carta = await voce(page, { id });
+    if (!carta) { check(false, `6 (${azione}): la carta di «${titolo}» non è tra le carte del giorno`); continue; }
     await carta.click(); await quieta(page);
     const bottone = page.locator(`[data-sheet=${azione}]`);
     if (!(await bottone.count())) { check(false, `6 (${azione}): nel foglio manca il bottone [data-sheet=${azione}]`); await page.keyboard.press('Escape'); continue; }
@@ -299,7 +322,7 @@ await scenario('8. aggiornamento con testo nella barra', async () => {
   await page.reload(); await page.waitForSelector('#app[data-mood]'); await page.waitForTimeout(500);
   if (!(await controllo())) { console.log('  non simulato: il service worker non prende il controllo della pagina in questo browser.'); await ctx.close(); return; }
   await page.evaluate(() => { window.__marcatore = 'stessa-pagina'; });
-  await apriBarra(page); await page.fill('#input', 'Domani devo ricordarmi di chiamare');
+  await apriBarra(page); await riempi(page, 'Domani devo ricordarmi di chiamare');
   swVersione++;
   await page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => r.update()));
   let a = null;

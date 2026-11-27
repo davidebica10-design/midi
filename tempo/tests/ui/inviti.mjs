@@ -140,6 +140,29 @@ async function quieta(page) {
   await page.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))));
   await page.clock.runFor(500);
 }
+
+/** Scrive nella barra: chiusa è solo il «+», quindi prima la apre. */
+async function riempi(page, testo) {
+  if (!(await page.locator('#input').isVisible())) { await page.locator('#plus').click(); await quieta(page); }
+  await page.fill('#input', testo);
+}
+/** La voce di un'attività o di un impegno: la carta nel collage o, se sta nel mazzo, il testo della sua riga (apre il foglio). */
+async function voce(page, { id, testo }) {
+  const sel = id ? `[data-item="${id}"]` : '';
+  const inCollage = id ? page.locator(`#collage .pc${sel}`) : page.locator('#collage .pc:is(.task, .event):not(.now-anchor)', { hasText: testo });
+  if (await inCollage.count()) return inCollage.first();
+  if (await page.locator('#deck-view').isHidden()) {
+    if (!(await page.locator('.deck-pile').count())) return null;
+    await page.locator('.deck-pile').evaluate((el) => el.click()); await quieta(page);
+  }
+  const n = Math.max(1, await page.locator('.dv-dots i').count());
+  for (let k = 0; k < n; k++) {
+    const r = id ? page.locator(`#deck-view .dv-slot.front .dk-txt${sel}`) : page.locator('#deck-view .dv-slot.front .dk-txt', { hasText: testo });
+    if (await r.count()) return r.first();
+    await page.locator('#deck-view .dv-stage').focus(); await page.keyboard.press('ArrowRight'); await quieta(page);
+  }
+  return null;
+}
 const v1 = (page) => page.evaluate(() => localStorage.getItem('tempo.v1'));
 const ls = (page, k) => page.evaluate((k) => localStorage.getItem(k), k);
 const voci = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('tempo.v1')).items);
@@ -148,7 +171,7 @@ const incolla = async (page, testo) => {
   await page.evaluate((t) => { const i = document.querySelector('#input'); i.focus(); const dt = new DataTransfer(); dt.setData('text', t); i.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); }, testo);
   await quieta(page);
 };
-const scrivi = async (page, testo) => { await page.fill('#input', testo); await page.click('#send'); await quieta(page); };
+const scrivi = async (page, testo) => { await riempi(page, testo); await page.click('#send'); await quieta(page); };
 const carta = (page) => page.evaluate(() => {
   const tutte = [...document.querySelectorAll('[data-notice="invito"]')].filter((e) => e.checkVisibility());
   const el = tutte[0]; if (!el) return null;
@@ -168,7 +191,7 @@ const titoli = (xs) => xs.map((i) => i.title);
 
 /** Anna propone la cena dalla scheda dell'impegno fisso e condivide. Restituisce il messaggio catturato. */
 async function annaProponeDallaScheda(page) {
-  await page.locator('#collage .pc.compact.event', { hasText: CENA }).first().locator('.pc-title').click(); await quieta(page);
+  await (await voce(page, { testo: CENA })).click(); await quieta(page);
   await page.locator('[data-sheet="propose"]').click(); await quieta(page);
   await page.locator('[data-inv="share"]').click(); await quieta(page);
   return ultimo(page, '__share');
@@ -178,7 +201,7 @@ async function annaProponeDallaScheda(page) {
 await scenario('1. Anna propone dalla scheda di un impegno fisso', async () => {
   const { page } = await persona({ chi: 'a', tz: ROMA, items: ANNA() });
   const prima = await voci(page);
-  await page.locator('#collage .pc.compact.event', { hasText: CENA }).first().locator('.pc-title').click(); await quieta(page);
+  await (await voce(page, { testo: CENA })).click(); await quieta(page);
   check(await page.locator('[data-sheet="propose"]').count() === 1, '1: nella scheda dell\'impegno fisso doveva esserci [data-sheet="propose"]');
   await page.locator('[data-sheet="propose"]').click(); await quieta(page);
   // senza firma il tocco su Condividi non manda niente
@@ -200,7 +223,7 @@ await scenario('1. Anna propone dalla scheda di un impegno fisso', async () => {
   check(anteprima.replace(/\s+/g, '') === (msg || '').replace(/\s+/g, ''), '1: l\'anteprima in .inv-msg doveva essere identica al testo mandato');
   const dopo = await voci(page);
   check(JSON.stringify(dopo.map((i) => [i.id, i.title, i.date, i.start])) === JSON.stringify(prima.map((i) => [i.id, i.title, i.date, i.start])), `1: il piano di Anna doveva restare com'era: ${JSON.stringify(titoli(dopo))}`);
-  const mark = await page.locator('#collage .pc.compact.event', { hasText: CENA }).first().evaluate((el) => ({ marcatore: el.querySelector('.inv-mark')?.textContent.trim() ?? null, nome: el.getAttribute('aria-label') }));
+  const mark = await (await voce(page, { testo: CENA })).evaluate((el) => ({ marcatore: el.querySelector('.inv-mark')?.textContent.trim() ?? null, nome: el.getAttribute('aria-label') }));
   check(mark.marcatore === 'in attesa di risposta', `1: la tessera doveva mostrare .inv-mark «in attesa di risposta», mostra ${JSON.stringify(mark.marcatore)}`);
   check(/in attesa di risposta/.test(mark.nome), `1: il nome accessibile della tessera doveva dire «in attesa di risposta»: ${JSON.stringify(mark.nome)}`);
   const lista = await inviti(page);
@@ -318,7 +341,7 @@ await scenario('4. Bruno accetta; Annulla; la risposta arriva ad Anna', async ()
   check((await v1(a.page)) === p0a && (await ls(a.page, 'tempo.inviti')) === i0a, '4: solo vedere la risposta non doveva cambiare né tempo.v1 né tempo.inviti');
   check(ca && ca.azioni.includes('Va bene'), `4: la carta «ha accettato» doveva avere il bottone «Va bene», ha ${JSON.stringify(ca?.azioni)}`);
   await tocca(a.page, /^Va bene$/);
-  const mark = await a.page.locator('#collage .pc.compact.event', { hasText: CENA }).first().evaluate((el) => el.querySelector('.inv-mark')?.textContent ?? null);
+  const mark = await (await voce(a.page, { testo: CENA })).evaluate((el) => el.querySelector('.inv-mark')?.textContent ?? null);
   check(mark === null, `4: dopo la risposta il marcatore «in attesa di risposta» doveva sparire, c'è ancora ${JSON.stringify(mark)}`);
   check((await inviti(a.page))[0]?.status === 'si', `4: la proposta di Anna doveva risultare «si», risulta ${JSON.stringify((await inviti(a.page))[0]?.status)}`);
   check(JSON.stringify(titoli(await voci(a.page))) === JSON.stringify(['Scrivere la relazione', CENA]), '4: la risposta «sì» non doveva cambiare il piano di Anna');

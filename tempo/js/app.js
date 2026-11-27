@@ -1,5 +1,5 @@
 import { refreshToday, planDays, planDay, updateAnchors, diffPlans, positions, fmtMin, parseHM, dateKey, addDays, dayLabel, WINDOWS } from './scheduler.js';
-import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, bump, SPRING } from './motion.js';
+import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapture, flipPlay, SPRING } from './motion.js';
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, lastUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner, sanitizeOps } from './store.js';
@@ -550,7 +550,7 @@ const seenReply = new Set();
 function setComposing(on) {
   composing = on;
   $('#app').classList.toggle('composing', on);
-  if (on) { closePlus(); renderMiniSummary(); }
+  if (on) { closePlus(); closeDeck(); renderMiniSummary(); }
   syncBar();
 }
 
@@ -558,7 +558,7 @@ function setComposing(on) {
 let barForced = false, plusAt = 0;
 function syncBar() {
   const input = $('#input');
-  const open = barForced || composing || busy || !$('#reply').hidden || !$('#plus-menu').hidden || !!input.value.trim() || !!rec;
+  const open = barForced || deckOpen || composing || busy || !$('#reply').hidden || !$('#plus-menu').hidden || !!input.value.trim() || !!rec;
   $('#app').classList.toggle('bar-open', open);
   $('#plus').setAttribute('aria-expanded', open);
   $('#plus').setAttribute('aria-label', 'Aggiungi un\'attività');
@@ -761,28 +761,104 @@ function dayModel() {
   return vm.today({ state, plan, planFor, now: Date.now(), day: selDay, fits: goalFits(), backupDue: backupDue(), env: { online: navigator.onLine, ai: aiMode() } });
 }
 
-// la pila delle carte concluse: chiusa come le notifiche dell'iPhone, si apre con un tocco
-let doneOpen = false;
-const FLIP_SEL = '.pc, .ds-card, .ds-head';
-function doneStackHtml(cards, v) {
-  if (!cards.length) return '';
-  const open = doneOpen || v.past;
-  const n = cards.length;
-  const label = `<span class="ds-n">${n}</span> ${n === 1 ? 'conclusa' : 'concluse'}`;
-  if (open) {
-    const cols = [[], []];
-    cards.forEach((c, j) => cols[j % 2].push(cardHtml({ ...c, r: 0 }, j)));
-    return `<section class="done-stack open" aria-label="Concluse">
-      <button type="button" class="ds-head" data-ds="close" data-k="ds-head" aria-expanded="true"><span>${label}</span><span class="ds-hint">${v.past ? '' : 'Nascondi'}</span></button>
-      <div class="ds-grid"><div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div></div></section>`;
-  }
-  const top = cards.slice(-3).reverse();
-  return `<section class="done-stack" aria-label="Concluse">
-    <button type="button" class="ds-head" data-ds="open" data-k="ds-head" aria-expanded="false"><span>${label}</span><span class="ds-hint">Mostra</span></button>
-    <button type="button" class="ds-pile" data-ds="open" aria-label="Mostra ${n} ${n === 1 ? 'conclusa' : 'concluse'}">
-      ${top.map((c, j) => `<span class="ds-card" data-k="${esc(c.id)}" style="--j:${j}" data-c="${c.color || ''}">
-        <i class="ds-ok" aria-hidden="true">${ICON_CHECK}</i><span class="ds-t"><b>${esc(c.title)}</b><small>${esc(c.done && c.doneAt ? `Fatto alle ${c.doneAt}` : `${c.start} – ${c.end}`)}</small></span></span>`).join('')}
-    </button></section>`;
+// ---------------------------------------------------------------- il mazzo (DESIGN-API §9)
+// Le attività del giorno stanno in carte, una per progetto o tipo di attività. In fondo alla pagina il mazzo
+// è chiuso e si vede solo la cima delle carte; toccandolo si apre al centro: una carta davanti, le altre dietro.
+let deckOpen = false, deckFront = 0, deckModel = { cards: [] };
+const FLIP_SEL = '.pc';
+const DECK_ROWS = 5; // righe per carta; le altre diventano «+ N»
+
+function energyHtml(n) {
+  return n ? `<span class="dk-en" aria-hidden="true">${[1, 2, 3].map((k) => `<i class="${k <= n ? 'on' : ''}"></i>`).join('')}</span>` : '';
+}
+function deckRowHtml(r, live) {
+  const label = `${r.kind === 'task' ? 'Attività' : 'Impegno'}: ${r.title}, ${r.when}${r.done ? (r.kind === 'task' ? ', fatta' : ', finito') : ''}${inviteWaiting(r.itemId || r.id) ? ', in attesa di risposta' : ''}`;
+  const check = r.kind === 'task'
+    ? (live ? `<button type="button" class="dk-check" data-check="${esc(r.id)}" aria-pressed="${r.done}" aria-label="${esc(`${r.done ? 'Riapri' : 'Segna come fatta'}: ${r.title}`)}">${ICON_CHECK}</button>` : `<span class="dk-check" aria-hidden="true">${ICON_CHECK}</span>`)
+    : `<span class="dk-ev" aria-hidden="true"></span>`;
+  const todo = r.todo && !live ? ` · ${plural(r.todo, 'cosa da fare', 'cose da fare')}` : '';
+  const waiting = inviteWaiting(r.itemId || r.id); // una proposta mandata e senza risposta (invite.js)
+  const txt = `<b>${esc(r.title)}</b><small><span>${esc(r.when + todo)}</span>${r.kind === 'task' ? '<span class="dk-sep">•</span>' + energyHtml(r.energy) : ''}</small>`;
+  // casella e testo sono fratelli: la casella spunta, il testo apre l'editor
+  const mark = waiting ? '<span class="inv-mark">in attesa di risposta</span>' : '';
+  const body = live ? `<button type="button" class="dk-txt" data-item="${esc(r.id)}" aria-label="${esc(label)}">${txt}${mark}</button>` : `<span class="dk-txt">${txt}${mark}</span>`;
+  const list = live && r.checklist?.length ? checklistHtml({ title: r.title, ownerId: r.ownerId, checklist: r.checklist }) : '';
+  return `<div class="dk-row${r.done ? ' done' : ''}">${check}${body}</div>${list}`;
+}
+function deckCardHtml(c, j, live) {
+  let left = live ? Infinity : DECK_ROWS; // aperta, la carta scorre e mostra tutto
+  const sec = (title, rows) => {
+    if (!rows.length || left <= 0) return '';
+    const shown = rows.slice(0, left);
+    left -= shown.length;
+    return `<div class="dk-sec"><${live ? 'h3' : 'span'} class="dk-h">${title}</${live ? 'h3' : 'span'}>${shown.map((r) => deckRowHtml(r, live)).join('')}</div>`;
+  };
+  const body = sec('Priorità alta', c.high) + sec(c.high.length ? 'Altre attività' : 'Da fare', c.other);
+  const more = live ? 0 : c.high.length + c.other.length - DECK_ROWS;
+  const col = safeColor(c.color);
+  const tag = live ? 'article' : 'div';
+  return `<${tag} class="dk-card${c.done ? ' all-done' : ''}" style="--j:${j};${col ? `--dc:${col}` : ''}" data-dk="${j}" aria-label="${esc(`${c.title}: ${c.caption}`)}">
+    <div class="dk-head"><i class="dk-art" style="--m:url(icons/act/${esc(c.icon)}.svg)" aria-hidden="true"></i>
+      <div class="dk-top"><span class="dk-ic"><i style="--m:url(icons/act/${esc(c.icon)}.svg)" aria-hidden="true"></i></span><${live ? 'h2' : 'span'} class="dk-title">${esc(c.title)}</${live ? 'h2' : 'span'}></div>
+      <p class="dk-cap">${esc(c.caption)}</p></div>
+    <div class="dk-body">${body}${more > 0 ? `<p class="dk-more">+ ${more} ${more === 1 ? 'altra' : 'altre'}</p>` : ''}</div>
+  </${tag}>`;
+}
+
+/** Il mazzo chiuso, in fondo alla pagina del giorno: la cima di (al massimo) tre carte. */
+function deckPileHtml() {
+  const cs = deckModel.cards;
+  if (!cs.length) return '';
+  const pile = cs.slice(0, 3);
+  const names = cs.map((c) => c.title).join(', ');
+  return `<section class="deck" aria-label="Le tue carte">
+    <h2 class="deck-label">Le tue carte</h2>
+    <button type="button" class="deck-pile n${pile.length}" data-deck="open" aria-label="${esc(`Apri le carte: ${names}`)}">
+      ${pile.map((c, j) => deckCardHtml(c, j, false)).reverse().join('')}
+    </button></section>`; // dentro il pulsante solo div e span (niente titoli né controlli)
+}
+
+/** Il mazzo aperto: una carta davanti (si tocca, si spunta), quella prima e quella dopo dietro, inclinate. */
+function renderDeckView() {
+  const el = $('#deck-view');
+  const cs = deckModel.cards;
+  if (!deckOpen || !cs.length) { el.hidden = true; el.innerHTML = ''; $('#app').classList.remove('deck-open'); return; }
+  deckFront = Math.max(0, Math.min(deckFront, cs.length - 1));
+  const n = cs.length;
+  const at = (k) => cs[(deckFront + k + n) % n];
+  const order = n === 1 ? [0] : n === 2 ? [1, 0] : [-1, 1, 0]; // dietro a sinistra, dietro a destra, davanti
+  const slot = { '-1': 'prev', 1: 'next', 0: 'front' };
+  el.innerHTML = `<div class="dv-stage" tabindex="-1" role="group" aria-roledescription="mazzo" aria-label="${esc(`Carta ${deckFront + 1} di ${n}: ${cs[deckFront].title}`)}">
+    ${order.map((k) => `<div class="dv-slot ${slot[k]}" ${k ? `data-deck-go="${k}" aria-hidden="true"` : ''}>${deckCardHtml(at(k), (deckFront + k + n) % n, k === 0)}</div>`).join('')}
+  </div>
+  ${n > 1 ? `<div class="dv-dots" aria-hidden="true">${cs.map((_, k) => `<i class="${k === deckFront ? 'on' : ''}"></i>`).join('')}</div>
+  <div class="dv-nav"><button type="button" class="round" data-deck-go="-1" aria-label="Carta precedente"><i class="ic ic-back" aria-hidden="true"></i></button><button type="button" class="round" data-deck-go="1" aria-label="Carta successiva"><i class="ic ic-back fwd" aria-hidden="true"></i></button></div>` : ''}`;
+  el.hidden = false;
+  $('#app').classList.add('deck-open');
+  fillImages(el);
+}
+function openDeck(front = 0) {
+  if (!deckModel.cards.length) return;
+  deckOpen = true; deckFront = front;
+  setComposing(false);
+  renderDeckView();
+  syncBar();
+  $('#deck-view .dv-stage')?.focus({ preventScroll: true }); // le frecce ← → cambiano carta
+}
+function closeDeck() {
+  if (!deckOpen) return;
+  deckOpen = false;
+  renderDeckView();
+  syncBar();
+  $('#collage .deck-pile')?.focus({ preventScroll: true });
+}
+function stepDeck(k) {
+  const n = deckModel.cards.length;
+  if (n < 2) return;
+  deckFront = (deckFront + k + n) % n;
+  const keep = $('#deck-view').contains(document.activeElement);
+  renderDeckView();
+  if (keep) $('#deck-view .dv-stage')?.focus({ preventScroll: true }); // il disegno nuovo non perde il fuoco
 }
 
 // «Il resto di oggi» aperto: vale per un solo giorno, solo in memoria (si azzera cambiando giorno)
@@ -821,14 +897,16 @@ function renderDayView(animate, opts = {}) {
   // 0. bentornato: prima di tutto, a tutta larghezza
   const top = v.welcome ? `<div class="top-wide">${cardHtml({ ...v.welcome, type: 'welcome', r: -0.6 }, 0)}</div>` : '';
 
-  // le carte della giornata; quelle concluse (fatte, o impegni già finiti) vanno nella pila in fondo
-  const nowHM = fmtMin(nowMin());
-  const concluded = (c) => c.type === 'task' ? !!c.done : c.type === 'event' && (v.past || (v.isToday && c.end <= nowHM));
-  const doneCards = [], live = [], pauses = new Map();
+  // attività e impegni vanno nel mazzo (in fondo, DESIGN-API §9); nel collage restano gli avvisi:
+  // da confermare, non entra, sovrapposti
+  const frontKey = deckOpen ? deckModel.cards[deckFront]?.key : null;
+  deckModel = vm.deck(state, v);
+  if (frontKey) deckFront = Math.max(0, deckModel.cards.findIndex((c) => c.key === frontKey)); // la carta davanti resta davanti
+  const live = [], pauses = new Map();
   let pauseBefore = 0;
   for (const c of v.cards) {
     if (c.type === 'pause') { pauseBefore = c.minutes; continue; } // la pausa va sulla carta che segue
-    if (concluded(c)) { doneCards.push(c); pauseBefore = 0; continue; }
+    if (c.type === 'task' || c.type === 'event') { pauseBefore = 0; continue; }
     live.push(c); pauses.set(c, pauseBefore);
     pauseBefore = 0;
   }
@@ -867,9 +945,9 @@ function renderDayView(animate, opts = {}) {
   const chev = '<svg class="mh-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
   const handle = spec.more ? `<button type="button" class="more-handle" data-more="open" aria-expanded="false"><span>${esc(spec.more.label)}</span>${chev}</button>`
     : expanded && collapsedMore ? `<button type="button" class="more-handle open" data-more="close" aria-expanded="true"><span>Mostra meno</span>${chev}</button>` : '';
-  const hint = v.emptyText && !doneCards.length && !(anchor && spec.state === 'empty') ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : '';
+  const hint = v.emptyText && !deckModel.cards.length && !(anchor && spec.state === 'empty') ? `<p class="empty-hint">${esc(v.emptyText)}</p>` : '';
   const grid = cols[0].length || cols[1].length ? `<div class="col">${cols[0].join('')}</div><div class="col">${cols[1].join('')}</div>` : '';
-  const html = `${top}${anchor}${grid}${handle}${doneStackHtml(doneCards, v)}${hint}`;
+  const html = `${top}${anchor}${grid}${handle}${deckPileHtml()}${hint}`;
 
   const col = $('#collage');
   if (opts.skipSame && !animate && html === lastDayHtml && col.childElementCount) { // l'orologio non ridisegna a vuoto
@@ -879,11 +957,9 @@ function renderDayView(animate, opts = {}) {
   }
   lastDayHtml = html;
   const before = animate || opts.flip === false ? null : flipCapture(col, FLIP_SEL);
-  const had = col.querySelector('.done-stack .ds-n')?.textContent;
   col.innerHTML = html;
   flipPlay(col, FLIP_SEL, before);
-  const stackEl = col.querySelector('.done-stack');
-  if (before && stackEl && had !== stackEl.querySelector('.ds-n')?.textContent) bump(stackEl.querySelector('.ds-pile, .ds-head'), 1.05);
+  if (deckOpen) renderDeckView();
   fillImages(col);
   if (animate) animateIn(col, 300 + i * 70 + 800);
   $('#undo-btn').hidden = !canUndo();
@@ -1361,6 +1437,7 @@ function bindSwipes() {
 
 function openOverview() {
   if (mode === 'overview') return;
+  closeDeck();
   setComposing(false);
   closePlus();
   mode = 'overview';
@@ -2865,7 +2942,7 @@ function bind() {
 
   // carte del giorno
   const col = $('#collage');
-  col.addEventListener('click', (e) => {
+  const onCards = (e) => {
     const ck = e.target.closest('[data-ck]');
     if (ck) {
       e.stopPropagation();
@@ -2882,8 +2959,8 @@ function bind() {
       if (it) quickOp(it.status === 'done' ? 'reopen' : 'complete', it.id);
       return;
     }
-    const ds = e.target.closest('[data-ds]');
-    if (ds) { e.stopPropagation(); doneOpen = ds.dataset.ds === 'open'; renderDayView(false); return; }
+    const dk = e.target.closest('[data-deck]');
+    if (dk) { e.stopPropagation(); openDeck(0); return; }
     const nw = e.target.closest('[data-now]');
     if (nw) { e.stopPropagation(); quickOp(nw.dataset.now, nw.dataset.id); return; }
     const a2 = e.target.closest('[data-act2]');
@@ -2909,11 +2986,41 @@ function bind() {
     if (e.target.closest('[data-rest]')) { openRestSheet(); return; }
     const c = e.target.closest('[data-item]');
     if (c && !/^rest:/.test(c.dataset.item)) { sheetFrom = c.getBoundingClientRect(); openSheet(c.dataset.item); }
-  });
-  col.addEventListener('keydown', (e) => {
+  };
+  const onCardsKey = (e) => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.rest) { e.preventDefault(); openRestSheet(); return; }
     if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.item && !/^rest:/.test(e.target.dataset.item)) { e.preventDefault(); openSheet(e.target.dataset.item); }
+  };
+  col.addEventListener('click', onCards);
+  col.addEventListener('keydown', onCardsKey);
+
+  // il mazzo aperto: tocchi sulla carta davanti come nel giorno; una carta dietro (o le frecce) la porta davanti;
+  // un tocco fuori dalle carte lo richiude; si scorre anche con il dito
+  const dv = $('#deck-view');
+  dv.addEventListener('click', (e) => {
+    const go = e.target.closest('[data-deck-go]');
+    if (go) { e.stopPropagation(); stepDeck(+go.dataset.deckGo); return; }
+    if (!e.target.closest('.dv-slot.front, .dv-dots')) { closeDeck(); return; }
+    onCards(e);
   });
+  dv.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); stepDeck(-1); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); stepDeck(1); return; }
+    onCardsKey(e);
+  });
+  let dvX = null, dvY = 0, swipedAt = 0;
+  dv.addEventListener('pointerdown', (e) => { dvX = e.clientX; dvY = e.clientY; });
+  dv.addEventListener('pointercancel', () => { dvX = null; });
+  dv.addEventListener('pointerup', (e) => {
+    if (dvX == null) return;
+    const dx = e.clientX - dvX, dy = e.clientY - dvY;
+    dvX = null;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) { swipedAt = Date.now(); stepDeck(dx < 0 ? 1 : -1); }
+  });
+  // il click che segue uno scorrimento non apre né chiude niente
+  dv.addEventListener('click', (e) => { if (Date.now() - swipedAt < 350) { e.stopPropagation(); e.preventDefault(); } }, { capture: true });
+  $('#tab-cal').addEventListener('click', openOverview);
+  $('#tab-day').addEventListener('click', () => { $('#day-scroll').scrollTo({ top: 0, behavior: 'smooth' }); });
 
   // Esc chiude quello che è aperto, dal più in alto
   document.addEventListener('keydown', (e) => {
@@ -2924,6 +3031,7 @@ function bind() {
     if (!$('#sheet').hidden) { closeSheet(); return; }
     if (settingsOpen) { closeSettings(); return; }
     if (!$('#plus-menu').hidden) { closePlus(); return; }
+    if (deckOpen) { closeDeck(); return; }
     if (mode === 'overview') { openDay(selDay); return; }
     if (composing) { $('#input').blur(); setComposing(false); return; }
     if (!$('#reply').hidden && !pending) hideReply();
