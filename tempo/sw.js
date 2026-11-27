@@ -1,8 +1,9 @@
 // Cache dell'app per l'uso offline. Aggiorna VERSION a ogni rilascio.
-const VERSION = 'tempo-v35';
+const VERSION = 'tempo-v50';
+const OWN = /^tempo-v\d+$/; // le cache di Tempo; «tempo-studio-v…» è di un'altra app e non si tocca
 const SHELL = [
-  './', 'index.html', 'style.css', 'manifest.webmanifest',
-  'js/app.js', 'js/scheduler.js', 'js/store.js', 'js/ai.js', 'js/ai-open.js', 'js/images.js', 'js/companion.js', 'js/parse.js', 'js/templates.js', 'js/goals.js', 'js/learn.js', 'js/viewmodel.js', 'js/format.js', 'js/motion.js', 'js/themes.js', 'js/focus.js', 'js/archive.js', 'js/genui.js', 'js/decide.js', 'js/recap.js', 'js/cloud.js', 'js/native.js',
+  './', 'index.html', 'style.css', 'ios.css', 'manifest.webmanifest',
+  'js/app.js', 'js/scheduler.js', 'js/store.js', 'js/ai.js', 'js/ai-open.js', 'js/images.js', 'js/companion.js', 'js/parse.js', 'js/templates.js', 'js/goals.js', 'js/learn.js', 'js/viewmodel.js', 'js/format.js', 'js/motion.js', 'js/themes.js', 'js/focus.js', 'js/archive.js', 'js/genui.js', 'js/decide.js', 'js/recap.js', 'js/cloud.js', 'js/native.js', 'js/invite.js',
   'vendor/anthropic-sdk.mjs',
   'icons/ui/plus.svg', 'icons/ui/mic.svg', 'icons/ui/arrow-up.svg', 'icons/ui/arrow-left.svg', 'icons/ui/notepad-text.svg', 'icons/ui/grid-2x2.svg',
   'icons/ui/file-text.svg', 'icons/ui/arrow-up-right.svg', 'icons/ui/circle-check.svg', 'icons/ui/circle.svg', 'icons/ui/newspaper.svg', 'icons/ui/x.svg', 'icons/ui/camera.svg', 'icons/ui/rotate-ccw.svg', 'icons/ui/arrow-right.svg',
@@ -16,15 +17,18 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => OWN.test(k) && k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
 
 // Rete prima (così gli aggiornamenti arrivano subito), cache se offline.
+// Solo i file di Tempo: tempo/studio/ è un'altra app con il suo worker e la sua cache.
+const SCOPE = new URL('./', self.location).pathname;
+const isMine = (u) => u.pathname.startsWith(SCOPE) && !u.pathname.startsWith(SCOPE + 'studio/');
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || !isMine(url)) return;
   e.respondWith(
     // no-cache: chiede sempre al server la versione più recente (il server risponde 304 se non è cambiata)
     fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' })
@@ -32,6 +36,6 @@ self.addEventListener('fetch', (e) => {
         if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(e.request, copy)); }
         return res;
       })
-      .catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('index.html'))),
+      .catch(() => caches.open(VERSION).then((c) => c.match(e.request, { ignoreSearch: true }).then((r) => r || (e.request.mode === 'navigate' ? c.match('index.html') : undefined))).then((r) => r || Response.error())),
   );
 });

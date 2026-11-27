@@ -1,0 +1,128 @@
+/* Tempo — strato «iOS 27» sul solo telaio (Impostazioni, schede, barra, pulsanti in alto).
+   Le carte di carta, «Adesso» e le tessere compatte NON si toccano qui.
+   Regole: vetro solo sullo strato di navigazione (barra, pulsanti tondi, X delle schede), mai su carte né su altro vetro. */
+
+/* ---------- colori di sistema (etichette, separatori, sfondi raggruppati, tinta) ---------- */
+:root {
+  --sys-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Helvetica Neue", sans-serif;
+  --label: var(--ink); --label-2: var(--ink-2); --label-3: var(--ink-3);
+  --sep: rgba(60, 60, 67, 0.22);
+  --group-bg: var(--bg); --cell: var(--paper);
+  --fill: rgba(120, 120, 128, 0.16);
+  --tint: var(--accent); --on-tint: #FFFFFF;
+  --sys-red: #D70015;
+  --switch-off: #8E8E93; --switch-on: #816078;
+  --seg-thumb: #FFFFFF; --seg-thumb-ink: var(--ink);
+  /* vetro: tinta, bordo luminoso, ombra morbida */
+  --nav-bg: rgba(250, 250, 250, 0.55);
+  --nav-blur: blur(14px) saturate(180%);
+  --nav-rim: inset 0 0 0 0.5px rgba(255, 255, 255, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  --nav-shadow: 0 4px 24px rgba(0, 0, 0, 0.10);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sep: rgba(84, 84, 88, 0.6);
+    --fill: rgba(120, 120, 128, 0.32);
+    --on-tint: #1B1320;
+    --sys-red: #FF6B6B;
+    --switch-off: #6E6C70; --switch-on: #9C7290;
+    --seg-thumb: #636366; --seg-thumb-ink: #FFFFFF;
+    --nav-bg: rgba(24, 24, 24, 0.5);
+    --nav-rim: inset 0 0 0 0.5px rgba(255, 255, 255, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    --nav-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  }
+}
+/* meno trasparenza o più contrasto: tinta piena, niente sfocatura */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root:not([data-theme="x"]) { --nav-bg: var(--paper); --nav-blur: none; }
+}
+@media (prefers-contrast: more) {
+  :root:not([data-theme="x"]) { --nav-rim: inset 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); --sep: color-mix(in srgb, var(--ink) 35%, transparent); }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root:not([data-theme="x"]) { --nav-bg: color-mix(in srgb, var(--paper) 96%, transparent); --nav-blur: none; }
+}
+
+/* ---------- vetro: barra per scrivere e pulsanti tondi ---------- */
+.round, .bar-row {
+  background: var(--nav-bg); -webkit-backdrop-filter: var(--nav-blur); backdrop-filter: var(--nav-blur);
+  box-shadow: var(--nav-rim), var(--nav-shadow);
+}
+.bar-row textarea, #input { font-family: var(--sys-font); font-size: 17px; line-height: 22px; }
+#input::placeholder, .bar-row textarea::placeholder { color: var(--label-3); }
+.send { background: var(--tint); color: var(--on-tint); }
+.sheet-backdrop { background: rgba(0, 0, 0, 0.28); -webkit-backdrop-filter: none; backdrop-filter: none; }
+
+/* ---------- pulsante pieno (uno solo per scheda) ---------- */
+.btn.primary, .ed-save { background: var(--tint); color: var(--on-tint); }
+.ed-save { height: 50px; font-family: var(--sys-font); font-size: 17px; font-weight: 600; }
+
+/* ---------- impostazioni: lista raggruppata ---------- */
+#panel { background: var(--group-bg); }
+.panel-head { align-items: center; padding: calc(var(--safe-t) + 14px) 16px 6px 20px; }
+.panel-head h2 { font-size: 34px; line-height: 1.1; }
+.settings { padding: 8px 16px calc(var(--safe-b) + 40px); font-family: var(--sys-font); }
+.settings .ctx-intro { font: 400 15px/20px var(--sys-font); color: var(--label-2); margin: 0 16px 20px; }
+.settings .group { margin-bottom: 28px; }
+.settings .group > h2 { font: 600 13px/18px var(--sys-font); text-transform: none; letter-spacing: 0; color: var(--label-2); margin: 0 16px 8px; }
+.settings .card { background: var(--cell); border-radius: 26px; box-shadow: none; }
+.settings .goal { background: var(--cell); border-radius: 20px; box-shadow: none; }
+.settings .goal-t { font-size: 19px; }
+.settings .goal-m { font: 400 13px/18px var(--sys-font); color: var(--label-2); }
+.settings .row { position: relative; min-height: 52px; padding: 10px 16px; border-bottom: 0; }
+.settings .row:not(:last-child)::after { content: ""; position: absolute; left: 16px; right: 0; bottom: 0; height: 0.5px; background: var(--sep); }
+.settings .row label, .settings .row .lbl { font: 400 17px/22px var(--sys-font); color: var(--label); }
+.settings .row small { font: 400 13px/18px var(--sys-font); color: var(--label-2); margin-top: 1px; }
+.settings .mem-item span { font: 400 17px/22px var(--sys-font); }
+.settings .row input:is([type=text], [type=email], [type=url], [type=password], [type=number], [type=time], [type=date]) {
+  background: var(--fill); border-radius: 10px; font-size: 17px; }
+.settings .row select { background: transparent; color: var(--tint); font-size: 17px; text-align: right; text-align-last: right; padding: 0 4px; -webkit-appearance: none; appearance: none; }
+.settings .row .btn { background: none; color: var(--tint); font: 400 17px/22px var(--sys-font); padding: 0 4px; min-height: 44px; border-radius: 12px; display: inline-flex; align-items: center; }
+.settings .row .btn.danger { color: var(--sys-red); font-weight: 400; }
+.settings .row .btn:disabled { color: var(--label-3); opacity: 1; }
+.settings .row .btn:active { background: var(--fill); transform: none; }
+.settings .btn.ghost { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 52px; margin: 12px 0 0; border-radius: 26px; background: var(--cell); color: var(--tint); font: 400 17px/22px var(--sys-font); }
+.settings .note { font: 400 13px/18px var(--sys-font); color: var(--label-2); margin: 8px 16px 0; }
+.settings .note a { color: var(--tint); }
+.settings .stat span { font: 400 13px/18px var(--sys-font); color: var(--label-2); }
+.settings .danger-card { margin-top: 16px; }
+.settings .x { color: var(--label-2); }
+.settings .chip { box-shadow: none; background: var(--cell); font-size: 15px; }
+.settings .chip.add { background: transparent; }
+.row.days { padding-top: 0; }
+.settings .dchip { background: var(--fill); font: 600 13px/1 var(--sys-font); }
+.settings .dchip.on { background: var(--tint); color: var(--on-tint); }
+.cl-box { background: var(--fill); border-radius: 16px; }
+.settings input::placeholder, .sheet input::placeholder { color: var(--label-2); opacity: 1; }
+
+/* ---------- interruttore (i vecchi «Sì/No»): 51 × 31 ---------- */
+.btn.sw-toggle, .settings .row .btn.sw-toggle {
+  position: relative; flex: none; width: 51px; min-width: 51px; height: 31px; min-height: 31px; padding: 0; border-radius: 999px;
+  background: var(--switch-off); color: transparent; font-size: 0; line-height: 0; transition: background 0.25s var(--ease); }
+.btn.sw-toggle[aria-checked="true"], .settings .row .btn.sw-toggle[aria-checked="true"] { background: var(--switch-on); color: transparent; }
+.btn.sw-toggle::before { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.28); transition: transform 0.25s var(--ease), width 0.2s var(--ease); }
+.btn.sw-toggle[aria-checked="true"]::before { transform: translateX(20px); }
+.btn.sw-toggle:active::before { width: 33px; }
+.btn.sw-toggle[aria-checked="true"]:active::before { transform: translateX(14px); }
+.btn.sw-toggle:active { background: var(--switch-off); transform: none; }
+.btn.sw-toggle[aria-checked="true"]:active { background: var(--switch-on); }
+
+/* ---------- scheda: appiglio, X di vetro, raggio iOS ---------- */
+.sheet { border-radius: 34px 34px 0 0; padding-top: 0; font-family: var(--sys-font); }
+.sheet-top { position: sticky; top: 0; z-index: var(--z-raised); margin: 0 -16px; padding: 8px 16px 6px; background: linear-gradient(to bottom, var(--bg) 82%, transparent); }
+.sheet .grabber { width: 36px; height: 5px; margin: 0 auto 8px; background: var(--label-3); opacity: 0.45; }
+.sheet-bar { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; min-height: 44px; }
+.sheet-bar-t { text-align: center; font: 600 17px/22px var(--sys-font); color: var(--label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ed-k { font: 600 13px/18px var(--sys-font); text-transform: none; letter-spacing: 0; color: var(--label-2); }
+/* scelte brevi (2–3): controllo segmentato */
+.chips-x.seg-c { display: flex; gap: 0; margin: 0; padding: 2px; overflow: visible; border-radius: 999px; background: var(--fill); -webkit-mask-image: none; mask-image: none; }
+.seg-c .ch { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 6px; background: transparent; box-shadow: none; font: 500 14px/1.1 var(--sys-font); white-space: normal; text-align: center; }
+.seg-c .ch.on { background: var(--seg-thumb); color: var(--seg-thumb-ink); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
+
+/* ---------- movimento e trasparenza ridotti ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .btn.sw-toggle, .btn.sw-toggle::before { transition: none; }
+  .btn.sw-toggle:active::before { width: 27px; }
+}
+.chip.add input { min-height: 44px; }
