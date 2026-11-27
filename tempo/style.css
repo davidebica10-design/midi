@@ -1352,3 +1352,33 @@ button.dk-check::after { content: ""; position: absolute; inset: -10px; } /* ber
 #app:not(.bar-open) .bar-row { padding: 0; justify-content: center; }
 #app:not(.bar-open) .bar-row > :not(#plus) { display: none !important; }
 .dv-stage:focus { outline: none; }
+
+/* ==========================================================================
+   Un solo sistema per tutta l'app (giorno, mazzo, calendario, riepilogo, schede, impostazioni):
+   una voce per i titoli, una tinta (blu elettrico), una forma di carta, la stessa carta scura.
+   I token di prima (--font-title, --quote, --accent, --paper) restano: cambiano solo i valori.
+   ========================================================================== */
+:root:not(#z) {
+  --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
+  --font-title: var(--display); --quote: var(--display);
+  --accent: #3D3BF3; --accent-2: #7B7AF8; --electric: var(--accent);
+  --tint: var(--accent); --on-tint: #FFFFFF; --switch-on: var(--accent);
+  --card-r: 28px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not(#z) { --accent: #6461FF; --accent-2: #9C9AFF; --paper: #1D1946; --paper-2: #26215A; --on-tint: #FFFFFF; --switch-on: var(--accent); }
+}
+:root[data-theme="dark"]:not(#z) { --accent: #6461FF; --accent-2: #9C9AFF; --paper: #1D1946; --paper-2: #26215A; }
+
+/* i titoli: bastoni pesanti ovunque, come il saluto */
+.ov-top h2, .ov-range h2, .sum-title, .panel-head h2, .sheet h2, .onb-q, .adv-t, .stop-t, .rc-card.k-cover h2,
+.pc.quote .pc-quote, .pc-title, .dk-title, .g-num b, .sw-big, .rc-big, .stat b { font-family: var(--display); font-weight: 750; letter-spacing: -0.02em; }
+.ctx-intro, .goal-t, .sheet .title-input, .onb-in, .hero-line, .rc-card.k-ai p, .rc-card.k-next p, .cd-t, .ms-lines b { font-family: var(--display); }
+.dk-title { font-size: 30px; }
+
+/* una forma di carta: stessi angoli per «Adesso», avvisi, mazzo, anteprima nella scheda, riepilogo */
+.pc, .dk-card, .rc-card, .sm-card, .photo-field { border-radius: var(--card-r); }
+.pc { border: 2px solid rgba(255, 255, 255, 0.06); }
+
+/* una tinta: pulsanti principali, invio, interruttori e scelte attive */
+.adv-go, .btn.primary, .onb-next, .ed-save, .send { background: var(--accent); color: #fff; }
