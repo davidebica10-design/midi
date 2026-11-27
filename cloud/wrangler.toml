@@ -2,13 +2,14 @@
 #   npx wrangler kv namespace create TEMPO_KV      → copia l'id qui sotto
 #   npx wrangler secret put TEMPO_SECRET            → almeno 32 caratteri casuali (openssl rand -base64 48)
 #   npx wrangler deploy
-name = "tempo-cloud"
+name = "midi"
 main = "src/worker.js"
+workers_dev = true
 compatibility_date = "2026-09-01"
 
 [[kv_namespaces]]
 binding = "TEMPO_KV"
-id = "INSERISCI_L_ID_DEL_NAMESPACE"
+id = "546bcc507cae439a96511f8cd8dd4d11"
 
 [vars]
 # origini ammesse per l'app web (l'app nativa usa capacitor://localhost, già incluso)

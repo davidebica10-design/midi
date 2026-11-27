@@ -8,7 +8,7 @@
 import { cleanChecklist } from './store.js';
 
 /** Indirizzo predefinito del server (vuoto finché non lo pubblichi: vedi cloud/README.md). */
-export const DEFAULT_CLOUD_URL = '';
+export const DEFAULT_CLOUD_URL = 'https://midi.davidebica10.workers.dev';
 
 const SYNCED = ['items', 'habits', 'learned', 'seenObs', 'welcome', 'askChat', 'timeChat', 'askIntro', 'focus', 'prefs', 'recurring', 'memory', 'goals', 'goalsDone', 'projects', 'log', 'onboarded', 'anchors', 'chat', 'stats', 'skins', 'recaps', 'schema'];
 
