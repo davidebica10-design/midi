@@ -164,3 +164,13 @@ test('deck() dal piano vero: tutte le attività di oggi stanno in una carta', ()
   const inCards = d.cards.reduce((n, c) => n + c.total, 0);
   assert.equal(inCards, v.cards.filter((c) => c.type === 'task' || c.type === 'event').length);
 });
+
+test('deck(): un impegno che passa la mezzanotte non è finito e dura il giusto; una sola carta tutta fatta', () => {
+  const d = vm.deck({ items: [] }, deckView([{ type: 'event', id: 'n', itemId: 'n', title: 'Turno di notte', start: '22:00', end: '02:00' }], '23:00'));
+  assert.equal(d.cards[0].other[0].done, false);
+  assert.equal(d.cards[0].other[0].minutes, 240);
+  const one = vm.deck({ items: [{ id: 't', title: 'Bucato', priority: 2 }] }, deckView([{ type: 'task', id: 't', itemId: 't', title: 'Bucato', start: '09:00', end: '09:30', minutes: 30, done: true }]));
+  assert.equal(one.cards.length, 1);
+  assert.equal(one.cards[0].done, true);
+  assert.equal(one.cards[0].next, null);
+});

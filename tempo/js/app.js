@@ -580,26 +580,29 @@ function deckRowHtml(r, live) {
     ? (live ? `<button type="button" class="dk-check" data-check="${esc(r.id)}" aria-pressed="${r.done}" aria-label="${esc(`${r.done ? 'Riapri' : 'Segna come fatta'}: ${r.title}`)}">${ICON_CHECK}</button>` : `<span class="dk-check" aria-hidden="true">${ICON_CHECK}</span>`)
     : `<span class="dk-ev" aria-hidden="true"></span>`;
   const todo = r.todo ? ` · ${plural(r.todo, 'cosa da fare', 'cose da fare')}` : '';
-  const open = live ? ` role="button" tabindex="0" data-item="${esc(r.id)}" aria-label="${esc(label)}"` : '';
-  return `<div class="dk-row${r.done ? ' done' : ''}"${open}>${check}<span class="dk-txt"><b>${esc(r.title)}</b><small><span>${esc(r.when + todo)}</span>${r.kind === 'task' ? '<span class="dk-sep">•</span>' + energyHtml(r.energy) : ''}</small></span></div>`;
+  const txt = `<b>${esc(r.title)}</b><small><span>${esc(r.when + todo)}</span>${r.kind === 'task' ? '<span class="dk-sep">•</span>' + energyHtml(r.energy) : ''}</small>`;
+  // casella e testo sono fratelli: la casella spunta, il testo apre l'editor
+  const body = live ? `<button type="button" class="dk-txt" data-item="${esc(r.id)}" aria-label="${esc(`Modifica ${label}`)}">${txt}</button>` : `<span class="dk-txt">${txt}</span>`;
+  return `<div class="dk-row${r.done ? ' done' : ''}">${check}${body}</div>`;
 }
 function deckCardHtml(c, j, live) {
-  let left = DECK_ROWS;
+  let left = live ? Infinity : DECK_ROWS; // aperta, la carta scorre e mostra tutto
   const sec = (title, rows) => {
     if (!rows.length || left <= 0) return '';
     const shown = rows.slice(0, left);
     left -= shown.length;
-    return `<div class="dk-sec"><h3>${title}</h3>${shown.map((r) => deckRowHtml(r, live)).join('')}</div>`;
+    return `<div class="dk-sec"><${live ? 'h3' : 'span'} class="dk-h">${title}</${live ? 'h3' : 'span'}>${shown.map((r) => deckRowHtml(r, live)).join('')}</div>`;
   };
   const body = sec('Priorità alta', c.high) + sec(c.high.length ? 'Altre attività' : 'Da fare', c.other);
-  const more = c.high.length + c.other.length - DECK_ROWS;
+  const more = live ? 0 : c.high.length + c.other.length - DECK_ROWS;
   const col = safeColor(c.color);
-  return `<article class="dk-card${c.done ? ' all-done' : ''}" style="--j:${j};${col ? `--dc:${col}` : ''}" data-dk="${j}" aria-label="${esc(`${c.title}: ${c.caption}`)}">
+  const tag = live ? 'article' : 'div';
+  return `<${tag} class="dk-card${c.done ? ' all-done' : ''}" style="--j:${j};${col ? `--dc:${col}` : ''}" data-dk="${j}" aria-label="${esc(`${c.title}: ${c.caption}`)}">
     <div class="dk-head"><i class="dk-art" style="--m:url(icons/act/${esc(c.icon)}.svg)" aria-hidden="true"></i>
-      <div class="dk-top"><span class="dk-ic"><i style="--m:url(icons/act/${esc(c.icon)}.svg)" aria-hidden="true"></i></span><h2 class="dk-title">${esc(c.title)}</h2></div>
+      <div class="dk-top"><span class="dk-ic"><i style="--m:url(icons/act/${esc(c.icon)}.svg)" aria-hidden="true"></i></span><${live ? 'h2' : 'span'} class="dk-title">${esc(c.title)}</${live ? 'h2' : 'span'}></div>
       <p class="dk-cap">${esc(c.caption)}</p></div>
     <div class="dk-body">${body}${more > 0 ? `<p class="dk-more">+ ${more} ${more === 1 ? 'altra' : 'altre'}</p>` : ''}</div>
-  </article>`;
+  </${tag}>`;
 }
 
 /** Il mazzo chiuso, in fondo alla pagina del giorno: la cima di (al massimo) tre carte. */
@@ -612,7 +615,7 @@ function deckPileHtml() {
     <h2 class="deck-label">Le tue carte</h2>
     <button type="button" class="deck-pile n${pile.length}" data-deck="open" aria-label="${esc(`Apri le carte: ${names}`)}">
       ${pile.map((c, j) => deckCardHtml(c, j, false)).reverse().join('')}
-    </button></section>`;
+    </button></section>`; // dentro il pulsante solo div e span (niente titoli né controlli)
 }
 
 /** Il mazzo aperto: una carta davanti (si tocca, si spunta), quella prima e quella dopo dietro, inclinate. */
@@ -2557,14 +2560,17 @@ function bind() {
     if (e.key === 'ArrowRight') { e.preventDefault(); stepDeck(1); return; }
     onCardsKey(e);
   });
-  let dvX = null, dvY = 0;
+  let dvX = null, dvY = 0, swipedAt = 0;
   dv.addEventListener('pointerdown', (e) => { dvX = e.clientX; dvY = e.clientY; });
+  dv.addEventListener('pointercancel', () => { dvX = null; });
   dv.addEventListener('pointerup', (e) => {
     if (dvX == null) return;
     const dx = e.clientX - dvX, dy = e.clientY - dvY;
     dvX = null;
-    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) { stepDeck(dx < 0 ? 1 : -1); dv.addEventListener('click', (ev) => ev.stopPropagation(), { capture: true, once: true }); }
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) { swipedAt = Date.now(); stepDeck(dx < 0 ? 1 : -1); }
   });
+  // il click che segue uno scorrimento non apre né chiude niente
+  dv.addEventListener('click', (e) => { if (Date.now() - swipedAt < 350) { e.stopPropagation(); e.preventDefault(); } }, { capture: true });
   $('#tab-cal').addEventListener('click', openOverview);
   $('#tab-day').addEventListener('click', () => { $('#day-scroll').scrollTo({ top: 0, behavior: 'smooth' }); });
 

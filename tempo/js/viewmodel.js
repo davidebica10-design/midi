@@ -162,8 +162,9 @@ export function deck(state, view) {
     const g = groups.get(key);
     if (!g.icon) g.icon = themeOf(it).icon;
     const isTask = c.type === 'task';
-    const ended = !isTask && (view.past || (view.isToday && view.header?.time && /^\d\d:\d\d$/.test(view.header.time) && c.end <= view.header.time));
-    const minutes = isTask ? c.minutes : Math.max(0, toMin(c.end) - toMin(c.start));
+    const overnight = !isTask && toMin(c.end) <= toMin(c.start); // finisce dopo mezzanotte: oggi non è finito
+    const ended = !isTask && !overnight && (view.past || (view.isToday && view.header?.time && /^\d\d:\d\d$/.test(view.header.time) && c.end <= view.header.time));
+    const minutes = isTask ? c.minutes : toMin(c.end) - toMin(c.start) + (overnight ? 1440 : 0);
     g.rows.push({
       id: c.id, itemId: c.itemId || null, kind: c.type, title: c.title, start: c.start, end: c.end, minutes,
       done: isTask ? !!c.done : !!ended, high: isTask && (it.priority === 3), energy: isTask ? c.energy || 2 : 0,
