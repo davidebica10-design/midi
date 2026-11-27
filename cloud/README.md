@@ -15,6 +15,8 @@ Senza account Tempo funziona come prima: tutto sul dispositivo.
 
 **Dal pannello di Cloudflare, collegato a GitHub (com'è pubblicato adesso):** il worker `midi` si pubblica da solo a ogni modifica su `main`, usando `wrangler.toml` nella radice del repository. Una volta sola, nel pannello: Workers & Pages → midi → Settings → Variables and Secrets → Add → tipo *Secret*, nome `TEMPO_SECRET`, valore casuale di almeno 40 caratteri. Indirizzo: `https://midi.davidebica10.workers.dev`.
 
+I branch diversi da `main` (le pull request) caricano solo una versione di prova con `npx wrangler versions upload` (Settings → Builds → Previews Base): non toccano il server pubblicato.
+
 **Dal terminale:**
 
 ```sh
