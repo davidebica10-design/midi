@@ -8,9 +8,14 @@
 //   tok:<sha(token)>   un token di accesso { uid, scope, name } toks:<uid>    elenco dei token
 //   ai:<uid>           la chiave AI dell'utente per le richieste da fuori (cifrata, solo se l'ha scelto)
 //   rl:<chiave>        limiti di frequenza
+// Inviti diretti cifrati (il server non legge il contenuto: vedi tempo/js/e2e.js):
+//   keys:<uid>         la chiave pubblica del dispositivo che riceve gli inviti   contacts:<uid> elenco dei contatti (uid)
+//   cc:<lookup>        un codice contatto monouso { uid, exp }                     msg:<uid>:<id> una busta cifrata in attesa
+// L'archivio può avere list(prefisso) → nomi delle chiavi: serve solo per la casella.
 import { hashPassword, verifyPassword, randomToken, randomId, sha256hex, seal, unseal } from './crypto.js';
 import { nowFor, dayFor, recapFor, tell, stripSecrets } from './tempo.js';
 import { handleMcp } from './mcp.js';
+import { cleanPub, cleanEnvelope, MAX_AGE } from '../../tempo/js/e2e.js';
 
 export const VERSION = '1.0.0';
 const MAX_BODY = 4 * 1024 * 1024;
@@ -101,6 +106,7 @@ export function createApp({ store, secret, origins = DEFAULT_ORIGINS, now = () =
   async function deleteAccount(tok, body) {
     const { ix, u } = await accountOf(tok.uid);
     if (!(await verifyPassword(String(body.password || ''), u.pass))) throw new HttpError(401, 'Password non corretta.');
+    await dropDirect(tok.uid); // prima dei token: se si interrompe, l'utente può riprovare
     for (const t of (await getJson('toks:' + tok.uid)) || []) await store.delete('tok:' + t.hash);
     for (const k of ['toks:', 'state:', 'ai:', 'uid:']) await store.delete(k + tok.uid);
     await store.delete(ix.key);
@@ -132,6 +138,133 @@ export function createApp({ store, secret, origins = DEFAULT_ORIGINS, now = () =
     let rev = cur.rev;
     if (r.state) rev = (await writeState(tok.uid, cur.rev + 1, r.state)).rev;
     return { reply: r.reply, understood: r.understood, applied: r.applied, confirm: r.confirm, rev };
+  }
+
+  // ---- inviti diretti cifrati: chiavi pubbliche, contatti, casella
+  const ID = /^[A-Za-z0-9_-]{6,40}$/;
+  const LOOKUP = /^[A-Za-z0-9_-]{16}$/;
+  const MSG_ID = /^[0-9a-z]{9}[A-Za-z0-9_-]{12}$/;
+  const MAX_CONTACTS = 500, MAX_INBOX = 500, CODE_DAYS = 7;
+  const keysOf = async (uid) => (await getJson('keys:' + uid))?.pub || null;
+  const contactsOf = async (uid) => { const l = await getJson('contacts:' + uid); return Array.isArray(l) ? l : []; };
+  const listKeys = async (prefix, limit) => {
+    if (typeof store.list !== 'function') throw new HttpError(501, 'Questo archivio non supporta gli inviti diretti.');
+    return store.list(prefix, limit);
+  };
+  async function linkContacts(a, b) {
+    for (const [x, y] of [[a, b], [b, a]]) {
+      const l = await contactsOf(x);
+      if (l.includes(y)) continue;
+      if (l.length >= MAX_CONTACTS) throw new HttpError(409, 'Troppi contatti.');
+      await putJson('contacts:' + x, [...l, y]);
+    }
+  }
+  async function unlinkContacts(a, b) {
+    for (const [x, y] of [[a, b], [b, a]]) {
+      const l = await contactsOf(x);
+      if (l.includes(y)) await putJson('contacts:' + x, l.filter((u) => u !== y));
+    }
+  }
+  async function needKeys(uid) {
+    const pub = await keysOf(uid);
+    if (!pub) throw new HttpError(409, 'Prima attiva gli inviti diretti su questo dispositivo.');
+    return pub;
+  }
+  async function readInbox(uid) {
+    // al massimo 50 per volta (le letture per richiesta sono limitate): le altre arrivano al giro dopo
+    const names = (await listKeys('msg:' + uid + ':', 50)).sort();
+    const pub = await keysOf(uid);
+    const out = [];
+    for (const k of names) {
+      let m = null;
+      try { m = await getJson(k); } catch { m = null; } // una voce rotta non deve bloccare la casella
+      // scaduta, rotta o per una chiave che non c'è più: non si potrà mai aprire
+      if (!m || !m.env || m.at < now() - MAX_AGE || !pub || m.env.to?.dev !== pub.dev) { await store.delete(k); continue; }
+      out.push(m);
+    }
+    return out;
+  }
+  /** Alla cancellazione dell'account: chiavi, contatti (da entrambe le parti) e casella. */
+  async function dropDirect(uid) {
+    for (const c of await contactsOf(uid)) await unlinkContacts(uid, c);
+    if (typeof store.list === 'function') for (const k of await store.list('msg:' + uid + ':', 10000)) await store.delete(k);
+    for (const k of ['keys:', 'contacts:']) await store.delete(k + uid);
+  }
+  async function direct(p, M, tok, body) {
+    if (p === '/v1/keys' && M === 'PUT') {
+      const b = await body();
+      const pub = cleanPub(b.pub);
+      if (!pub) throw new HttpError(400, 'Chiave non valida.');
+      await limit('keys:' + tok.uid, 20, 24 * 3600e3);
+      await putJson('keys:' + tok.uid, { pub, at: now() });
+      return { body: { pub } };
+    }
+    const km = p.match(/^\/v1\/keys\/([A-Za-z0-9_-]{6,40})$/);
+    if (km && M === 'GET') {
+      if (km[1] !== tok.uid && !(await contactsOf(tok.uid)).includes(km[1])) throw new HttpError(404, 'Contatto non trovato.');
+      return { body: { uid: km[1], pub: await keysOf(km[1]) } };
+    }
+    if (p === '/v1/contact-codes' && M === 'POST') {
+      const b = await body();
+      if (typeof b.lookup !== 'string' || !LOOKUP.test(b.lookup)) throw new HttpError(400, 'Codice non valido.');
+      await needKeys(tok.uid);
+      await limit('cc:' + tok.uid, 20, 24 * 3600e3);
+      if (await store.get('cc:' + b.lookup)) throw new HttpError(409, 'Codice già usato.');
+      const exp = Math.min(Number.isFinite(+b.exp) ? +b.exp : Infinity, now() + CODE_DAYS * 24 * 3600e3);
+      if (!(exp > now())) throw new HttpError(400, 'Scadenza non valida.');
+      await putJson('cc:' + b.lookup, { uid: tok.uid, exp });
+      return { status: 201, body: { exp } };
+    }
+    const use = p.match(/^\/v1\/contact-codes\/([A-Za-z0-9_-]{16})\/use$/);
+    if (use && M === 'POST') {
+      await limit('ccuse:' + tok.uid, 30, 3600e3);
+      await needKeys(tok.uid);
+      const cc = await getJson('cc:' + use[1]);
+      if (!cc || cc.exp < now()) throw new HttpError(404, 'Questo link non vale più: chiedine uno nuovo.');
+      if (cc.uid === tok.uid) throw new HttpError(400, 'È il tuo link: mandalo a chi vuoi aggiungere.');
+      const pub = await keysOf(cc.uid);
+      if (!pub || !(await getJson('uid:' + cc.uid))) { await store.delete('cc:' + use[1]); throw new HttpError(404, 'Questo link non vale più: chiedine uno nuovo.'); }
+      await store.delete('cc:' + use[1]); // monouso
+      await linkContacts(tok.uid, cc.uid);
+      return { body: { uid: cc.uid, pub } };
+    }
+    if (p === '/v1/contacts' && M === 'GET') {
+      const out = [];
+      for (const uid of await contactsOf(tok.uid)) out.push({ uid, pub: await keysOf(uid) });
+      return { body: { contacts: out } };
+    }
+    const cm = p.match(/^\/v1\/contacts\/([A-Za-z0-9_-]{6,40})$/);
+    if (cm && M === 'DELETE') { await unlinkContacts(tok.uid, cm[1]); return { body: { ok: true } }; }
+    const im = p.match(/^\/v1\/inbox\/([A-Za-z0-9_-]{6,40})$/);
+    if (im && M === 'POST') {
+      const to = im[1];
+      await limit('send:' + tok.uid, 120, 3600e3);
+      const b = await body();
+      const env = cleanEnvelope(b.env);
+      if (!env) throw new HttpError(400, 'Busta non valida.');
+      const mine = await needKeys(tok.uid);
+      // il mittente scritto nella busta è chi sta parlando, con la chiave registrata
+      if (env.from.uid !== tok.uid || env.from.dev !== mine.dev || env.to.uid !== to) throw new HttpError(400, 'Busta non valida.');
+      if (!(await contactsOf(to)).includes(tok.uid)) throw new HttpError(403, 'Non siete contatti.');
+      // un solo contatto non può riempire la casella di un altro
+      await limit('pair:' + tok.uid + ':' + to, 60, 24 * 3600e3);
+      const theirs = await keysOf(to);
+      if (!theirs) throw new HttpError(409, 'Non ha attivato gli inviti diretti.', { pub: null });
+      if (theirs.dev !== env.to.dev) throw new HttpError(409, 'La sua chiave è cambiata.', { pub: theirs });
+      if ((await listKeys('msg:' + to + ':', MAX_INBOX + 1)).length >= MAX_INBOX) throw new HttpError(429, 'La sua casella è piena: riprova più tardi.');
+      const at = now();
+      const id = Math.floor(at).toString(36).padStart(9, '0').slice(-9) + randomId().slice(0, 12).padEnd(12, '0');
+      await store.put('msg:' + to + ':' + id, JSON.stringify({ id, from: tok.uid, env, at }), { ttl: Math.ceil(MAX_AGE / 1000) });
+      return { status: 201, body: { id } };
+    }
+    if (p === '/v1/inbox' && M === 'GET') return { body: { messages: await readInbox(tok.uid) } };
+    const dm = p.match(/^\/v1\/inbox\/([A-Za-z0-9_-]{21})$/);
+    if (dm && M === 'DELETE') {
+      if (!MSG_ID.test(dm[1])) throw new HttpError(400, 'Id non valido.');
+      await store.delete('msg:' + tok.uid + ':' + dm[1]);
+      return { body: { ok: true } };
+    }
+    return null;
   }
 
   // ---- instradamento
@@ -174,7 +307,7 @@ export function createApp({ store, secret, origins = DEFAULT_ORIGINS, now = () =
       full();
       const { ix, u } = await accountOf(tok.uid);
       const st = await getJson('state:' + tok.uid);
-      return { body: { email: ix.email, created: u.created, tz: u.tz, ai: !!(await store.get('ai:' + tok.uid)), rev: st?.rev || 0 } };
+      return { body: { uid: tok.uid, email: ix.email, created: u.created, tz: u.tz, ai: !!(await store.get('ai:' + tok.uid)), rev: st?.rev || 0 } };
     }
     if (p === '/v1/account' && M === 'DELETE') { full(); return deleteAccount(tok, await body()); }
     if (p === '/v1/settings' && M === 'PATCH') {
@@ -220,6 +353,11 @@ export function createApp({ store, secret, origins = DEFAULT_ORIGINS, now = () =
       await putJson('toks:' + tok.uid, list.filter((x) => x !== t));
       return { body: { ok: true } };
     }
+    if (/^\/v1\/(keys|contact-codes|contacts|inbox)(\/|$)/.test(p)) {
+      full();
+      const r = await direct(p, M, tok, body);
+      if (r) return r;
+    }
     const asText = url.searchParams.get('format') === 'text';
     if (p === '/v1/now' && M === 'GET') {
       const r = nowFor((await readState(tok.uid)).state || {}, await tzOf(tok.uid), now());
@@ -264,7 +402,8 @@ export function createApp({ store, secret, origins = DEFAULT_ORIGINS, now = () =
         const status = e instanceof HttpError ? e.status : 500;
         if (status === 500) console.error(e);
         const headers = { ...base, 'Content-Type': 'application/json; charset=utf-8', ...(e.extra?.retryAfter ? { 'Retry-After': String(e.extra.retryAfter) } : {}) };
-        return new Response(JSON.stringify({ error: status === 500 ? 'Errore del server.' : e.message }), { status, headers });
+        const extra = e.extra && 'pub' in e.extra ? { pub: e.extra.pub } : {};
+        return new Response(JSON.stringify({ error: status === 500 ? 'Errore del server.' : e.message, ...extra }), { status, headers });
       }
     },
   };
@@ -278,5 +417,9 @@ function validTz(tz) {
 /** Archivio in memoria (test e sviluppo). */
 export function memoryStore() {
   const m = new Map();
-  return { get: async (k) => (m.has(k) ? m.get(k) : null), put: async (k, v) => { m.set(k, v); }, delete: async (k) => { m.delete(k); }, _map: m };
+  return {
+    get: async (k) => (m.has(k) ? m.get(k) : null), put: async (k, v) => { m.set(k, v); }, delete: async (k) => { m.delete(k); },
+    list: async (prefix, limit = 1000) => [...m.keys()].filter((k) => k.startsWith(prefix)).sort().slice(0, limit),
+    _map: m,
+  };
 }
