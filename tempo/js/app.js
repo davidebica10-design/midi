@@ -3,7 +3,9 @@ import { glowSoon, bindCards, dragging, setActPalette, setScenePalette, flipCapt
 import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, lastUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner, sanitizeOps } from './store.js';
-import { makeInvite, makeReply, inviteText, findInvite, localSlot, fitInvite, inviteOp } from './invite.js';
+import { makeInvite, makeReply, inviteText, findInvite, localSlot, fitInvite, inviteOp, encodeInvite } from './invite.js';
+import { createDirect, idbKeystore, localJson, directMsg, withContactCode } from './direct.js';
+import { findContactCode } from './e2e.js';
 import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
 import { goalFit, planSummary, horizonFor, trackLate } from './goals.js';
@@ -150,7 +152,7 @@ async function send(text) {
   text = text.trim();
   if (!text || busy) return;
   // una proposta incollata, o «proponi a…»: si gestisce qui, senza AI e senza chat (il testo non diventa mai un'attività)
-  if (handleInviteText(text) || handleProposeText(text)) { $('#input').blur(); setComposing(false); return; }
+  if (handleContactText(text) || handleInviteText(text) || handleProposeText(text)) { $('#input').blur(); setComposing(false); return; }
   if (/^annulla( l'ultima modifica)?\.?$/i.test(text)) { addMsg({ role: 'user', text }); doUndo(); return; }
   // "che faccio?": la risposta è deterministica e immediata, niente attese
   if (/^(e\s+)?(adesso\s+|ora\s+)?(che|cosa)\s+(faccio|devo fare|fare)(\s+(adesso|ora|stasera|oggi))?\s*\??$/i.test(text) && selDay === today()) {
@@ -383,6 +385,10 @@ function watchSurfaces() {
 }
 function dismissNotice(key, now = false) {
   clearTimeout(noticeTimers[key]);
+  if (key === 'invito' && !now) {
+    directDone(); setTimeout(showNextDirect, 600);
+    if (guestMode && !state.onboarded) { guestMode = false; setTimeout(() => { if (!state.onboarded && $('#onb').hidden) openOnboarding(); }, 700); }
+  }
   for (const el of document.querySelectorAll('[data-notice]')) {
     if (el.dataset.notice !== key) continue;
     if (now || matchMedia('(prefers-reduced-motion: reduce)').matches) el.remove();
@@ -2443,6 +2449,7 @@ async function runSync(manual = false) {
       replan();
     });
     save(state);
+    directReceive();
     if (how === 'pulled' || how === 'merged') { renderAll(); if (manual) toast('Aggiornato dagli altri dispositivi'); }
     else if (manual) toast('Tutto sincronizzato');
   } catch (e) {
@@ -2492,7 +2499,7 @@ function settingsCloudHtml() {
       <div class="row"><button type="button" class="btn" id="cl-logout">Esci da questo dispositivo</button></div>
       ${clDeleting ? `<div class="row"><input type="password" class="wide" id="cl-del-pass" placeholder="Password per confermare" autocomplete="current-password" aria-label="Password per eliminare l'account"><button type="button" class="btn danger" id="cl-del-go">Elimina</button></div>` : `<div class="row"><span class="lbl">Elimina l'account<small>cancella subito tutti i dati dal server; su questo dispositivo restano</small></span><button type="button" class="btn danger" id="cl-delete">Elimina</button></div>`}
     </div>
-  </div>`;
+  </div>${settingsDirectHtml()}`;
 }
 
 async function cloudClick(id, el) {
@@ -2520,11 +2527,12 @@ async function cloudClick(id, el) {
       await cloudCall(S, 'PATCH', '/v1/settings', { ai: on ? { key: S.openKey, preset: presetOf(S), model: S.openModel || '' } : null });
       S.cloudAi = on; save(state);
       toast(on ? 'Da fuori uso la tua chiave AI' : 'Da fuori uso la modalità base');
-    } else if (id === 'cl-logout') { await signOut(S); S.cloudAi = false; save(state); native.cloud(null); toast('Sei uscito: i dati restano qui'); }
+    } else if (id === 'cl-logout') { directReset(); await signOut(S); S.cloudAi = false; save(state); native.cloud(null); toast('Sei uscito: i dati restano qui'); }
     else if (id === 'cl-delete') clDeleting = true;
     else if (id === 'cl-del-go') {
       if (!confirm('Eliminare l\'account e tutti i dati dal server? Non si può annullare. Su questo dispositivo i dati restano.')) return;
       await cloudCall(S, 'DELETE', '/v1/account', { password: $('#cl-del-pass').value });
+      directReset();
       Object.assign(S, { cloudToken: '', cloudEmail: '', cloudRev: 0, cloudAt: 0, cloudEdits: null, cloudAi: false });
       clDeleting = false; save(state);
       native.cloud(null);
@@ -2963,7 +2971,9 @@ function bind() {
   // una proposta incollata nella barra: la carta compare subito, il campo resta pulito
   input.addEventListener('paste', (e) => {
     const t = e.clipboardData?.getData('text') || '';
-    if (!t || !INV_MARK.test(t)) return;
+    if (!t) return;
+    if (CT_MARK.test(t) && findContactCode(t, null)) { e.preventDefault(); input.value = ''; grow(); renderComposer(); handleContactText(t); input.blur(); setComposing(false); return; }
+    if (!INV_MARK.test(t)) return;
     if (!findInvite(t, Date.now()) && !/tempo:inv1:/i.test(t)) return; // un link qualsiasi: si incolla come testo
     e.preventDefault();
     input.value = ''; grow(); renderComposer();
@@ -3167,6 +3177,7 @@ function bind() {
     }
     if (t.id === 'open-recap') openRecap();
     if (tt && (/^cl-/.test(tt.id) || tt.dataset.clRevoke)) cloudClick(tt.id, tt);
+    if (tt && (/^dm-/.test(tt.id) || tt.dataset.dm)) directClick(tt.dataset.dm || tt.id, tt);
     if (t.matches?.('input[data-copy]')) { t.select(); navigator.clipboard?.writeText(t.value).then(() => toast('Copiato')).catch(() => {}); }
     if (tt?.id === 'ui-adaptive' || tt?.id === 'ui-motif') {
       const k = tt.id === 'ui-adaptive' ? 'adaptive' : 'motif';
@@ -3481,6 +3492,7 @@ function writeInvites(list) {
   try { localStorage.setItem(INV_KEY, JSON.stringify(invMem)); } catch {}
 }
 function upsertInvite(rec) {
+  directDone(rec.id);
   writeInvites([rec, ...freshInvites().filter((r) => r.id !== rec.id)]);
 }
 function forgetInvites() {
@@ -3534,7 +3546,7 @@ function shareRow(getText, { guard, onSent }) {
   const row = mk('div', 'r-actions inv-share');
   const go = async (copy) => {
     if (guard && !guard()) return;
-    const text = getText();
+    const text = await getText();
     if (!text) return;
     const how = copy ? ((await copyOut(text)) ? 'copied' : null) : await shareOut(text);
     if (how) onSent(how);
@@ -3625,7 +3637,10 @@ function openProposal(p) {
   const card = mk('div', 'ed-card event'); card.id = 'ed-card';
   card.append(mk('div', 'ed-title', p.title), mk('div', 'ed-sub', `${cap(dayFull(p.date))}, ${hhmm(p.start)}–${hhmm(p.end)}`), (() => { const f = mk('div', 'ed-foot'); f.append(mk('span', '', p.to ? `Proposta per ${p.to}` : 'Proposta')); return f; })());
   const msg = msgPreview('');
-  const refresh = () => { const inv = proposalOf(p); fillMsg(msg, inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''); };
+  // con l'account: nel link c'è anche il codice per diventare contatti, così la prossima volta la proposta arriva diretta
+  const pc = { code: null };
+  const linkText = () => { const inv = proposalOf(p); if (!inv) return ''; const t = inviteText(inv, { baseUrl: baseUrl() }); return pc.code ? withContactCode(t, pc.code) : t; };
+  const refresh = () => fillMsg(msg, linkText());
   refresh();
   const sec = mk('section', 'ed-row');
   const k = mk('span', 'ed-k', 'Il messaggio');
@@ -3634,10 +3649,25 @@ function openProposal(p) {
   const nm = askName ? nameField(refresh) : null;
   const line = mk('p', 'inv-line', !p.itemId ? 'Intanto lo metto nel tuo piano, finché non risponde.' : p.ops ? `Quando la mandi, nel tuo piano resta fissa alle ${hhmm(p.start)}.` : 'Intanto l\'impegno resta nel tuo piano.');
   const actions = mk('div', 'ed-actions');
-  actions.append(shareRow(() => { const inv = proposalOf(p); return inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''; }, {
+  actions.append(shareRow(linkText, {
     guard: needName(() => nm?.querySelector('input')),
     onSent: proposalSent,
   }));
+  directRow(actions, () => { const inv = proposalOf(p); return inv ? encodeInvite(inv) : ''; }, {
+    guard: needName(() => nm?.querySelector('input')), prefer: p.to,
+    onSent: (name) => { p.directName = name; proposalSent('direct'); },
+    // è nei tuoi contatti: la strada principale è mandarla diretta; il link resta come alternativa
+    onMatch: (row, name) => {
+      actions.prepend(row);
+      actions.querySelector('[data-inv="share"]')?.classList.remove('primary');
+      sec.hidden = true; // il messaggio da copiare serve solo per la strada del link
+      line.textContent = `${name} è nei tuoi contatti: la proposta arriva direttamente nella sua app.`;
+    },
+    onNoMatch: () => {
+      if (pc.code || !state.settings.cloudToken) return;
+      dm().createCode(myName()).then((c) => { pc.code = c; if (sheetMode === 'invite' && invDraft === p) refresh(); }).catch(() => {});
+    },
+  });
   form.append(h, card);
   if (nm) form.append(nm);
   form.append(sec, line, actions);
@@ -3660,7 +3690,198 @@ function proposalSent(how) {
   renderAll();
   const undo = undoId ? undoAction(undoId) : null;
   if (how === 'copied') toast('Copiato. Incollalo nella chat.', undo);
+  else if (how === 'direct') toast(`Mandata a ${p.directName}.`, undo);
   else if (undo) { const w = itemId && whereIs(itemId); toast(`${shortTitle(p.title)}: ${p.itemId ? 'fissato' : 'aggiunto'}${w ? ', ' + w.text : ''}.`, undo); }
+}
+
+// ---- inviti diretti (direct.js): da Tempo a Tempo, cifrati da telefono a telefono
+// Solo con l'account Tempo Cloud. Contatti e chiavi stanno su questo dispositivo (mai nello stato sincronizzato).
+// Quello che arriva da un contatto è una proposta di Tempo come le altre: passa da handleInviteText e da tutti i suoi controlli.
+let directApi = null, dmContacts = null, dmState = null, dmLoading = false, dmCode = null, dmSafety = null, dmBusy = false, dmShowing = false;
+let dmCurrent = null; // la proposta arrivata che è sullo schermo: { q, inv } — esce dalla coda solo quando rispondi o chiudi
+const directFrom = new Map(); // id della proposta → contatto che l'ha mandata (per rispondere in Tempo)
+let pendingContact = null; // { text, inv, name }: una proposta arrivata con il codice per diventare contatti
+let guestMode = false;     // aperta da un link senza aver mai usato Tempo: si vede solo la proposta
+/** Rispondere in Tempo a chi ti ha mandato il link: diventate contatti e la risposta arriva diretta. */
+function pendingReply(host, inv, build, answer) {
+  const pc = pendingContact;
+  const who = pc.name || inv.from || 'chi te l\'ha mandata';
+  if (!state.settings.cloudToken) {
+    host.append(mk('p', 'n-why', `Con un account Tempo Cloud tu e ${who} vi mandate le proposte direttamente in Tempo.`));
+    return;
+  }
+  const b = invBtn(`Rispondi in Tempo a ${who}`, async () => {
+    if (!myName()) { toast('Scrivi prima come ti firmi.'); host.querySelector('.inv-name input')?.focus(); return; }
+    const r = build();
+    if (!r) return;
+    b.disabled = true;
+    try {
+      const c = await dm().useCode(pc.text, myName(), inv.from || '');
+      dmContacts = dm().contacts();
+      await dm().send(c.uid, 'invito', { t: encodeInvite(r) });
+      pendingContact = null;
+      if (answer !== 'si') upsertInvite({ id: inv.id, role: 'ricevuta', itemId: null, title: cleanTxt(inv.t, 80), to: '', from: inv.from, at: Date.now(), status: answer });
+      toast(`Risposta mandata a ${c.name}. Ora siete contatti.`);
+      dismissNotice('invito');
+    } catch (e) { b.disabled = false; toast(directMsg(e)); }
+  }, true);
+  const row = invActions(b);
+  row.classList.add('inv-direct');
+  host.append(row);
+}
+const CT_MARK = /tempo:ct1:|contatto=/i;
+const dm = () => (directApi ||= createDirect({ S: () => state.settings, storage: localJson(), keystore: idbKeystore() }));
+function directReset() { directApi?.forget(); directApi = null; dmContacts = null; dmState = null; dmCode = null; dmSafety = null; }
+async function directLoad() {
+  if (dmLoading || !state.settings.cloudToken) return;
+  dmLoading = true;
+  try { dmState = await dm().status(); dmContacts = dmState === 'qui' ? await dm().refresh() : dm().contacts(); }
+  catch (e) { dmContacts = dmContacts || []; console.warn('inviti diretti', e); }
+  dmLoading = false;
+  if (settingsOpen) renderSettings();
+}
+function settingsDirectHtml() {
+  if (!state.settings.cloudToken) return '';
+  if (dmContacts === null) { directLoad(); return ''; }
+  const rows = dmContacts.map((c) => `<div class="row"><span class="lbl">${esc(c.name)}<small>${c.changed ? '✗ il codice di sicurezza è cambiato: controllalo' : c.off ? 'non riceve inviti diretti' : c.verified ? 'codice di sicurezza controllato' : 'codice di sicurezza da controllare'}</small></span><button type="button" class="btn" data-dm="dm-safety" data-uid="${esc(c.uid)}">Codice</button><button type="button" class="x" data-dm="dm-remove" data-uid="${esc(c.uid)}" aria-label="Togli ${esc(c.name)}">×</button></div>`).join('');
+  const sc = dmSafety && dmContacts.find((c) => c.uid === dmSafety.uid);
+  const safety = sc ? `<div class="cl-box" role="region" aria-label="Codice di sicurezza">
+      <p><b>${esc(sc.name)}</b>: ${esc(dmSafety.code)}</p>
+      <p class="note">Sul suo telefono, in Inviti diretti, deve esserci lo stesso codice. Confrontalo di persona o a voce: se coincide, nessuno si è messo in mezzo.</p>
+      <div class="row">${sc.changed ? '<button type="button" class="btn primary" id="dm-trust">Coincide: fidati del nuovo</button>' : '<button type="button" class="btn primary" id="dm-verify">Coincide</button>'}<button type="button" class="btn" id="dm-safety-close">Chiudi</button></div></div>` : '';
+  const code = dmCode ? `<div class="cl-box" role="region" aria-label="Link per un amico">
+      <p><b>Il link è pronto.</b> Vale una volta sola, per 7 giorni.</p>
+      <div class="row"><button type="button" class="btn primary" id="dm-share">Condividi</button><button type="button" class="btn" id="dm-copy">Copia</button><button type="button" class="btn" id="dm-code-close">Fatto</button></div></div>` : '';
+  const where = dmState === 'altrove' ? `<div class="row"><span class="lbl">Arrivano su un altro dispositivo<small>se li ricevi qui, lì smettono e i tuoi contatti vedranno un codice nuovo</small></span><button type="button" class="btn" id="dm-activate">Ricevili qui</button></div>` : '';
+  return `<div class="group"><h2>Inviti diretti</h2>
+    <div class="card">
+      ${where}
+      <div class="row"><span class="lbl">Aggiungi un amico<small>un link da mandargli una volta</small></span><button type="button" class="btn" id="dm-code" ${dmBusy ? 'disabled' : ''}>Crea link</button></div>
+      ${code}${rows}${safety}
+    </div>
+    <p class="note">Le proposte arrivano direttamente nella sua app, cifrate da telefono a telefono. Tempo Cloud vede chi scrive a chi e quando, non cosa.</p>
+  </div>`;
+}
+const contactLinkText = (code) => `Aggiungimi su Tempo: le proposte arriveranno direttamente nell'app. Il link vale una volta sola.\n${baseUrl()}#contatto=${code.replace(/^tempo:ct1:/, '')}`;
+async function directClick(id, el) {
+  const uid = el?.dataset.uid;
+  try {
+    if (id === 'dm-code') { dmBusy = true; if (settingsOpen) renderSettings(); dmCode = await dm().createCode(myName()); }
+    else if (id === 'dm-share' || id === 'dm-copy') {
+      if (!dmCode) return;
+      const text = contactLinkText(dmCode);
+      const how = id === 'dm-copy' ? ((await copyOut(text)) ? 'copied' : null) : await shareOut(text);
+      if (how === 'copied') toast('Copiato. Mandalo solo alla persona che vuoi aggiungere.');
+      return;
+    }
+    else if (id === 'dm-code-close') dmCode = null;
+    else if (id === 'dm-activate') { dmState = await dm().activate(); dmContacts = await dm().refresh(); toast('Gli inviti diretti arrivano qui'); }
+    else if (id === 'dm-safety' && uid) dmSafety = { uid, ...(await dm().safetyInfo(uid)) }; // l'impronta mostrata è l'unica che si può confermare
+    else if (id === 'dm-safety-close') dmSafety = null;
+    else if (id === 'dm-verify' && dmSafety) { const ok = dm().setVerified(dmSafety.uid, dmSafety.fp); dmSafety = null; dmContacts = dm().contacts(); toast(ok ? 'Codice controllato' : 'Il codice è cambiato mentre lo guardavi: aprilo di nuovo.'); }
+    else if (id === 'dm-trust' && dmSafety) {
+      const ok = dm().trustChange(dmSafety.uid, dmSafety.fp);
+      if (ok) dm().setVerified(dmSafety.uid, dmSafety.fp);
+      dmSafety = null; dmContacts = dm().contacts();
+      toast(ok ? 'Da ora uso il codice nuovo' : 'Il codice è cambiato mentre lo guardavi: aprilo di nuovo.');
+      if (ok) directReceive();
+    }
+    else if (id === 'dm-remove' && uid) {
+      const c = dmContacts?.find((x) => x.uid === uid);
+      if (!confirm(`Togliere ${c?.name || 'questo contatto'}? Non potrete più mandarvi proposte in Tempo finché non vi aggiungete di nuovo.`)) return;
+      await dm().removeContact(uid); dmContacts = dm().contacts(); if (dmSafety?.uid === uid) dmSafety = null; toast('Contatto tolto');
+    } else return;
+  } catch (e) { toast(directMsg(e)); }
+  finally { dmBusy = false; }
+  if (settingsOpen) renderSettings();
+}
+/** Un link contatto (incollato o aperto): chiede se aggiungere. */
+function handleContactText(text) {
+  const t = String(text || '');
+  if (!CT_MARK.test(t)) return false;
+  const c = findContactCode(t, Date.now());
+  if (!c) { if (!/tempo:ct1:|[#&]contatto=/i.test(t)) return false; notice({ key: 'invito', what: 'Questo link per aggiungere un contatto non vale più.', why: 'Forse è scaduto o si è rovinato nella copia.', next: 'Chiedine uno nuovo.' }); return true; }
+  if (!state.settings.cloudToken) { notice({ key: 'invito', what: 'Per aggiungere un contatto serve l\'account Tempo Cloud.', why: 'Le proposte dirette passano dalla casella cifrata del tuo account.', next: 'Apri le impostazioni, Account e dispositivi.' }); return true; }
+  const sh = inviteShell();
+  if (!sh) return true;
+  const who = c.name || 'questa persona';
+  sh.stage((card) => {
+    card.append(mk('p', 'n-what', `Aggiungere ${who} ai contatti?`), mk('p', 'n-why', 'Le vostre proposte arriveranno direttamente in Tempo, cifrate da telefono a telefono.'));
+    const nm = myName() ? null : nameField(() => {});
+    if (nm) card.append(nm);
+    const go = invBtn('Aggiungi', async () => {
+      if (!needName(() => nm?.querySelector('input'))()) return;
+      go.disabled = true;
+      try {
+        await dm().useCode(t, myName());
+        dmContacts = dm().contacts();
+        dismissNotice('invito');
+        toast(`${who} è nei tuoi contatti. Controllate il codice di sicurezza nelle impostazioni.`);
+      } catch (e) { go.disabled = false; toast(directMsg(e)); }
+    }, true);
+    card.append(invActions(go, invBtn('Non ora', () => dismissNotice('invito'))));
+  });
+  return true;
+}
+/**
+ * I bottoni «Manda a …» per i contatti (sotto Condividi e Copia). getToken() → 'tempo:inv1:…'.
+ * only: un solo contatto (la risposta torna a chi ha scritto) · prefer: il nome scritto nella frase, che va per primo.
+ */
+function directRow(host, getToken, { guard, onSent, only = null, prefer = '', onMatch = null, onNoMatch = null }) {
+  if (!state.settings.cloudToken) return;
+  let decided = false;
+  const row = mk('div', 'r-actions inv-direct');
+  const paint = () => {
+    row.replaceChildren();
+    let list = (dmContacts || []).filter((c) => !c.off && (!only || c.uid === only));
+    const pref = String(prefer || '').toLowerCase();
+    if (pref) list = [...list.filter((c) => c.name.toLowerCase() === pref), ...list.filter((c) => c.name.toLowerCase() !== pref)];
+    const match = pref && list[0]?.name.toLowerCase() === pref ? list[0] : null;
+    for (const c of list.slice(0, 6)) {
+      const b = mk('button', c === match ? 'btn primary' : 'btn', only ? `Rispondi in Tempo a ${c.name}` : `Manda a ${c.name}`); b.type = 'button'; b.dataset.inv = 'direct';
+      b.addEventListener('click', async () => {
+        if (guard && !guard()) return;
+        const t = getToken();
+        if (!t) return;
+        for (const x of row.querySelectorAll('button')) x.disabled = true;
+        try { await dm().send(c.uid, 'invito', { t }); onSent(c.name); }
+        catch (e) { toast(directMsg(e)); for (const x of row.querySelectorAll('button')) x.disabled = false; }
+      });
+      row.append(b);
+    }
+    if (!decided && dmContacts !== null) { decided = true; if (match) onMatch?.(row, match.name); else onNoMatch?.(); }
+  };
+  host.append(row);
+  paint();
+  if (dmContacts === null) directLoad().then(() => { if (row.isConnected) paint(); });
+}
+/** Ritira la casella (dopo ogni sincronizzazione) e mostra la prima proposta arrivata. */
+async function directReceive() {
+  if (!state.settings.cloudToken || !navigator.onLine) return;
+  try {
+    const ev = await dm().receive();
+    for (const e of ev) if (e.type === 'contatto') toast(`${e.name} ha usato il tuo link: ora siete contatti.`);
+    if (ev.some((e) => e.type === 'contatto')) { dmContacts = dm().contacts(); if (settingsOpen) renderSettings(); }
+    showNextDirect();
+  } catch (e) { console.warn('inviti diretti', e); }
+}
+function showNextDirect() {
+  if (!directApi || dmShowing || dmCurrent || hasNotice('invito') || !state.onboarded) return;
+  const q = directApi.queue()[0];
+  if (!q) return;
+  const inv = findInvite(q.t, Date.now());
+  if (!inv) { directApi.dropQueued(q.id); return; }
+  directFrom.set(inv.kind === 'risposta' ? inv.re : inv.id, q.from);
+  dmCurrent = { q: q.id, inv: inv.kind === 'risposta' ? inv.re : inv.id };
+  dmShowing = true;
+  try { handleInviteText(q.t, true); } finally { dmShowing = false; }
+  if (!hasNotice('invito')) directDone(); // non c'era niente da chiedere (già risposto, data passata…)
+}
+/** La proposta sullo schermo ha avuto una risposta, o l'hai chiusa: esce dalla coda. */
+function directDone(invId) {
+  if (!dmCurrent || (invId && invId !== dmCurrent.inv)) return;
+  directApi?.dropQueued(dmCurrent.q);
+  dmCurrent = null;
 }
 
 // ---- 2. ricevere
@@ -3681,15 +3902,24 @@ const invalidNotice = (why) => notice({ key: 'invito', what: 'Non riesco a legge
 
 let inviteHash = '';
 function readInviteHash() {
-  if (!/(?:^|[#&])invito=/.test(location.hash)) return;
+  if (!/(?:^|[#&])(?:invito|contatto)=/.test(location.hash)) return;
   inviteHash = location.hash;
   history.replaceState(null, '', location.pathname + location.search);
+  // chi non usa ancora Tempo vede solo la proposta (come una pagina web); le domande iniziali vengono dopo
+  if (!state.onboarded && $('#onb').hidden && /(?:^|[#&])invito=/.test(inviteHash)) { guestMode = true; releaseInviteHash(); return; }
   if (state.onboarded && $('#onb').hidden) releaseInviteHash();
 }
 function releaseInviteHash() {
   if (!inviteHash) return;
   const h = inviteHash; inviteHash = '';
-  setTimeout(() => handleInviteText(h, true), 500);
+  // proposta + codice contatto nello stesso link: prima la proposta; il contatto si aggiunge quando rispondi in Tempo
+  const inv = /(?:^|[#&])invito=/.test(h) ? findInvite(h, Date.now()) : null;
+  const ct = inv ? findContactCode(h, Date.now()) : null;
+  pendingContact = inv && ct && inv.kind === 'proposta' ? { text: h, inv: inv.id, name: ct.name || inv.from || '' } : null;
+  setTimeout(() => {
+    if (inv) handleInviteText(h, true); else handleContactText(h) || handleInviteText(h, true);
+    if (guestMode && hasNotice('invito')) toast('Questa è Tempo. Puoi rispondere da qui, senza installare niente.');
+  }, 500);
 }
 
 /** La carta nell'area delle risposte; `stage(fn)` la ridisegna a ogni passo. */
@@ -3796,6 +4026,19 @@ function replyStage(sh, inv, answer, alts, back) {
     });
     row.append(invBtn(answer === 'si' ? 'Non ora' : 'Indietro', () => (answer === 'si' || !back ? dismissNotice('invito') : back())));
     c.append(row);
+    const from = directFrom.get(inv.id);
+    if (!from && pendingContact?.inv === inv.id) pendingReply(c, inv, build, answer);
+    if (from) directRow(c, () => { const r = build(); return r ? encodeInvite(r) : ''; }, {
+      guard: needName(() => c.querySelector('.inv-name')), only: from,
+      onSent: (name) => {
+        if (answer !== 'si') upsertInvite({ id: inv.id, role: 'ricevuta', itemId: null, title: cleanTxt(inv.t, 80), to: '', from: inv.from, at: Date.now(), status: answer });
+        toast(`Risposta mandata a ${name}.`);
+        dismissNotice('invito');
+      },
+    });
+    // si può rispondere in Tempo: quella è la strada principale, il messaggio da copiare resta come alternativa
+    const dr = c.querySelector('.inv-direct');
+    if (dr) { c.querySelector('.n-why').textContent = 'Rispondi in Tempo, oppure manda questo messaggio.'; c.insertBefore(dr, msg); row.querySelector('[data-inv="share"]')?.classList.remove('primary'); new MutationObserver(() => dr.querySelector('button')?.classList.add('primary')).observe(dr, { childList: true }); dr.querySelector('button')?.classList.add('primary'); }
   });
 }
 
@@ -3919,7 +4162,7 @@ bind();
 syncSaveAlert();
 renderAll();
 renderDayView(true);
-if (!state.onboarded) openOnboarding();
+if (!state.onboarded && !/(?:^|[#&])invito=/.test(location.hash)) openOnboarding(); // con una proposta nel link: prima la proposta
 if (brokenData) showBrokenNotice(brokenData);
 try { // una bozza messa da parte prima di aggiornare l'app
   const draftText = sessionStorage.getItem('tempo.bozza');

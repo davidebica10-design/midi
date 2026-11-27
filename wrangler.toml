@@ -1,0 +1,15 @@
+# Tempo Cloud su Cloudflare Workers, pubblicato da GitHub (Workers Builds) dalla radice del repository.
+# Il codice del server è in cloud/ (vedi cloud/README.md). Questo file esiste solo perché Cloudflare
+# lo cerca qui; cloud/wrangler.toml è lo stesso, per chi pubblica dal terminale dentro cloud/.
+# Il segreto TEMPO_SECRET NON sta qui: si imposta nel pannello di Cloudflare (Settings → Variables and Secrets).
+name = "midi"
+main = "cloud/src/worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "TEMPO_KV"
+id = "546bcc507cae439a96511f8cd8dd4d11"
+
+[vars]
+TEMPO_ORIGINS = "https://davidebica10-design.github.io,capacitor://localhost,http://localhost,https://localhost"
