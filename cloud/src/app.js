@@ -208,7 +208,7 @@ export function createApp({ store, secret, origins = DEFAULT_ORIGINS, now = () =
       const b = await body();
       if (typeof b.lookup !== 'string' || !LOOKUP.test(b.lookup)) throw new HttpError(400, 'Codice non valido.');
       await needKeys(tok.uid);
-      await limit('cc:' + tok.uid, 20, 24 * 3600e3);
+      await limit('cc:' + tok.uid, 50, 24 * 3600e3);
       if (await store.get('cc:' + b.lookup)) throw new HttpError(409, 'Codice già usato.');
       const exp = Math.min(Number.isFinite(+b.exp) ? +b.exp : Infinity, now() + CODE_DAYS * 24 * 3600e3);
       if (!(exp > now())) throw new HttpError(400, 'Scadenza non valida.');

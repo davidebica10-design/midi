@@ -4,7 +4,7 @@ import { themeOf } from './themes.js';
 import { focusSetup, focusStart, focusPause, focusResume, focusView, focusNext, workedMin, clock, gaugeSvg, gaugeParts, dotRingSvg, pctAt, POMO_ROUNDS } from './focus.js';
 import { load, save, applyOps, pushUndo, popUndo, canUndo, hasUndo, lastUndo, computeStats, uid, prefLabel, projectDue, projectOf, migrate, safeColor, saveStatus, SCHEMA, archiveCandidates, applyArchive, sanitizeState, checklistOwner, sanitizeOps } from './store.js';
 import { makeInvite, makeReply, inviteText, findInvite, localSlot, fitInvite, inviteOp, encodeInvite } from './invite.js';
-import { createDirect, idbKeystore, localJson, directMsg } from './direct.js';
+import { createDirect, idbKeystore, localJson, directMsg, withContactCode } from './direct.js';
 import { findContactCode } from './e2e.js';
 import { nowAdvice, briefing, pickObservations, answerObservation, contextReview, contextOps, markShown, closeObservation, backupDue as backupDueOf, noteOpen, welcomeArchive, sessionDoneNote } from './companion.js';
 import { understoodOf } from './parse.js';
@@ -385,7 +385,10 @@ function watchSurfaces() {
 }
 function dismissNotice(key, now = false) {
   clearTimeout(noticeTimers[key]);
-  if (key === 'invito' && !now) { directDone(); setTimeout(showNextDirect, 600); }
+  if (key === 'invito' && !now) {
+    directDone(); setTimeout(showNextDirect, 600);
+    if (guestMode && !state.onboarded) { guestMode = false; setTimeout(() => { if (!state.onboarded && $('#onb').hidden) openOnboarding(); }, 700); }
+  }
   for (const el of document.querySelectorAll('[data-notice]')) {
     if (el.dataset.notice !== key) continue;
     if (now || matchMedia('(prefers-reduced-motion: reduce)').matches) el.remove();
@@ -3543,7 +3546,7 @@ function shareRow(getText, { guard, onSent }) {
   const row = mk('div', 'r-actions inv-share');
   const go = async (copy) => {
     if (guard && !guard()) return;
-    const text = getText();
+    const text = await getText();
     if (!text) return;
     const how = copy ? ((await copyOut(text)) ? 'copied' : null) : await shareOut(text);
     if (how) onSent(how);
@@ -3621,7 +3624,10 @@ function openProposal(p) {
   const card = mk('div', 'ed-card event'); card.id = 'ed-card';
   card.append(mk('div', 'ed-title', p.title), mk('div', 'ed-sub', `${cap(dayFull(p.date))}, ${hhmm(p.start)}–${hhmm(p.end)}`), (() => { const f = mk('div', 'ed-foot'); f.append(mk('span', '', p.to ? `Proposta per ${p.to}` : 'Proposta')); return f; })());
   const msg = msgPreview('');
-  const refresh = () => { const inv = proposalOf(p); fillMsg(msg, inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''); };
+  // con l'account: nel link c'è anche il codice per diventare contatti, così la prossima volta la proposta arriva diretta
+  const pc = { code: null };
+  const linkText = () => { const inv = proposalOf(p); if (!inv) return ''; const t = inviteText(inv, { baseUrl: baseUrl() }); return pc.code ? withContactCode(t, pc.code) : t; };
+  const refresh = () => fillMsg(msg, linkText());
   refresh();
   const sec = mk('section', 'ed-row');
   const k = mk('span', 'ed-k', 'Il messaggio');
@@ -3630,13 +3636,24 @@ function openProposal(p) {
   const nm = askName ? nameField(refresh) : null;
   const line = mk('p', 'inv-line', p.itemId ? 'Intanto l\'impegno resta nel tuo piano.' : 'Intanto lo metto nel tuo piano, finché non risponde.');
   const actions = mk('div', 'ed-actions');
-  actions.append(shareRow(() => { const inv = proposalOf(p); return inv ? inviteText(inv, { baseUrl: baseUrl() }) : ''; }, {
+  actions.append(shareRow(linkText, {
     guard: needName(() => nm?.querySelector('input')),
     onSent: proposalSent,
   }));
   directRow(actions, () => { const inv = proposalOf(p); return inv ? encodeInvite(inv) : ''; }, {
     guard: needName(() => nm?.querySelector('input')), prefer: p.to,
     onSent: (name) => { p.directName = name; proposalSent('direct'); },
+    // è nei tuoi contatti: la strada principale è mandarla diretta; il link resta come alternativa
+    onMatch: (row, name) => {
+      actions.prepend(row);
+      actions.querySelector('[data-inv="share"]')?.classList.remove('primary');
+      sec.hidden = true; // il messaggio da copiare serve solo per la strada del link
+      line.textContent = `${name} è nei tuoi contatti: la proposta arriva direttamente nella sua app.`;
+    },
+    onNoMatch: () => {
+      if (pc.code || !state.settings.cloudToken) return;
+      dm().createCode(myName()).then((c) => { pc.code = c; if (sheetMode === 'invite' && invDraft === p) refresh(); }).catch(() => {});
+    },
   });
   form.append(h, card);
   if (nm) form.append(nm);
@@ -3670,6 +3687,35 @@ function proposalSent(how) {
 let directApi = null, dmContacts = null, dmState = null, dmLoading = false, dmCode = null, dmSafety = null, dmBusy = false, dmShowing = false;
 let dmCurrent = null; // la proposta arrivata che è sullo schermo: { q, inv } — esce dalla coda solo quando rispondi o chiudi
 const directFrom = new Map(); // id della proposta → contatto che l'ha mandata (per rispondere in Tempo)
+let pendingContact = null; // { text, inv, name }: una proposta arrivata con il codice per diventare contatti
+let guestMode = false;     // aperta da un link senza aver mai usato Tempo: si vede solo la proposta
+/** Rispondere in Tempo a chi ti ha mandato il link: diventate contatti e la risposta arriva diretta. */
+function pendingReply(host, inv, build, answer) {
+  const pc = pendingContact;
+  const who = pc.name || inv.from || 'chi te l\'ha mandata';
+  if (!state.settings.cloudToken) {
+    host.append(mk('p', 'n-why', `Con un account Tempo Cloud tu e ${who} vi mandate le proposte direttamente in Tempo.`));
+    return;
+  }
+  const b = invBtn(`Rispondi in Tempo a ${who}`, async () => {
+    if (!myName()) { toast('Scrivi prima come ti firmi.'); host.querySelector('.inv-name input')?.focus(); return; }
+    const r = build();
+    if (!r) return;
+    b.disabled = true;
+    try {
+      const c = await dm().useCode(pc.text, myName(), inv.from || '');
+      dmContacts = dm().contacts();
+      await dm().send(c.uid, 'invito', { t: encodeInvite(r) });
+      pendingContact = null;
+      if (answer !== 'si') upsertInvite({ id: inv.id, role: 'ricevuta', itemId: null, title: cleanTxt(inv.t, 80), to: '', from: inv.from, at: Date.now(), status: answer });
+      toast(`Risposta mandata a ${c.name}. Ora siete contatti.`);
+      dismissNotice('invito');
+    } catch (e) { b.disabled = false; toast(directMsg(e)); }
+  }, true);
+  const row = invActions(b);
+  row.classList.add('inv-direct');
+  host.append(row);
+}
 const CT_MARK = /tempo:ct1:|contatto=/i;
 const dm = () => (directApi ||= createDirect({ S: () => state.settings, storage: localJson(), keystore: idbKeystore() }));
 function directReset() { directApi?.forget(); directApi = null; dmContacts = null; dmState = null; dmCode = null; dmSafety = null; }
@@ -3768,16 +3814,18 @@ function handleContactText(text) {
  * I bottoni «Manda a …» per i contatti (sotto Condividi e Copia). getToken() → 'tempo:inv1:…'.
  * only: un solo contatto (la risposta torna a chi ha scritto) · prefer: il nome scritto nella frase, che va per primo.
  */
-function directRow(host, getToken, { guard, onSent, only = null, prefer = '' }) {
+function directRow(host, getToken, { guard, onSent, only = null, prefer = '', onMatch = null, onNoMatch = null }) {
   if (!state.settings.cloudToken) return;
+  let decided = false;
   const row = mk('div', 'r-actions inv-direct');
   const paint = () => {
     row.replaceChildren();
     let list = (dmContacts || []).filter((c) => !c.off && (!only || c.uid === only));
     const pref = String(prefer || '').toLowerCase();
     if (pref) list = [...list.filter((c) => c.name.toLowerCase() === pref), ...list.filter((c) => c.name.toLowerCase() !== pref)];
+    const match = pref && list[0]?.name.toLowerCase() === pref ? list[0] : null;
     for (const c of list.slice(0, 6)) {
-      const b = mk('button', 'btn', only ? `Rispondi in Tempo a ${c.name}` : `Manda a ${c.name}`); b.type = 'button'; b.dataset.inv = 'direct';
+      const b = mk('button', c === match ? 'btn primary' : 'btn', only ? `Rispondi in Tempo a ${c.name}` : `Manda a ${c.name}`); b.type = 'button'; b.dataset.inv = 'direct';
       b.addEventListener('click', async () => {
         if (guard && !guard()) return;
         const t = getToken();
@@ -3788,9 +3836,10 @@ function directRow(host, getToken, { guard, onSent, only = null, prefer = '' }) 
       });
       row.append(b);
     }
+    if (!decided && dmContacts !== null) { decided = true; if (match) onMatch?.(row, match.name); else onNoMatch?.(); }
   };
-  paint();
   host.append(row);
+  paint();
   if (dmContacts === null) directLoad().then(() => { if (row.isConnected) paint(); });
 }
 /** Ritira la casella (dopo ogni sincronizzazione) e mostra la prima proposta arrivata. */
@@ -3843,12 +3892,21 @@ function readInviteHash() {
   if (!/(?:^|[#&])(?:invito|contatto)=/.test(location.hash)) return;
   inviteHash = location.hash;
   history.replaceState(null, '', location.pathname + location.search);
+  // chi non usa ancora Tempo vede solo la proposta (come una pagina web); le domande iniziali vengono dopo
+  if (!state.onboarded && $('#onb').hidden && /(?:^|[#&])invito=/.test(inviteHash)) { guestMode = true; releaseInviteHash(); return; }
   if (state.onboarded && $('#onb').hidden) releaseInviteHash();
 }
 function releaseInviteHash() {
   if (!inviteHash) return;
   const h = inviteHash; inviteHash = '';
-  setTimeout(() => handleContactText(h) || handleInviteText(h, true), 500);
+  // proposta + codice contatto nello stesso link: prima la proposta; il contatto si aggiunge quando rispondi in Tempo
+  const inv = /(?:^|[#&])invito=/.test(h) ? findInvite(h, Date.now()) : null;
+  const ct = inv ? findContactCode(h, Date.now()) : null;
+  pendingContact = inv && ct && inv.kind === 'proposta' ? { text: h, inv: inv.id, name: ct.name || inv.from || '' } : null;
+  setTimeout(() => {
+    if (inv) handleInviteText(h, true); else handleContactText(h) || handleInviteText(h, true);
+    if (guestMode && hasNotice('invito')) toast('Questa è Tempo. Puoi rispondere da qui, senza installare niente.');
+  }, 500);
 }
 
 /** La carta nell'area delle risposte; `stage(fn)` la ridisegna a ogni passo. */
@@ -3956,6 +4014,7 @@ function replyStage(sh, inv, answer, alts, back) {
     row.append(invBtn(answer === 'si' ? 'Non ora' : 'Indietro', () => (answer === 'si' || !back ? dismissNotice('invito') : back())));
     c.append(row);
     const from = directFrom.get(inv.id);
+    if (!from && pendingContact?.inv === inv.id) pendingReply(c, inv, build, answer);
     if (from) directRow(c, () => { const r = build(); return r ? encodeInvite(r) : ''; }, {
       guard: needName(() => c.querySelector('.inv-name')), only: from,
       onSent: (name) => {
@@ -3964,6 +4023,9 @@ function replyStage(sh, inv, answer, alts, back) {
         dismissNotice('invito');
       },
     });
+    // si può rispondere in Tempo: quella è la strada principale, il messaggio da copiare resta come alternativa
+    const dr = c.querySelector('.inv-direct');
+    if (dr) { c.querySelector('.n-why').textContent = 'Rispondi in Tempo, oppure manda questo messaggio.'; c.insertBefore(dr, msg); row.querySelector('[data-inv="share"]')?.classList.remove('primary'); new MutationObserver(() => dr.querySelector('button')?.classList.add('primary')).observe(dr, { childList: true }); dr.querySelector('button')?.classList.add('primary'); }
   });
 }
 
@@ -4087,7 +4149,7 @@ bind();
 syncSaveAlert();
 renderAll();
 renderDayView(true);
-if (!state.onboarded) openOnboarding();
+if (!state.onboarded && !/(?:^|[#&])invito=/.test(location.hash)) openOnboarding(); // con una proposta nel link: prima la proposta
 if (brokenData) showBrokenNotice(brokenData);
 try { // una bozza messa da parte prima di aggiornare l'app
   const draftText = sessionStorage.getItem('tempo.bozza');

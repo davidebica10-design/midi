@@ -93,7 +93,7 @@ export function createDirect({ S: S0, storage, keystore, fetchImpl, now = () => 
   }
 
   /** Usa il link di un amico: diventate contatti e lui riceve la tua chiave. */
-  async function useCode(text, myName) {
+  async function useCode(text, myName, fallbackName = '') {
     const c = findContactCode(text, now());
     if (!c) throw new E2EError('codice', 'Questo link non vale: forse è scaduto. Chiedine uno nuovo.');
     if (load().codes.some((x) => x.lookup === c.lookup)) throw new E2EError('mio', 'È il tuo link: mandalo a chi vuoi aggiungere.');
@@ -107,7 +107,7 @@ export function createDirect({ S: S0, storage, keystore, fetchImpl, now = () => 
       try { await call('DELETE', `/v1/contacts/${r.uid}`); } catch {}
       throw new E2EError('impronta', 'La chiave non corrisponde al link: non ho aggiunto nessuno.');
     }
-    const contact = upsertContact({ uid: r.uid, name: c.name || 'Contatto', pub, fp: c.fp });
+    const contact = upsertContact({ uid: r.uid, name: c.name || fallbackName || 'Contatto', pub, fp: c.fp });
     try {
       const env = await sealMessage(m, { uid: r.uid, pub }, { kind: 'contatto', at: now(), body: { k: c.secret, name: cleanName(myName), pub: m.device.pub } });
       await call('POST', `/v1/inbox/${r.uid}`, { env });
@@ -271,6 +271,16 @@ export function createDirect({ S: S0, storage, keystore, fetchImpl, now = () => 
   return { me, status, activate, createCode, useCode, contacts, safety, safetyInfo, setVerified, trustChange, removeContact, refresh, send, receive, queue, dropQueued, forget };
 }
 
+/** Nel messaggio della proposta: il link porta anche il codice contatto, e una riga dice a cosa serve. */
+export function withContactCode(text, code) {
+  const c = String(code).replace(/^tempo:ct1:/, '');
+  const lines = String(text).split('\n');
+  const i = lines.findIndex((l) => /#invito=/.test(l));
+  if (i < 0 || !/^[A-Za-z0-9_-]+$/.test(c)) return text;
+  lines[i] = lines[i].replace(/(#invito=[A-Za-z0-9_-]+)/, `$1&contatto=${c}`);
+  lines.splice(i, 0, 'Con Tempo le prossime proposte ti arrivano direttamente nell\'app.');
+  return lines.join('\n');
+}
 /** Le chiavi private nel browser: IndexedDB, che conserva le CryptoKey non esportabili così come sono. */
 export function idbKeystore(indexedDB = globalThis.indexedDB) {
   const open = () => new Promise((res, rej) => {

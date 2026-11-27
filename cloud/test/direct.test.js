@@ -176,10 +176,10 @@ test('link: se chi l\'ha creato ha cancellato l\'account, usarlo → 404 e non r
   assert.equal(keysOf(w, 'cc:' + c.lookup), undefined);
 });
 
-test('link: più di 20 al giorno → 429; più di 30 usi all\'ora → 429', async () => {
+test('link: più di 50 al giorno (uno per ogni proposta a chi non è ancora contatto) → 429; più di 30 usi all\'ora → 429', async () => {
   const w = setup();
   const [a, b] = [await w.user('anna'), await w.user('bruno')];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 50; i++) {
     const lookup = ('L' + i).padEnd(16, 'x');
     assert.equal((await w.as(a)('POST', '/v1/contact-codes', { lookup, exp: w.now() + DAY })).status, 201);
   }

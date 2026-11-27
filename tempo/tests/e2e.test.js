@@ -808,3 +808,24 @@ test('cambio di account sullo stesso dispositivo: i contatti dell\'account di pr
   await A.d.me();
   assert.deepEqual(A.d.contacts(), []);
 });
+
+// ---- link della proposta con il codice contatto (chi non è ancora nei tuoi contatti)
+import { withContactCode } from '../js/direct.js';
+import { findInvite as _findInvite, makeInvite as _makeInvite, inviteText as _inviteText } from '../js/invite.js';
+
+test('withContactCode: il link porta proposta e codice contatto, e si leggono tutti e due', () => {
+  const inv = _makeInvite({ title: 'Cena', date: '2026-12-03', start: 1200, end: 1260, tz: 'Europe/Rome', from: 'Anna' }, { id: 'inv_link_0001', now: T });
+  const fp = 'A'.repeat(43);
+  const code = makeContactCode({ fp, name: 'Anna', exp: T + DAY }).code;
+  const text = withContactCode(_inviteText(inv, { baseUrl: 'https://x.test/tempo/' }), code);
+  const url = text.split('\n').find((l) => l.startsWith('https://'));
+  assert.match(url, /#invito=[A-Za-z0-9_-]+&contatto=[A-Za-z0-9_-]+$/);
+  assert.equal(_findInvite(url, T).id, 'inv_link_0001');
+  const c = findContactCode(url, T);
+  assert.equal(c.fp, fp);
+  assert.equal(c.name, 'Anna');
+  assert.match(text, /arrivano direttamente/);
+  // un codice strano non entra nel link
+  assert.equal(withContactCode('riga\nhttps://x.test/#invito=abc', 'tempo:ct1:a"b'), 'riga\nhttps://x.test/#invito=abc');
+  assert.equal(withContactCode('senza link', code), 'senza link');
+});
