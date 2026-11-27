@@ -1,5 +1,5 @@
 // Cache dell'app per l'uso offline. Aggiorna VERSION a ogni rilascio.
-const VERSION = 'tempo-v53';
+const VERSION = 'tempo-v54';
 const OWN = /^tempo-v\d+$/; // le cache di Tempo; «tempo-studio-v…» è di un'altra app e non si tocca
 const SHELL = [
   './', 'index.html', 'style.css', 'ios.css', 'manifest.webmanifest',
