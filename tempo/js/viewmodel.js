@@ -170,6 +170,7 @@ export function deck(state, view) {
       done: isTask ? !!c.done : !!ended, high: isTask && (it.priority === 3), energy: isTask ? c.energy || 2 : 0,
       when: isTask ? `${c.start} · ${durLabel(minutes)}` : `${c.start} – ${c.end}`,
       todo: c.checklist ? c.checklist.filter((x) => !x.done).length : 0,
+      ...(c.checklist ? { ownerId: c.ownerId, checklist: c.checklist } : {}), // la lista dentro l'impegno (§8) resta spuntabile
     });
   }
   const cards = [...groups.values()].map((g) => {

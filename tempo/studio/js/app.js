@@ -118,25 +118,16 @@ function homeView() {
 
   // la luce sta fuori dalla vista: l'animazione d'entrata usa transform, che romperebbe position: fixed
   return [ambient, h('main', { class: 'view home' },
-    brandbar({ left: avatars }),
+    topbarR(avatars),
     carousel,
     info)];
 }
 
 function focusInfo(t) {
-  const st = statusOf(S, t.id);
-  const next = openTasks(S, t.id)[0];
-  const fin = finalVersion(S, t.id);
-  const who = next && (next.who === S.me.name && next.who ? 'tu' : next.who || '?');
+  // solo titolo e con chi: il resto è nella pagina del brano
   return [
     h('h2', { class: 'focus-title' }, t.title),
     t.artist ? h('p', { class: 'focus-meta' }, t.artist) : null,
-    h('ul', { class: 'focus-chips mono', 'aria-label': 'stato' },
-      h('li', {}, STAGES[t.stage]),
-      h('li', { class: st.kind === 'ok' ? 'ok' : '', title: st.text }, st.ok ? `v${st.ok.version.n} ✓${st.kind === 'ok' ? '' : ` · v${latestVersion(S, t.id).n}`}` : st.kind === 'vuoto' ? '—' : `v${latestVersion(S, t.id).n}`),
-      who ? h('li', { title: next.what }, `→ ${who}`) : null,
-      fin ? h('li', { class: 'fin', title: `definitiva: ${variantName(fin)}` }, h('span', { class: 'flag-ic' }, icon('flagFill', 12)), variantName(fin)) : null,
-      t.release ? h('li', { title: 'uscita' }, fmtDay(new Date(t.release + 'T12:00').getTime())) : null),
   ];
 }
 
@@ -153,19 +144,21 @@ function avatar(name, { me = false, size = 40 } = {}) {
   return h('span', { class: `avatar${me ? ' me' : ''}`, style: `--s:${size}px${tone ? `;--tone:${tone}` : ''}`, 'aria-hidden': 'true' }, ini || icon('user', Math.round(size * 0.55)));
 }
 /** Tu, grande; il collaboratore del brano, piccolo in basso a destra. Solo nomi scritti da te: niente account, niente dati da fuori. */
-function avatarStack(collab, { onclick, label } = {}) {
+function avatarStack(collab, { onclick, label, big = 46 } = {}) {
   return h('button', { class: 'avatars', onclick, 'aria-label': label || 'profilo' },
-    avatar(S.me.name, { me: true, size: 42 }),
-    collab ? h('span', { class: 'avatar-mini' }, avatar(collab, { size: 20 })) : null);
+    collab ? h('span', { class: 'avatar-back' }, avatar(collab, { size: Math.round(big * 0.7) })) : null,
+    h('span', { class: 'avatar-front' }, avatar(S.me.name, { me: true, size: big })));
 }
+/** Testata minima di home e calendario: solo gli avatar, in alto a destra. */
+const topbarR = (kid) => h('header', { class: 'topbar-r' }, kid);
 
 // ---------------------------------------------------------------- barra in basso: brani, calendario, +
 function tabbar(active) {
-  const tab = (key, hash, ic, label) => h('a', { class: `tab${active === key ? ' on' : ''}`, href: hash, 'aria-current': active === key ? 'page' : null }, icon(ic, 20), h('span', {}, label));
+  const tab = (key, hash, ic, label) => h('a', { class: `tab${active === key ? ' on' : ''}`, href: hash, 'aria-current': active === key ? 'page' : null, 'aria-label': label, title: label }, icon(active === key ? `${ic}Fill` : ic, 26));
   return h('nav', { class: 'tabbar', 'aria-label': 'sezioni' },
-    h('div', { class: 'tabs glass' },
-      tab('lib', '#/', 'stack', C.library), tab('cal', '#/cal', 'calendar', C.calendar),
-      h('button', { class: 'tab-add', onclick: openNewTrack, 'aria-label': C.newTrack, title: C.newTrack }, icon('plus', 20))));
+    h('div', { class: 'tabs glass' }, tab('lib', '#/', 'card', C.library), tab('cal', '#/cal', 'grid', C.calendar)),
+    h('button', { class: 'tab-add glass', onclick: openNewTrack, 'aria-label': C.newTrack, title: C.newTrack },
+      h('img', { src: 'icons/figma/croce.svg', width: 24, height: 24, alt: '' })));
 }
 
 // ---------------------------------------------------------------- calendario delle uscite
@@ -200,14 +193,14 @@ function calendarView() {
   const undated = S.tracks.filter((t) => !t.release);
   const isNow = y === now.getFullYear() && m === now.getMonth();
   return h('main', { class: 'view cal' },
-    brandbar({ left: h('div', { class: 'bb-avatars' }, avatarStack(null, { onclick: openSettings, label: 'profilo e impostazioni' })) }),
+    topbarR(avatarStack(null, { onclick: openSettings, label: 'profilo e impostazioni' })),
     h('header', { class: 'cal-head' },
       h('div', {}, h('p', { class: 'mono muted' }, String(y)), h('h2', { class: 'cal-month' }, MONTHS[m])),
       h('div', { class: 'cal-nav' },
         isNow ? null : h('button', { class: 'btn ghost', onclick: () => { ui.cal = null; render(); } }, 'oggi'),
         iconBtn('back', 'mese prima', () => shift(-1)),
         iconBtn('next', 'mese dopo', () => shift(1)))),
-    h('div', { class: 'weekdays mono', 'aria-hidden': 'true' }, ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'].map((d) => h('span', {}, d))),
+    h('div', { class: 'weekdays mono', 'aria-hidden': 'true' }, ['l', 'm', 'm', 'g', 'v', 's', 'd'].map((d) => h('span', {}, d))),
     h('div', { class: 'month', role: 'group', 'aria-label': `${MONTHS[m]} ${y}` }, cells),
     rel.length ? h('ul', { class: 'rel-list' }, rel.map((t) => relRow(t, () => go(`#/t/${t.id}`), fmtDay(new Date(t.release + 'T12:00').getTime())))) : null,
     undated.length ? block('', 'senza data', [

@@ -352,6 +352,13 @@ export const goalOfProject = (state, pid) => (state.goals || []).find((g) => g.p
 // ---- Operazioni ----
 const clampInt = (v, lo, hi) => (v == null || isNaN(+v) ? null : Math.min(hi, Math.max(lo, Math.round(+v))));
 const validDate = (s) => (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
+/** Solo per le operazioni in ingresso: una data che esiste davvero, tra 2000-01-01 e 2100-12-31. (I dati già salvati non si rivalidano.) */
+const realDate = (s) => {
+  if (!validDate(s) || s < '2000-01-01' || s > '2100-12-31') return null;
+  const [y, m, d] = s.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? s : null;
+};
 
 /**
  * L'impegno che contiene una lista: un impegno di ogni settimana (come «Lavoro») o un impegno con orario.
@@ -408,6 +415,12 @@ export function applyOps(state, ops, now = Date.now()) {
           if (kind === 'event' && op.end_time) {
             const e = parseHM(op.end_time);
             if (e != null && e > start) duration = e - start;
+          }
+          if (kind === 'event') { // mai oltre la mezzanotte: si taglia a 24:00
+            if (start >= 1440) { errors.push(`«${op.title}»: l'orario è oltre la fine del giorno`); break; }
+            const max = 1440 - start;
+            if (max < 5) { errors.push(`«${op.title}»: resta meno di 5 minuti prima di mezzanotte`); break; }
+            if ((duration || 60) > max) duration = max;
           }
           const item = {
             id: uid(), title: String(op.title).slice(0, 80), kind,
@@ -771,13 +784,22 @@ const FIELD = {
   note: 'str', project: 'str', color: ['rose', 'lilac', 'sage', 'sand', 'sky'], theme: THEME_KEYS, category: ['vincolo', 'preferenza', 'obiettivo', 'nota'], pref_key: 'str', pref_value: 'str', weekdays: 'ints', unpin: 'bool', sessions: 'sessions',
   checklist: 'checklist', item_id: 'str', done: 'bool',
 };
-/** Tiene solo operazioni e campi validi; restituisce { ops, dropped }. */
+/**
+ * Tiene solo operazioni e campi validi; restituisce { ops, dropped } e `why`: un codice breve per ogni scarto
+ * ('azione', 'data', 'orario', 'id', 'campo', 'troppe'). `why` non è enumerabile: chi legge solo { ops, dropped } non cambia.
+ */
 export function sanitizeOps(raw) {
   const ops = [];
+  const why = [];
   let dropped = 0;
-  for (const o of Array.isArray(raw) ? raw.slice(0, 40) : []) {
-    if (!o || typeof o !== 'object' || !ACTIONS.includes(o.action)) { dropped++; continue; }
+  const drop = (code) => { dropped++; why.push(code); };
+  const list = Array.isArray(raw) ? raw : [];
+  for (let n = 40; n < list.length; n++) drop('troppe');
+  const result = () => Object.defineProperty({ ops, dropped }, 'why', { value: why, enumerable: false });
+  for (const o of list.slice(0, 40)) {
+    if (!o || typeof o !== 'object' || !ACTIONS.includes(o.action)) { drop('azione'); continue; }
     const out = { action: o.action };
+    let bad = null;
     for (const [k, t] of Object.entries(FIELD)) {
       const v = o[k];
       if (v == null) continue;
@@ -785,19 +807,30 @@ export function sanitizeOps(raw) {
       else if (t === 'str') { if (typeof v === 'string' || typeof v === 'number') out[k] = String(v).slice(0, 200); }
       else if (t === 'int') { if (Number.isFinite(+v)) out[k] = Math.round(+v); }
       else if (t === 'bool') out[k] = !!v;
-      else if (t === 'date') { if (validDate(v)) out[k] = v; }
+      else if (t === 'date') { if (realDate(v)) out[k] = v; else if (validDate(v)) bad = bad || 'data'; } // «domani» (non è una data) → solo il campo cade; «2026-02-30» → cade l'operazione
       else if (t === 'time') { if (parseHM(v) != null) out[k] = String(v); }
       else if (t === 'strs') { if (Array.isArray(v)) out[k] = v.filter((x) => typeof x === 'string').slice(0, 10); }
       else if (t === 'checklist') { if (Array.isArray(v)) { const c = cleanChecklist(v); if (c.length) out[k] = c.map((x) => x.text); } }
       else if (t === 'ints') { if (Array.isArray(v)) out[k] = v.map(Number).filter((x) => Number.isInteger(x) && x >= 0 && x <= 6); }
       else if (t === 'sessions') { const p = validatePlan({ sessions: v }); if (p) out[k] = p; }
     }
-    if (['update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'check_item', 'remove_check'].includes(o.action) && !out.id) { dropped++; continue; }
-    if (o.action === 'add_checklist' && (!out.checklist?.length || !(out.id || out.title))) { dropped++; continue; }
-    if (['check_item', 'remove_check'].includes(o.action) && !out.item_id) { dropped++; continue; }
+    if (bad) { drop(bad); continue; }
+    if (['update', 'move', 'start', 'complete', 'reopen', 'delete', 'progress', 'skip', 'check_item', 'remove_check'].includes(o.action) && !out.id) { drop('id'); continue; }
+    if (o.action === 'add_checklist' && (!out.checklist?.length || !(out.id || out.title))) { drop('campo'); continue; }
+    if (['check_item', 'remove_check'].includes(o.action) && !out.item_id) { drop('campo'); continue; }
+    if (o.action === 'add' && out.kind === 'event' && out.start_time != null) { // impegno: mai oltre le 24:00
+      const s = parseHM(out.start_time);
+      let dur = clampInt(out.duration_min, 5, 960);
+      const e = out.end_time != null ? parseHM(out.end_time) : null;
+      if (e != null && e > s) dur = e - s;
+      dur = Math.min(dur || 60, 1440 - s);
+      if (s >= 1440 || dur < 5) { drop('orario'); continue; }
+      out.duration_min = dur;
+      delete out.end_time;
+    }
     ops.push(out);
   }
-  return { ops, dropped };
+  return result();
 }
 
 function niceDay(date, today) {
